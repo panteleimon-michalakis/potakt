@@ -1,0 +1,45 @@
+[project]
+name = "potakt"
+version = "0.1.0"
+description = "Open-source platform for decision agents: the LLM understands, the solver guarantees, the human decides."
+readme = "README.md"
+license = "Apache-2.0"
+authors = [
+    { name = "Panteleimon Michalakis", email = "pantelism2002@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "typer>=0.27.3",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.6,<0.14.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.pyright]
+include = ["src", "tests"]
+typeCheckingMode = "standard"
+strict = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers -m \"not llm\""
+markers = [
+    "llm: tests that call real LLM APIs (opt-in)",
+]
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6.170.13",
+    "pyright>=1.1.414",
+    "pytest>=9.2.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.17.3",
+]
