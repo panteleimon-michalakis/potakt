@@ -68,3 +68,21 @@ truth; if a task seems to contradict it, **stop and ask** instead of improvising
 - Python package: `potakt` in `python/src/potakt`. Java service in `solver-service/` (Phase 2).
   Web UI in `web/` (Phase 4).
 - License: Apache-2.0.
+
+## Tools, plugins and MCP
+Plugins are installed at user level and load automatically; you do not need to enable them. Use them
+deliberately:
+- **context7 (MCP):** before writing code against any third-party API (Pydantic, Typer, LangGraph,
+  OR-Tools, MCP SDK, FastAPI, Timefold, Spring), fetch the docs for the version pinned in `uv.lock` /
+  `pom.xml`. Do not rely on memory for APIs that change between versions.
+- **superpowers:** use test-driven-development, systematic-debugging and verification-before-completion.
+  Skip brainstorming / writing-plans when the task file already specifies the plan. Do not spawn
+  parallel subagents unless the task asks for it (usage limits).
+- **security-guidance:** runs automatically on edits; treat its warnings as blocking unless clearly a
+  false positive (explain it in the report).
+- **Self-review:** for tasks that add or change more than ~200 lines of code, review your own diff
+  (superpowers requesting-code-review) before the report and fix confirmed issues.
+- **mcp-server-dev:** only for tasks that build the MCP server.
+- **playwright, frontend-design, typescript-lsp, playground:** only for web UI tasks (Phase 4).
+- **agent-sdk-dev:** not used; Potakt uses LangGraph (ADR-0003).
+Each task file may name additional tools; follow it.
