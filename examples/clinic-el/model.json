@@ -1,0 +1,156 @@
+{
+  "schema_version": "0.1",
+  "id": "clinic-el-2026-w45",
+  "version": 1,
+  "status": "confirmed",
+  "title": "Βάρδιες νοσηλευτών Παθολογικής, 2–8/11/2026",
+  "language": "el",
+  "archetype": "assignment",
+  "vocabulary": {"resource": "νοσηλευτής", "task": "βάρδια"},
+  "timezone": "Europe/Athens",
+  "horizon": {"start": "2026-11-02", "end": "2026-11-08"},
+  "data": {
+    "resources": {
+      "source": "nurses.csv",
+      "id": "id",
+      "attributes": {
+        "name": {"column": "name", "type": "str"},
+        "skills": {"column": "skills", "type": "list", "separator": ";"}
+      }
+    },
+    "tasks": {
+      "source": "shifts.csv",
+      "id": "id",
+      "start": "start",
+      "end": "end",
+      "demand": "demand",
+      "attributes": {
+        "type": {"column": "type", "type": "str"},
+        "required_skill": {"column": "required_skill", "type": "str"}
+      }
+    }
+  },
+  "constraints": [
+    {
+      "id": "coverage",
+      "template": "coverage",
+      "hardness": "hard",
+      "rationale": "Κάθε βάρδια στελεχώνεται με ακριβώς τόσους νοσηλευτές όσους ορίζει η στήλη demand.",
+      "provenance": {"kind": "utterance", "quote": "Το πρωί χρειαζόμαστε 2 νοσηλευτές, το απόγευμα 2 και τη νύχτα 1."},
+      "status": "confirmed"
+    },
+    {
+      "id": "night-requires-als",
+      "template": "requires_attribute",
+      "hardness": "hard",
+      "params": {"task_attribute": "required_skill", "resource_attribute": "skills", "match": "contains"},
+      "rationale": "Οι νυχτερινές βάρδιες απαιτούν πιστοποίηση ALS· οι υπόλοιπες δεν έχουν απαίτηση.",
+      "provenance": {"kind": "utterance", "quote": "Στη νυχτερινή βάρδια πρέπει να υπάρχει νοσηλευτής με πιστοποίηση ALS, γιατί είναι μόνος του στην πτέρυγα."},
+      "status": "confirmed"
+    },
+    {
+      "id": "min-rest-11h",
+      "template": "min_rest",
+      "hardness": "hard",
+      "params": {"hours": 11},
+      "rationale": "Τουλάχιστον 11 ώρες ανάπαυσης ανάμεσα σε διαδοχικές βάρδιες.",
+      "provenance": {"kind": "utterance", "quote": "Ανάμεσα σε δύο βάρδιες του ίδιου νοσηλευτή πρέπει να μεσολαβούν τουλάχιστον 11 ώρες ξεκούρασης."},
+      "status": "confirmed"
+    },
+    {
+      "id": "max-one-shift-per-day",
+      "template": "max_per_period",
+      "hardness": "hard",
+      "params": {"measure": "count", "period": "day", "limit": 1},
+      "rationale": "Το πολύ μία βάρδια ανά ημέρα (η βάρδια μετράει στην ημέρα έναρξής της).",
+      "provenance": {"kind": "utterance", "quote": "Κανείς δεν κάνει πάνω από μία βάρδια την ίδια μέρα."},
+      "status": "confirmed"
+    },
+    {
+      "id": "max-five-shifts-per-week",
+      "template": "max_per_period",
+      "hardness": "soft",
+      "weight": 10,
+      "params": {"measure": "count", "period": "week", "limit": 5},
+      "rationale": "Επιθυμητό όριο 5 βαρδιών την εβδομάδα· επιτρέπεται υπέρβαση αν δεν βγαίνει αλλιώς.",
+      "provenance": {"kind": "utterance", "quote": "Ιδανικά κανείς να μην κάνει περισσότερες από 5 βάρδιες την εβδομάδα, αλλά αν δεν βγαίνει αλλιώς, μία παραπάνω είναι δεκτή."},
+      "status": "confirmed"
+    },
+    {
+      "id": "max-six-shifts-per-week",
+      "template": "max_per_period",
+      "hardness": "hard",
+      "params": {"measure": "count", "period": "week", "limit": 6},
+      "rationale": "Απόλυτο όριο: το πολύ μία βάρδια πάνω από τις 5, δηλαδή 6 την εβδομάδα.",
+      "provenance": {"kind": "utterance", "quote": "Ιδανικά κανείς να μην κάνει περισσότερες από 5 βάρδιες την εβδομάδα, αλλά αν δεν βγαίνει αλλιώς, μία παραπάνω είναι δεκτή."},
+      "status": "confirmed"
+    },
+    {
+      "id": "no-overlap",
+      "template": "no_overlap",
+      "hardness": "hard",
+      "rationale": "Προεπιλογή: ένας νοσηλευτής δεν μπορεί να βρίσκεται σε δύο βάρδιες που επικαλύπτονται χρονικά.",
+      "provenance": {"kind": "default"},
+      "status": "confirmed"
+    },
+    {
+      "id": "eleni-avoids-nights",
+      "template": "preference",
+      "hardness": "soft",
+      "weight": 3,
+      "scope": {
+        "resources": [{"attribute": "id", "op": "eq", "value": "n2"}],
+        "tasks": [{"attribute": "type", "op": "eq", "value": "νύχτα"}]
+      },
+      "params": {"kind": "avoid"},
+      "rationale": "Η Ελένη αποφεύγει τις νυχτερινές όταν είναι εφικτό.",
+      "provenance": {"kind": "utterance", "quote": "Η Ελένη προτιμά να μην κάνει νυχτερινές, αν γίνεται."},
+      "status": "confirmed"
+    },
+    {
+      "id": "maria-leave-wed",
+      "template": "unavailable",
+      "hardness": "hard",
+      "params": {"windows": [{"resource_id": "n1", "start": "2026-11-04T00:00", "end": "2026-11-05T00:00"}]},
+      "rationale": "Η Μαρία έχει άδεια όλη την Τετάρτη 4/11.",
+      "provenance": {"kind": "utterance", "quote": "Η Μαρία έχει άδεια την Τετάρτη 4/11."},
+      "status": "confirmed"
+    },
+    {
+      "id": "nikos-not-fri-afternoon",
+      "template": "unavailable",
+      "hardness": "hard",
+      "params": {"windows": [{"resource_id": "n3", "start": "2026-11-06T15:00", "end": "2026-11-06T23:00"}]},
+      "rationale": "Ο Νίκος δεν μπορεί την απογευματινή βάρδια της Παρασκευής 6/11.",
+      "provenance": {"kind": "utterance", "quote": "Ο Νίκος δεν μπορεί να πιάσει την απογευματινή βάρδια της Παρασκευής 6/11."},
+      "status": "confirmed"
+    },
+    {
+      "id": "balance-nights-als",
+      "template": "balance",
+      "hardness": "soft",
+      "weight": 2,
+      "scope": {
+        "resources": [{"attribute": "skills", "op": "contains", "value": "als"}],
+        "tasks": [{"attribute": "type", "op": "eq", "value": "νύχτα"}]
+      },
+      "params": {"measure": "count"},
+      "rationale": "Δίκαιη κατανομή των νυχτερινών ανάμεσα στους νοσηλευτές με ALS.",
+      "provenance": {"kind": "utterance", "quote": "Τις νυχτερινές να τις μοιράζονται δίκαια όσοι έχουν ALS."},
+      "status": "confirmed"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "night-counts-on-start-day",
+      "text": "Η νυχτερινή βάρδια μετράει στην ημέρα που ξεκινά· η νύχτα της Κυριακής 8/11 (έως Δευτέρα 07:00) ανήκει σε αυτή την εβδομάδα.",
+      "status": "confirmed"
+    },
+    {
+      "id": "maria-leave-full-day",
+      "text": "Η άδεια της Μαρίας καλύπτει όλο το 24ωρο της Τετάρτης 4/11 (00:00–24:00), άρα δεν μπορεί να κάνει ούτε τη νυχτερινή της Τρίτης που τελειώνει Τετάρτη στις 07:00.",
+      "status": "proposed"
+    }
+  ],
+  "objective": "lexicographic_hard_then_soft"
+}

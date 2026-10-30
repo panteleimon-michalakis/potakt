@@ -1,0 +1,134 @@
+{
+  "schema_version": "0.1",
+  "id": "retail-en-2026-w45",
+  "version": 1,
+  "status": "confirmed",
+  "title": "Main Street store rota, week of 2 November 2026",
+  "language": "en",
+  "archetype": "assignment",
+  "vocabulary": {"resource": "employee", "task": "shift"},
+  "timezone": "Europe/London",
+  "horizon": {"start": "2026-11-02", "end": "2026-11-08"},
+  "data": {
+    "resources": {
+      "source": "staff.csv",
+      "id": "id",
+      "attributes": {
+        "name": {"column": "name", "type": "str"},
+        "contract": {"column": "contract", "type": "str"},
+        "skills": {"column": "skills", "type": "list", "separator": ";"}
+      }
+    },
+    "tasks": {
+      "source": "shifts.csv",
+      "id": "id",
+      "start": "start",
+      "end": "end",
+      "demand": "demand",
+      "attributes": {
+        "type": {"column": "type", "type": "str"},
+        "required_skill": {"column": "required_skill", "type": "str"}
+      }
+    }
+  },
+  "constraints": [
+    {
+      "id": "coverage",
+      "template": "coverage",
+      "hardness": "hard",
+      "rationale": "Each shift gets exactly the number of people in its demand column.",
+      "provenance": {"kind": "utterance", "quote": "Every shift must be staffed with exactly the number of people listed for it in shifts.csv."},
+      "status": "confirmed"
+    },
+    {
+      "id": "opening-closing-skills",
+      "template": "requires_attribute",
+      "hardness": "hard",
+      "params": {"task_attribute": "required_skill", "resource_attribute": "skills", "match": "contains"},
+      "rationale": "Opening shifts require the opening skill and closing shifts the closing skill; mid shifts have no requirement.",
+      "provenance": {"kind": "utterance", "quote": "Only staff trained to open the store (alarm and cash float) can work an opening shift, and only staff trained to close (cash-up and lock-up) can work a closing shift."},
+      "status": "confirmed"
+    },
+    {
+      "id": "no-overlap",
+      "template": "no_overlap",
+      "hardness": "hard",
+      "rationale": "Default: a person cannot work two overlapping shifts (opening and closing overlap, as do mid and both).",
+      "provenance": {"kind": "default"},
+      "status": "confirmed"
+    },
+    {
+      "id": "max-40h-week",
+      "template": "max_per_period",
+      "hardness": "hard",
+      "params": {"measure": "hours", "period": "week", "limit": 40},
+      "rationale": "Legal limit of 40 working hours per week.",
+      "provenance": {"kind": "utterance", "quote": "Nobody may work more than 40 hours in a week — that's a legal limit for us."},
+      "status": "confirmed"
+    },
+    {
+      "id": "contract-hours-full-time",
+      "template": "min_per_period",
+      "hardness": "soft",
+      "weight": 3,
+      "scope": {"resources": [{"attribute": "contract", "op": "eq", "value": "full_time"}]},
+      "params": {"measure": "hours", "period": "week", "limit": 32},
+      "rationale": "Full-time staff should get at least their 32 contract hours.",
+      "provenance": {"kind": "utterance", "quote": "Full-timers are contracted for 32 hours a week and part-timers for 16; please try to give everyone at least their contract hours."},
+      "status": "confirmed"
+    },
+    {
+      "id": "contract-hours-part-time",
+      "template": "min_per_period",
+      "hardness": "soft",
+      "weight": 3,
+      "scope": {"resources": [{"attribute": "contract", "op": "eq", "value": "part_time"}]},
+      "params": {"measure": "hours", "period": "week", "limit": 16},
+      "rationale": "Part-time staff should get at least their 16 contract hours.",
+      "provenance": {"kind": "utterance", "quote": "Full-timers are contracted for 32 hours a week and part-timers for 16; please try to give everyone at least their contract hours."},
+      "status": "confirmed"
+    },
+    {
+      "id": "max-5-consecutive-days",
+      "template": "max_consecutive_days",
+      "hardness": "hard",
+      "params": {"days": 5},
+      "rationale": "At most 5 working days in a row.",
+      "provenance": {"kind": "utterance", "quote": "Nobody can work more than 5 days in a row."},
+      "status": "confirmed"
+    },
+    {
+      "id": "balance-weekend-shifts",
+      "template": "balance",
+      "hardness": "soft",
+      "weight": 2,
+      "scope": {"tasks": [{"attribute": "weekday", "op": "in", "value": ["sat", "sun"]}]},
+      "params": {"measure": "count"},
+      "rationale": "Share Saturday and Sunday shifts evenly across the whole team.",
+      "provenance": {"kind": "utterance", "quote": "Weekend shifts should be shared out fairly across the team."},
+      "status": "confirmed"
+    },
+    {
+      "id": "chloe-emma-apart",
+      "template": "apart",
+      "hardness": "hard",
+      "params": {"resource_ids": ["s3", "s5"]},
+      "rationale": "Chloe and Emma never work the same shift.",
+      "provenance": {"kind": "utterance", "quote": "Chloe and Emma are sisters and we never want both of them on the same shift."},
+      "status": "confirmed"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "store-timezone",
+      "text": "The store is in the UK, so shift times are local Europe/London time.",
+      "status": "proposed"
+    },
+    {
+      "id": "hours-from-shift-times",
+      "text": "Hours are counted from the scheduled shift start and end times; breaks are not deducted.",
+      "status": "proposed"
+    }
+  ],
+  "objective": "lexicographic_hard_then_soft"
+}

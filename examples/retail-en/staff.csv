@@ -1,0 +1,9 @@
+id,name,contract,skills
+s1,Alice Brown,full_time,opening;closing
+s2,Ben Carter,full_time,opening
+s3,Chloe Davis,full_time,closing
+s4,Dan Evans,full_time,opening;closing
+s5,Emma Davis,part_time,closing
+s6,Finn Garcia,part_time,opening
+s7,Grace Hill,part_time,
+s8,Hugo Ito,part_time,opening;closing
