@@ -1,0 +1,628 @@
+"""Loading problem instances from CSV bindings and data-level validation (ADR-0004, level 2)."""
+
+import json
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+from zoneinfo import ZoneInfo
+
+import pytest
+from helpers import constraint, minimal_dm
+from hypothesis import given
+from hypothesis import strategies as st
+from pydantic import ValidationError
+
+from potakt.model import (
+    AttributeBinding,
+    DecisionModelError,
+    ProblemInstance,
+    Task,
+    TimeWindow,
+    ValidationIssue,
+    load_decision_model,
+    load_instance,
+    validate_data,
+)
+from potakt.model.loader import parse_cell, split_list
+
+ATHENS = ZoneInfo("Europe/Athens")
+
+RESOURCES_CSV = """id,name,skills,contract
+r1,Ana,opening;closing,full_time
+r2,Ben,,part_time
+r3,Χαρά,closing ; als,full_time
+"""
+
+TASKS_CSV = """id,start,end,demand,type,required_skill
+t1,2026-11-02T07:00,2026-11-02T15:00,2,πρωί,
+t2,2026-11-02T23:00,2026-11-03T07:00,1,νύχτα,als
+"""
+
+
+def write_scenario(
+    directory: Path,
+    doc: dict[str, Any] | None = None,
+    resources: str = RESOURCES_CSV,
+    tasks: str = TASKS_CSV,
+    **extra_files: str,
+) -> Path:
+    model_file = directory / "model.json"
+    model_file.write_text(json.dumps(doc or minimal_dm(), ensure_ascii=False), encoding="utf-8")
+    (directory / "resources.csv").write_text(resources, encoding="utf-8")
+    (directory / "tasks.csv").write_text(tasks, encoding="utf-8")
+    for name, content in extra_files.items():
+        (directory / name.replace("_csv", ".csv")).write_text(content, encoding="utf-8")
+    return model_file
+
+
+def load(model_file: Path) -> tuple[ProblemInstance, list[ValidationIssue]]:
+    dm = load_decision_model(model_file)
+    instance = load_instance(dm, model_file.parent)
+    return instance, validate_data(dm, instance)
+
+
+def load_issues(model_file: Path) -> list[ValidationIssue]:
+    """Issues from loading (if loading fails) or else from data-level validation."""
+    try:
+        return load(model_file)[1]
+    except DecisionModelError as error:
+        return list(error.issues)
+
+
+def only_issue(model_file: Path) -> ValidationIssue:
+    issues = load_issues(model_file)
+    assert len(issues) == 1, issues
+    return issues[0]
+
+
+def with_constraints(*extra: dict[str, Any]) -> dict[str, Any]:
+    doc = minimal_dm()
+    doc["constraints"].extend(extra)
+    return doc
+
+
+# --- loading ---------------------------------------------------------------------------------
+
+
+def test_valid_scenario_loads_typed_resources_and_tasks(tmp_path: Path) -> None:
+    instance, issues = load(write_scenario(tmp_path))
+
+    assert issues == []
+    assert [r.id for r in instance.resources] == ["r1", "r2", "r3"]
+    assert instance.resources[0].attributes == {
+        "skills": ["opening", "closing"],
+        "contract": "full_time",
+    }
+    assert instance.resources[2].attributes["skills"] == ["closing", "als"]
+    task = instance.tasks[1]
+    assert task.start == datetime(2026, 11, 2, 23, 0)
+    assert task.end == datetime(2026, 11, 3, 7, 0)
+    assert task.demand == 1
+    assert task.attributes == {"type": "νύχτα", "required_skill": "als"}
+
+
+def test_empty_cells_mean_absent_attributes_and_empty_lists(tmp_path: Path) -> None:
+    instance, _ = load(write_scenario(tmp_path))
+
+    assert instance.resources[1].attributes == {"skills": [], "contract": "part_time"}
+    assert "required_skill" not in instance.tasks[0].attributes
+
+
+def test_instance_is_immutable(tmp_path: Path) -> None:
+    instance, _ = load(write_scenario(tmp_path))
+
+    with pytest.raises(ValidationError):
+        instance.tasks[0].demand = 5
+    with pytest.raises(ValidationError):
+        instance.resources = ()
+    assert isinstance(instance.tasks, tuple)
+
+
+def test_csv_with_bom_and_crlf_is_accepted(tmp_path: Path) -> None:
+    model_file = write_scenario(tmp_path)
+    (tmp_path / "tasks.csv").write_bytes(b"\xef\xbb\xbf" + TASKS_CSV.replace("\n", "\r\n").encode())
+
+    instance, issues = load(model_file)
+
+    assert issues == []
+    assert instance.tasks[0].id == "t1"
+
+
+def test_missing_attribute_column_is_reported(tmp_path: Path) -> None:
+    tasks = "id,start,end,demand,required_skill\nt1,2026-11-02T07:00,2026-11-02T15:00,1,\n"
+
+    issue = only_issue(write_scenario(tmp_path, tasks=tasks))
+
+    assert issue.path == "/data/tasks/attributes/type/column"
+    assert issue.message == "column 'type' not found in tasks.csv"
+
+
+def test_missing_core_column_is_reported(tmp_path: Path) -> None:
+    tasks = "id,start,end,type,required_skill\nt1,2026-11-02T07:00,2026-11-02T15:00,a,\n"
+
+    issue = only_issue(write_scenario(tmp_path, tasks=tasks))
+
+    assert issue.path == "/data/tasks/demand"
+    assert issue.message == "column 'demand' not found in tasks.csv"
+
+
+def test_missing_data_file_is_reported(tmp_path: Path) -> None:
+    model_file = write_scenario(tmp_path)
+    (tmp_path / "resources.csv").unlink()
+
+    issue = only_issue(model_file)
+
+    assert issue.path == "/data/resources/source"
+    assert issue.message == "cannot read resources.csv: file not found"
+
+
+def test_data_file_must_be_utf8(tmp_path: Path) -> None:
+    model_file = write_scenario(tmp_path)
+    greek_rows = "\n".join(["id", "Χαρά", ""])
+    (tmp_path / "resources.csv").write_bytes(greek_rows.encode("cp1253"))
+
+    issue = only_issue(model_file)
+
+    assert issue.path == "/data/resources/source"
+    assert issue.message == "cannot read resources.csv: not valid UTF-8"
+
+
+def test_data_file_needs_a_header_row(tmp_path: Path) -> None:
+    issue = only_issue(write_scenario(tmp_path, resources=""))
+
+    assert issue.path == "/data/resources/source"
+    assert issue.message == "resources.csv has no header row"
+
+
+@pytest.mark.parametrize(
+    ("row", "path", "message"),
+    [
+        (
+            "t9,2026-11-02T07:00,2026-11-02T15:00,two,a,",
+            "/data/tasks/demand",
+            "tasks.csv line 3, column 'demand': 'two' is not an integer",
+        ),
+        (
+            "t9,2026-11-02T07:00,2026-11-02T15:00,0,a,",
+            "/data/tasks/demand",
+            "tasks.csv line 3, column 'demand': demand must be at least 1, got 0",
+        ),
+        (
+            "t9,2/11/2026 07:00,2026-11-02T15:00,1,a,",
+            "/data/tasks/start",
+            "tasks.csv line 3, column 'start': '2/11/2026 07:00' is not an ISO-8601 local datetime",
+        ),
+        (
+            "t9,2026-11-02T07:00+02:00,2026-11-02T15:00,1,a,",
+            "/data/tasks/start",
+            "tasks.csv line 3, column 'start': '2026-11-02T07:00+02:00' must be a local time "
+            "without a UTC offset (the DM timezone applies)",
+        ),
+        (
+            ",2026-11-02T07:00,2026-11-02T15:00,1,a,",
+            "/data/tasks/id",
+            "tasks.csv line 3, column 'id': a value is required",
+        ),
+        (
+            "t9,2026-11-02T07:00,2026-11-02T15:00,1,a,,surplus",
+            "/data/tasks/source",
+            "tasks.csv line 3: more fields than the header",
+        ),
+    ],
+)
+def test_invalid_task_rows_are_reported_with_file_and_line(
+    tmp_path: Path, row: str, path: str, message: str
+) -> None:
+    tasks = "id,start,end,demand,type,required_skill\n" + TASKS_CSV.splitlines()[1] + "\n" + row
+    issue = only_issue(write_scenario(tmp_path, tasks=tasks + "\n"))
+
+    assert issue.path == path
+    assert issue.message == message
+
+
+def test_all_row_problems_are_reported_together(tmp_path: Path) -> None:
+    tasks = "id,start,end,demand,type,required_skill\nt1,x,y,z,a,\n"
+
+    issues = load_issues(write_scenario(tmp_path, tasks=tasks))
+
+    assert [i.path for i in issues] == [
+        "/data/tasks/start",
+        "/data/tasks/end",
+        "/data/tasks/demand",
+    ]
+
+
+def test_typed_attribute_columns(tmp_path: Path) -> None:
+    doc = minimal_dm()
+    doc["data"]["resources"]["attributes"] = {
+        "senior": {"column": "senior", "type": "bool"},
+        "hours": {"column": "hours", "type": "float"},
+        "level": {"column": "level", "type": "int"},
+        "tags": {"column": "tags", "type": "list", "separator": "|"},
+    }
+    resources = "id,senior,hours,level,tags\nr1,Yes,37.5,3,a | b\nr2,0,20,-1,\n"
+
+    instance, issues = load(write_scenario(tmp_path, doc, resources=resources))
+
+    assert issues == []
+    assert instance.resources[0].attributes == {
+        "senior": True,
+        "hours": 37.5,
+        "level": 3,
+        "tags": ["a", "b"],
+    }
+    assert instance.resources[1].attributes == {
+        "senior": False,
+        "hours": 20.0,
+        "level": -1,
+        "tags": [],
+    }
+
+
+@pytest.mark.parametrize(
+    ("column_type", "text", "expected"),
+    [
+        ("bool", "TRUE", True),
+        ("bool", "no", False),
+        ("int", "+7", 7),
+        ("float", "1e2", 100.0),
+        ("float", ".5", 0.5),
+        ("str", "  πρωί  ", "πρωί"),
+        ("str", "   ", None),
+    ],
+)
+def test_parse_cell_accepts(column_type: Any, text: str, expected: object) -> None:
+    binding = AttributeBinding(column="c", type=column_type)
+
+    assert parse_cell(text, binding) == expected
+
+
+@pytest.mark.parametrize(
+    ("column_type", "text"),
+    [
+        ("bool", "maybe"),
+        ("int", "1.5"),
+        ("int", "1_000"),
+        ("float", "nan"),
+        ("float", "inf"),
+        ("float", "7,5"),
+    ],
+)
+def test_parse_cell_rejects(column_type: Any, text: str) -> None:
+    binding = AttributeBinding(column="c", type=column_type)
+
+    with pytest.raises(ValueError, match="is not"):
+        parse_cell(text, binding)
+
+
+@given(
+    separator=st.sampled_from([";", "|", ","]),
+    items=st.lists(st.text(alphabet=st.characters(exclude_characters=";|,"), max_size=8)),
+)
+def test_list_parsing_preserves_non_empty_trimmed_items(separator: str, items: list[str]) -> None:
+    joined = separator.join(items)
+
+    assert split_list(joined, separator) == [item.strip() for item in items if item.strip()]
+
+
+# --- data-level validation -------------------------------------------------------------------
+
+
+def test_duplicate_task_id_is_reported(tmp_path: Path) -> None:
+    tasks = TASKS_CSV + "t1,2026-11-03T07:00,2026-11-03T15:00,1,πρωί,\n"
+
+    issue = only_issue(write_scenario(tmp_path, tasks=tasks))
+
+    assert issue.path == "/data/tasks/id"
+    assert issue.message == "duplicate task id 't1' in tasks.csv"
+
+
+def test_duplicate_resource_id_is_reported(tmp_path: Path) -> None:
+    issue = only_issue(write_scenario(tmp_path, resources=RESOURCES_CSV + "r2,Bob,,x\n"))
+
+    assert issue.path == "/data/resources/id"
+    assert issue.message == "duplicate resource id 'r2' in resources.csv"
+
+
+@pytest.mark.parametrize(
+    ("end", "message"),
+    [
+        (
+            "2026-11-02T07:00",
+            "task 't9': end 2026-11-02T07:00 must be after start 2026-11-02T07:00",
+        ),
+        (
+            "2026-11-02T06:00",
+            "task 't9': end 2026-11-02T06:00 must be after start 2026-11-02T07:00",
+        ),
+        ("2026-11-03T08:00", "task 't9': lasts 25 h, more than the maximum of 24 h"),
+    ],
+)
+def test_task_times_must_be_valid(tmp_path: Path, end: str, message: str) -> None:
+    tasks = TASKS_CSV + f"t9,2026-11-02T07:00,{end},1,πρωί,\n"
+
+    issue = only_issue(write_scenario(tmp_path, tasks=tasks))
+
+    assert issue.path == "/data/tasks/end"
+    assert issue.message == message
+
+
+def test_task_of_exactly_24_hours_is_accepted(tmp_path: Path) -> None:
+    tasks = TASKS_CSV + "t9,2026-11-04T07:00,2026-11-05T07:00,1,πρωί,\n"
+
+    assert load_issues(write_scenario(tmp_path, tasks=tasks)) == []
+
+
+@pytest.mark.parametrize("start", ["2026-11-01T23:00", "2026-11-09T07:00"])
+def test_task_starting_outside_the_horizon_is_reported(tmp_path: Path, start: str) -> None:
+    tasks = TASKS_CSV + f"t9,{start},{start[:11]}23:30,1,πρωί,\n"
+
+    issue = only_issue(write_scenario(tmp_path, tasks=tasks))
+
+    assert issue.path == "/data/tasks/start"
+    assert issue.message == (
+        f"task 't9': starts on {start[:10]}, outside the horizon 2026-11-02 to 2026-11-08"
+    )
+
+
+def test_task_on_last_day_may_end_after_the_horizon(tmp_path: Path) -> None:
+    tasks = TASKS_CSV + "t9,2026-11-08T23:00,2026-11-09T07:00,1,νύχτα,als\n"
+
+    assert load_issues(write_scenario(tmp_path, tasks=tasks)) == []
+
+
+def test_task_starting_in_a_dst_gap_is_reported(tmp_path: Path) -> None:
+    doc = minimal_dm()
+    doc["horizon"] = {"start": "2027-03-22", "end": "2027-03-28"}
+    tasks = "id,start,end,demand,type,required_skill\nt1,2027-03-28T03:30,2027-03-28T09:00,1,a,\n"
+
+    issue = only_issue(write_scenario(tmp_path, doc, tasks=tasks))
+
+    assert issue.path == "/data/tasks/start"
+    assert issue.message == (
+        "task 't1': local time 2027-03-28T03:30 does not exist in Europe/Athens (DST change)"
+    )
+
+
+def test_scope_referring_to_unknown_attribute_is_reported(tmp_path: Path) -> None:
+    rule = constraint(
+        "no_overlap",
+        hardness="hard",
+        scope={"tasks": [{"attribute": "shift_kind", "op": "eq", "value": "night"}]},
+    )
+
+    issue = only_issue(write_scenario(tmp_path, with_constraints(rule)))
+
+    assert issue.path == "/constraints/1/scope/tasks/0/attribute"
+    assert issue.message == (
+        "unknown task attribute 'shift_kind'; known: date, duration_hours, id, "
+        "required_skill, start_hour, type, weekday"
+    )
+
+
+def test_scope_accepts_id_data_and_derived_attributes(tmp_path: Path) -> None:
+    rule = constraint(
+        "no_overlap",
+        hardness="hard",
+        scope={
+            "resources": [
+                {"attribute": "id", "op": "ne", "value": "r1"},
+                {"attribute": "skills", "op": "contains", "value": "closing"},
+            ],
+            "tasks": [
+                {"attribute": "weekday", "op": "in", "value": ["sat", "sun"]},
+                {"attribute": "type", "op": "eq", "value": "νύχτα"},
+            ],
+        },
+    )
+
+    assert load_issues(write_scenario(tmp_path, with_constraints(rule))) == []
+
+
+def test_derived_attributes_are_not_resource_attributes(tmp_path: Path) -> None:
+    rule = constraint(
+        "no_overlap",
+        hardness="hard",
+        scope={"resources": [{"attribute": "weekday", "op": "eq", "value": "mon"}]},
+    )
+
+    issue = only_issue(write_scenario(tmp_path, with_constraints(rule)))
+
+    assert issue.path == "/constraints/1/scope/resources/0/attribute"
+    assert issue.message == "unknown resource attribute 'weekday'; known: contract, id, skills"
+
+
+def test_params_referring_to_unknown_attributes_are_reported(tmp_path: Path) -> None:
+    rule = constraint(
+        "requires_attribute",
+        hardness="hard",
+        params={"task_attribute": "skill", "resource_attribute": "skils", "match": "contains"},
+    )
+
+    issues = load_issues(write_scenario(tmp_path, with_constraints(rule)))
+
+    assert [(i.path, i.message) for i in issues] == [
+        (
+            "/constraints/1/params/task_attribute",
+            "unknown task attribute 'skill'; known: required_skill, type",
+        ),
+        (
+            "/constraints/1/params/resource_attribute",
+            "unknown resource attribute 'skils'; known: contract, skills",
+        ),
+    ]
+
+
+def test_resource_id_in_params_must_exist(tmp_path: Path) -> None:
+    rule = constraint("apart", hardness="hard", params={"resource_ids": ["r1", "r7"]})
+
+    issue = only_issue(write_scenario(tmp_path, with_constraints(rule)))
+
+    assert issue.path == "/constraints/1/params/resource_ids/1"
+    assert issue.message == "unknown resource id 'r7'"
+
+
+def test_baseline_ids_must_exist(tmp_path: Path) -> None:
+    baseline = [{"task_id": "t1", "resource_id": "r1"}, {"task_id": "t5", "resource_id": "r9"}]
+    rule = constraint("stability", hardness="soft", weight=1, params={"baseline": baseline})
+
+    issues = load_issues(write_scenario(tmp_path, with_constraints(rule)))
+
+    assert [(i.path, i.message) for i in issues] == [
+        ("/constraints/1/params/baseline/1/task_id", "unknown task id 't5'"),
+        ("/constraints/1/params/baseline/1/resource_id", "unknown resource id 'r9'"),
+    ]
+
+
+def test_inline_window_resource_must_exist(tmp_path: Path) -> None:
+    window = {"resource_id": "r9", "start": "2026-11-03T00:00", "end": "2026-11-04T00:00"}
+    rule = constraint("unavailable", hardness="hard", params={"windows": [window]})
+
+    issue = only_issue(write_scenario(tmp_path, with_constraints(rule)))
+
+    assert issue.path == "/constraints/1/params/windows/0/resource_id"
+    assert issue.message == "unknown resource id 'r9'"
+
+
+def test_windows_are_loaded_from_csv_after_inline_windows(tmp_path: Path) -> None:
+    window = {"resource_id": "r1", "start": "2026-11-03T00:00", "end": "2026-11-04T00:00"}
+    source = {"source": "leave.csv", "resource_id": "who", "start": "from", "end": "to"}
+    rule = constraint(
+        "unavailable", id="leave", hardness="hard", params={"windows": [window], "source": source}
+    )
+    leave = "who,from,to\nr2,2026-11-05T15:00,2026-11-05T23:00\n"
+
+    instance, issues = load(write_scenario(tmp_path, with_constraints(rule), leave_csv=leave))
+
+    assert issues == []
+    assert instance.windows["leave"] == (
+        TimeWindow(
+            resource_id="r1", start=datetime(2026, 11, 3, 0, 0), end=datetime(2026, 11, 4, 0, 0)
+        ),
+        TimeWindow(
+            resource_id="r2", start=datetime(2026, 11, 5, 15, 0), end=datetime(2026, 11, 5, 23, 0)
+        ),
+    )
+
+
+def test_csv_windows_are_validated(tmp_path: Path) -> None:
+    source = {"source": "leave.csv", "resource_id": "who", "start": "from", "end": "to"}
+    rule = constraint("unavailable", hardness="hard", params={"source": source})
+    leave = (
+        "who,from,to\nr2,2026-11-05T15:00,2026-11-05T14:00\nr9,2026-11-05T15:00,2026-11-05T23:00\n"
+    )
+
+    issues = load_issues(write_scenario(tmp_path, with_constraints(rule), leave_csv=leave))
+
+    assert [(i.path, i.message) for i in issues] == [
+        ("/constraints/1/params/source", "leave.csv line 2: end must be after start"),
+    ]
+
+
+def test_csv_window_resource_must_exist(tmp_path: Path) -> None:
+    source = {"source": "leave.csv", "resource_id": "who", "start": "from", "end": "to"}
+    rule = constraint("unavailable", hardness="hard", params={"source": source})
+    leave = "who,from,to\nr9,2026-11-05T15:00,2026-11-05T23:00\n"
+
+    issue = only_issue(write_scenario(tmp_path, with_constraints(rule), leave_csv=leave))
+
+    assert issue.path == "/constraints/1/params/source/resource_id"
+    assert issue.message == "unknown resource id 'r9' in leave.csv"
+
+
+# --- time model ------------------------------------------------------------------------------
+
+
+def night_task(start: str, end: str) -> Task:
+    return Task(
+        id="n",
+        start=datetime.fromisoformat(start),
+        end=datetime.fromisoformat(end),
+        demand=1,
+        attributes={},
+    )
+
+
+def test_night_shift_across_autumn_dst_change_lasts_nine_hours() -> None:
+    # Europe/Athens leaves summer time on Sunday 2026-10-25 at 04:00 (back to 03:00).
+    task = night_task("2026-10-24T23:00", "2026-10-25T07:00")
+
+    assert task.duration_minutes(ATHENS) == 9 * 60
+
+
+def test_night_shift_across_spring_dst_change_lasts_seven_hours() -> None:
+    task = night_task("2027-03-27T23:00", "2027-03-28T07:00")
+
+    assert task.duration_minutes(ATHENS) == 7 * 60
+
+
+def test_ambiguous_local_time_means_the_first_occurrence() -> None:
+    # 03:30 happens twice on 2026-10-25; the first occurrence is still summer time (UTC+3).
+    task = night_task("2026-10-25T03:30", "2026-10-25T04:30")
+
+    assert task.duration_minutes(ATHENS) == 2 * 60
+
+
+def test_derived_attributes_use_the_local_start() -> None:
+    task = night_task("2026-11-08T23:00", "2026-11-09T07:00")
+
+    assert task.derived_attributes(ATHENS) == {
+        "weekday": "sun",
+        "start_hour": 23,
+        "duration_hours": 8.0,
+        "date": "2026-11-08",
+    }
+
+
+def test_invalid_attribute_cell_is_reported(tmp_path: Path) -> None:
+    doc = minimal_dm()
+    doc["data"]["resources"]["attributes"]["hours"] = {"column": "hours", "type": "float"}
+    resources = "id,skills,contract,hours\nr1,,x,37.5\nr2,,x,full\n"
+
+    issue = only_issue(write_scenario(tmp_path, doc, resources=resources))
+
+    assert issue.path == "/data/resources/attributes/hours"
+    assert issue.message == "resources.csv line 3, column 'hours': 'full' is not a number"
+
+
+def test_duplicate_header_column_is_reported(tmp_path: Path) -> None:
+    resources = "id,skills,contract,skills\nr1,a,x,b\n"
+
+    issue = only_issue(write_scenario(tmp_path, resources=resources))
+
+    assert issue.path == "/data/resources/source"
+    assert issue.message == "resources.csv has a duplicate column 'skills'"
+
+
+def test_window_csv_cells_are_validated(tmp_path: Path) -> None:
+    source = {"source": "leave.csv", "resource_id": "who", "start": "from", "end": "to"}
+    rule = constraint("unavailable", hardness="hard", params={"source": source})
+    leave = "who,from,to\n,2026-11-05T15:00,2026-11-05T23:00\nr1,soon,2026-11-05T23:00\n"
+
+    issues = load_issues(write_scenario(tmp_path, with_constraints(rule), leave_csv=leave))
+
+    assert [(i.path, i.message) for i in issues] == [
+        (
+            "/constraints/1/params/source/resource_id",
+            "leave.csv line 2, column 'who': a value is required",
+        ),
+        (
+            "/constraints/1/params/source/start",
+            "leave.csv line 3, column 'from': 'soon' is not an ISO-8601 local datetime",
+        ),
+    ]
+
+
+def test_missing_window_file_points_at_its_source_field(tmp_path: Path) -> None:
+    source = {"source": "leave.csv", "resource_id": "who", "start": "from", "end": "to"}
+    rule = constraint("unavailable", hardness="hard", params={"source": source})
+
+    issue = only_issue(write_scenario(tmp_path, with_constraints(rule)))
+
+    assert issue.path == "/constraints/1/params/source/source"
+    assert issue.message == "cannot read leave.csv: file not found"
+
+
+def test_non_finite_float_is_rejected() -> None:
+    with pytest.raises(ValueError, match="is not a finite number"):
+        parse_cell("1e999", AttributeBinding(column="c", type="float"))

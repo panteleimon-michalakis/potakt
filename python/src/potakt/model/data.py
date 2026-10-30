@@ -1,14 +1,16 @@
-"""Data side of the Decision Model: CSV bindings, time windows and local datetimes."""
+"""Data side of the Decision Model: CSV bindings, resources, tasks and the problem instance."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Annotated, Literal, Self
+from zoneinfo import ZoneInfo
 
-from pydantic import AfterValidator, Field, model_validator
+from pydantic import AfterValidator, ConfigDict, Field, model_validator
 
 from potakt.model.common import (
     ATTRIBUTE_NAME_PATTERN,
     RESERVED_ATTRIBUTE_NAMES,
+    AttributeValue,
     Loc,
     StrictModel,
     custom_error,
@@ -49,7 +51,13 @@ SourcePath = Annotated[str, AfterValidator(check_source_path)]
 ColumnName = Annotated[str, Field(min_length=1)]
 
 
-class TimeWindow(StrictModel):
+class _FrozenModel(StrictModel):
+    """Value objects that cannot change after validation."""
+
+    model_config = ConfigDict(frozen=True)
+
+
+class TimeWindow(_FrozenModel):
     """A local time interval ``[start, end)`` during which a resource is unavailable."""
 
     resource_id: str = Field(min_length=1)
@@ -128,3 +136,67 @@ class DataBindings(StrictModel):
 
     resources: ResourceBinding
     tasks: TaskBinding
+
+
+# --- loaded data -----------------------------------------------------------------------------
+
+WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+def to_utc(local: datetime, zone: ZoneInfo) -> datetime:
+    """Interpret a local naive datetime in ``zone``; ambiguous times mean the first occurrence."""
+    return local.replace(tzinfo=zone).astimezone(UTC)
+
+
+def local_time_exists(local: datetime, zone: ZoneInfo) -> bool:
+    """False for local times skipped by a DST change (spring-forward gap)."""
+    return to_utc(local, zone).astimezone(zone).replace(tzinfo=None) == local
+
+
+def duration_minutes(start: datetime, end: datetime, zone: ZoneInfo) -> int:
+    """Real elapsed minutes between two local datetimes, DST changes included."""
+    # Subtracting aware datetimes that share a tzinfo ignores the offset change; go via UTC.
+    return int((to_utc(end, zone) - to_utc(start, zone)).total_seconds()) // 60
+
+
+class Resource(_FrozenModel):
+    """Something that can be assigned to tasks (e.g. an employee)."""
+
+    id: str = Field(min_length=1)
+    attributes: dict[str, AttributeValue] = Field(default_factory=dict[str, AttributeValue])
+
+
+class Task(_FrozenModel):
+    """A unit of work given as data (e.g. a shift) that needs ``demand`` resources."""
+
+    id: str = Field(min_length=1)
+    start: LocalDateTime
+    end: LocalDateTime
+    demand: int = Field(ge=1)
+    attributes: dict[str, AttributeValue] = Field(default_factory=dict[str, AttributeValue])
+
+    def duration_minutes(self, zone: ZoneInfo) -> int:
+        return duration_minutes(self.start, self.end, zone)
+
+    def derived_attributes(self, zone: ZoneInfo) -> dict[str, AttributeValue]:
+        """``weekday``, ``start_hour``, ``duration_hours`` and ``date``, from the local start."""
+        return {
+            "weekday": WEEKDAYS[self.start.weekday()],
+            "start_hour": self.start.hour,
+            "duration_hours": self.duration_minutes(zone) / 60,
+            "date": self.start.date().isoformat(),
+        }
+
+
+class ProblemInstance(_FrozenModel):
+    """The data of one DM, immutable after loading.
+
+    ``windows`` maps the id of every ``unavailable`` rule to its windows: inline windows first,
+    then the ones loaded from the rule's CSV source.
+    """
+
+    resources: tuple[Resource, ...]
+    tasks: tuple[Task, ...]
+    windows: dict[str, tuple[TimeWindow, ...]] = Field(
+        default_factory=dict[str, tuple[TimeWindow, ...]]
+    )
