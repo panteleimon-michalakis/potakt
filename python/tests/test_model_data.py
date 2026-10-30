@@ -1,13 +1,12 @@
 """Loading problem instances from CSV bindings and data-level validation (ADR-0004, level 2)."""
 
-import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import pytest
-from helpers import constraint, minimal_dm
+from helpers import RESOURCES_CSV, TASKS_CSV, constraint, minimal_dm, write_scenario
 from hypothesis import given
 from hypothesis import strategies as st
 from pydantic import ValidationError
@@ -26,33 +25,6 @@ from potakt.model import (
 from potakt.model.loader import parse_cell, split_list
 
 ATHENS = ZoneInfo("Europe/Athens")
-
-RESOURCES_CSV = """id,name,skills,contract
-r1,Ana,opening;closing,full_time
-r2,Ben,,part_time
-r3,Χαρά,closing ; als,full_time
-"""
-
-TASKS_CSV = """id,start,end,demand,type,required_skill
-t1,2026-11-02T07:00,2026-11-02T15:00,2,πρωί,
-t2,2026-11-02T23:00,2026-11-03T07:00,1,νύχτα,als
-"""
-
-
-def write_scenario(
-    directory: Path,
-    doc: dict[str, Any] | None = None,
-    resources: str = RESOURCES_CSV,
-    tasks: str = TASKS_CSV,
-    **extra_files: str,
-) -> Path:
-    model_file = directory / "model.json"
-    model_file.write_text(json.dumps(doc or minimal_dm(), ensure_ascii=False), encoding="utf-8")
-    (directory / "resources.csv").write_text(resources, encoding="utf-8")
-    (directory / "tasks.csv").write_text(tasks, encoding="utf-8")
-    for name, content in extra_files.items():
-        (directory / name.replace("_csv", ".csv")).write_text(content, encoding="utf-8")
-    return model_file
 
 
 def load(model_file: Path) -> tuple[ProblemInstance, list[ValidationIssue]]:
