@@ -1,6 +1,7 @@
 """The committed JSON Schema must match the one generated from the Pydantic models."""
 
 import json
+import re
 from pathlib import Path
 
 from potakt.model import decision_model_json_schema, render_json_schema
@@ -45,3 +46,14 @@ def test_rendered_schema_is_stable_json_with_trailing_newline() -> None:
 
     assert text.endswith("}\n")
     assert json.loads(text) == decision_model_json_schema()
+
+
+def test_local_datetimes_are_described_without_utc_offset() -> None:
+    window = decision_model_json_schema()["$defs"]["TimeWindow"]["properties"]["start"]
+
+    assert "format" not in window
+    pattern = re.compile(window["pattern"])
+    for accepted in ("2026-11-02T07:00", "2026-11-02T07:00:00", "2026-11-02 07:00"):
+        assert pattern.fullmatch(accepted), accepted
+    for rejected in ("2026-11-02T07:00+02:00", "2026-11-02T07:00Z", "2026-11-02T07:00:30"):
+        assert not pattern.fullmatch(rejected), rejected

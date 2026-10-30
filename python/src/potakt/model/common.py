@@ -22,6 +22,7 @@ Loc = tuple[str | int, ...]
 DERIVED_TASK_ATTRIBUTES = frozenset({"weekday", "start_hour", "duration_hours", "date"})
 RESERVED_ATTRIBUTE_NAMES = frozenset({"id", "start", "end", "demand"}) | DERIVED_TASK_ATTRIBUTES
 ATTRIBUTE_NAME_PATTERN = re.compile(r"[a-z][a-z0-9_]*")
+CUSTOM_ERROR_TYPE = "decision_model"
 
 
 class StrictModel(BaseModel):
@@ -32,7 +33,7 @@ class StrictModel(BaseModel):
 
 def custom_error(message: str) -> PydanticCustomError:
     """A validation error whose message is taken literally (no template expansion)."""
-    return PydanticCustomError("decision_model", "{message}", {"message": message})
+    return PydanticCustomError(CUSTOM_ERROR_TYPE, "{message}", {"message": message})
 
 
 def raise_errors(title: str, errors: Sequence[tuple[Loc, str]]) -> NoReturn:

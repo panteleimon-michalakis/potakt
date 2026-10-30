@@ -1,5 +1,6 @@
 """Loading problem instances from CSV bindings and data-level validation (ADR-0004, level 2)."""
 
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -557,13 +558,80 @@ def test_invalid_attribute_cell_is_reported(tmp_path: Path) -> None:
     assert issue.message == "resources.csv line 3, column 'hours': 'full' is not a number"
 
 
-def test_duplicate_header_column_is_reported(tmp_path: Path) -> None:
+def test_duplicate_bound_column_is_reported(tmp_path: Path) -> None:
     resources = "id,skills,contract,skills\nr1,a,x,b\n"
 
     issue = only_issue(write_scenario(tmp_path, resources=resources))
 
+    assert issue.path == "/data/resources/attributes/skills/column"
+    assert issue.message == "column 'skills' appears more than once in resources.csv"
+
+
+def test_duplicate_unbound_columns_are_ignored(tmp_path: Path) -> None:
+    resources = "id,skills,contract,,\nr1,a,x,,\n"
+
+    assert load_issues(write_scenario(tmp_path, resources=resources)) == []
+
+
+def test_data_source_must_be_a_regular_file(tmp_path: Path) -> None:
+    model_file = write_scenario(tmp_path)
+    (tmp_path / "resources.csv").unlink()
+    (tmp_path / "resources.csv").mkdir()
+
+    issue = only_issue(model_file)
+
     assert issue.path == "/data/resources/source"
-    assert issue.message == "resources.csv has a duplicate column 'skills'"
+    assert issue.message == "cannot read resources.csv: not a regular file"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows device names")
+@pytest.mark.parametrize("device", ["NUL", "nul.csv"])
+def test_windows_device_names_are_not_opened(tmp_path: Path, device: str) -> None:
+    doc = minimal_dm()
+    doc["data"]["resources"]["source"] = device
+
+    issue = only_issue(write_scenario(tmp_path, doc))
+
+    assert issue.path == "/data/resources/source"
+    assert issue.message == f"cannot read {device}: not a regular file"
+
+
+@pytest.mark.parametrize(
+    ("window", "path"),
+    [
+        (
+            {"resource_id": "r1", "start": "2027-03-28T03:15", "end": "2027-03-28T09:00"},
+            "/constraints/1/params/windows/0/start",
+        ),
+        (
+            {"resource_id": "r1", "start": "2027-03-27T22:00", "end": "2027-03-28T03:30"},
+            "/constraints/1/params/windows/0/end",
+        ),
+    ],
+)
+def test_inline_window_in_a_dst_gap_is_reported(
+    tmp_path: Path, window: dict[str, str], path: str
+) -> None:
+    rule = constraint("unavailable", hardness="hard", params={"windows": [window]})
+
+    issue = only_issue(write_scenario(tmp_path, with_constraints(rule)))
+
+    assert issue.path == path
+    assert "does not exist in Europe/Athens (DST change)" in issue.message
+
+
+def test_csv_window_in_a_dst_gap_is_reported(tmp_path: Path) -> None:
+    source = {"source": "leave.csv", "resource_id": "who", "start": "from", "end": "to"}
+    rule = constraint("unavailable", hardness="hard", params={"source": source})
+    leave = "who,from,to\nr1,2027-03-28T03:15,2027-03-28T09:00\n"
+
+    issue = only_issue(write_scenario(tmp_path, with_constraints(rule), leave_csv=leave))
+
+    assert issue.path == "/constraints/1/params/source/start"
+    assert issue.message == (
+        "window of 'r1' in leave.csv: local time 2027-03-28T03:15 does not exist in "
+        "Europe/Athens (DST change)"
+    )
 
 
 def test_window_csv_cells_are_validated(tmp_path: Path) -> None:

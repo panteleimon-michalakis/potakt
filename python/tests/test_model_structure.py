@@ -508,3 +508,26 @@ def test_unreadable_model_file_is_reported_at_the_root(tmp_path: Path) -> None:
     [issue] = caught.value.issues
     assert issue.path == "/"
     assert issue.message.startswith("cannot read")
+
+
+@pytest.mark.parametrize(
+    ("rule", "path"),
+    [
+        (
+            constraint("min_rest", hardness="hard", params={"hours": {"x": 1}}),
+            "/constraints/1/params/hours",
+        ),
+        (
+            constraint(
+                "no_overlap",
+                hardness="hard",
+                scope={"tasks": [{"attribute": "type", "op": "eq", "value": {"a": 1}}]},
+            ),
+            "/constraints/1/scope/tasks/0/value",
+        ),
+    ],
+)
+def test_union_errors_point_at_the_field_in_the_document(rule: dict[str, Any], path: str) -> None:
+    issue = only_issue(with_constraints(rule))
+
+    assert issue.path == path

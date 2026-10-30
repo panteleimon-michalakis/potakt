@@ -4,6 +4,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, cast
+from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
 
@@ -15,11 +16,13 @@ from potakt.model.catalog import (
     Together,
     Unavailable,
 )
-from potakt.model.common import DERIVED_TASK_ATTRIBUTES, Loc
-from potakt.model.data import ProblemInstance, Task, local_time_exists
+from potakt.model.common import CUSTOM_ERROR_TYPE, DERIVED_TASK_ATTRIBUTES, Loc
+from potakt.model.data import ProblemInstance, Task, TimeWindow, local_time_exists
 from potakt.model.decision_model import DecisionModel
 
 MAX_TASK_MINUTES = 24 * 60
+# Error types whose location names a field of the document even when it is absent there.
+_ABSENT_FIELD_ERRORS = frozenset({"missing", CUSTOM_ERROR_TYPE})
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,14 +66,14 @@ def issues_from_pydantic(error: ValidationError, document: object) -> list[Valid
     """
     merged: dict[str, list[str]] = {}
     for detail in error.errors(include_url=False):
-        path = json_pointer(_document_path(detail["loc"], document))
+        path = json_pointer(_document_path(detail["loc"], detail["type"], document))
         messages = merged.setdefault(path, [])
         if detail["msg"] not in messages:
             messages.append(detail["msg"])
     return [ValidationIssue(path, "; ".join(messages)) for path, messages in merged.items()]
 
 
-def _document_path(loc: Loc, document: object) -> list[str | int]:
+def _document_path(loc: Loc, error_type: str, document: object) -> list[str | int]:
     parts: list[str | int] = []
     node: object = document
     for position, item in enumerate(loc):
@@ -82,8 +85,8 @@ def _document_path(loc: Loc, document: object) -> list[str | int]:
                 node = mapping[item]
             elif mapping.get("template") == item:
                 continue  # discriminated-union tag
-            elif is_last:
-                parts.append(item)  # a missing required field
+            elif is_last and error_type in _ABSENT_FIELD_ERRORS:
+                parts.append(item)  # a required field that is absent from the document
                 node = None
         elif isinstance(node, list) and isinstance(item, int):
             items = cast("list[Any]", node)
@@ -109,6 +112,8 @@ def validate_data(dm: DecisionModel, instance: ProblemInstance) -> list[Validati
     for task in instance.tasks:
         issues += _task_time_issues(dm, task)
     references = _References(
+        zone=dm.zone,
+        timezone=dm.timezone,
         resource_ids=frozenset(r.id for r in instance.resources),
         task_ids=frozenset(t.id for t in instance.tasks),
         resource_attributes=frozenset(resources.attributes),
@@ -136,14 +141,14 @@ def _format_time(value: datetime) -> str:
     return value.isoformat(timespec="minutes")
 
 
+def _dst_gap(label: str, value: datetime, timezone: str) -> str:
+    return f"{label}: local time {_format_time(value)} does not exist in {timezone} (DST change)"
+
+
 def _task_time_issues(dm: DecisionModel, task: Task) -> list[ValidationIssue]:
     zone, label = dm.zone, f"task {task.id!r}"
     issues = [
-        issue_at(
-            ("data", "tasks", field),
-            f"{label}: local time {_format_time(value)} does not exist in {dm.timezone} "
-            "(DST change)",
-        )
+        issue_at(("data", "tasks", field), _dst_gap(label, value, dm.timezone))
         for field, value in (("start", task.start), ("end", task.end))
         if not local_time_exists(value, zone)
     ]
@@ -172,6 +177,8 @@ def _unknown_attribute(kind: str, name: str, known: frozenset[str]) -> str:
 class _References:
     """What scopes and parameters may refer to in one loaded instance."""
 
+    zone: ZoneInfo
+    timezone: str
     resource_ids: frozenset[str]
     task_ids: frozenset[str]
     resource_attributes: frozenset[str]
@@ -237,11 +244,23 @@ class _References:
         issues: list[ValidationIssue] = []
         inline = rule.params.windows
         for k, window in enumerate(inline):
-            issues += self._resource((*params, "windows", k, "resource_id"), window.resource_id)
+            loc: Loc = (*params, "windows", k)
+            issues += self._resource((*loc, "resource_id"), window.resource_id)
+            issues += self._window_times(loc, window, f"window of {window.resource_id!r}")
         source = rule.params.source
         if source is not None:
             # ProblemInstance.windows lists the inline windows first, then the CSV ones.
             for window in instance.windows.get(rule.id, ())[len(inline) :]:
-                loc: Loc = (*params, "source", "resource_id")
-                issues += self._resource(loc, window.resource_id, f" in {source.source}")
+                loc = (*params, "source")
+                where = f" in {source.source}"
+                issues += self._resource((*loc, "resource_id"), window.resource_id, where)
+                label = f"window of {window.resource_id!r}{where}"
+                issues += self._window_times(loc, window, label)
         return issues
+
+    def _window_times(self, loc: Loc, window: TimeWindow, label: str) -> list[ValidationIssue]:
+        return [
+            issue_at((*loc, field), _dst_gap(label, value, self.timezone))
+            for field, value in (("start", window.start), ("end", window.end))
+            if not local_time_exists(value, self.zone)
+        ]

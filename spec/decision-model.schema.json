@@ -1264,12 +1264,14 @@
           "type": "string"
         },
         "start": {
-          "format": "date-time",
+          "description": "Local date-time in the DM timezone, without UTC offset, e.g. 2026-11-02T07:00",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}(:00(\\.0+)?)?$",
           "title": "Start",
           "type": "string"
         },
         "end": {
-          "format": "date-time",
+          "description": "Local date-time in the DM timezone, without UTC offset, e.g. 2026-11-02T07:00",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}(:00(\\.0+)?)?$",
           "title": "End",
           "type": "string"
         }

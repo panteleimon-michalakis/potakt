@@ -5,7 +5,7 @@ from pathlib import PurePosixPath, PureWindowsPath
 from typing import Annotated, Literal, Self
 from zoneinfo import ZoneInfo
 
-from pydantic import AfterValidator, ConfigDict, Field, model_validator
+from pydantic import AfterValidator, ConfigDict, Field, WithJsonSchema, model_validator
 
 from potakt.model.common import (
     ATTRIBUTE_NAME_PATTERN,
@@ -46,7 +46,15 @@ def check_source_path(value: str) -> str:
     return value
 
 
-LocalDateTime = Annotated[datetime, AfterValidator(check_local_datetime)]
+# Not "format": "date-time": RFC 3339 date-times require a UTC offset, DM datetimes forbid one.
+LOCAL_DATETIME_JSON_SCHEMA = {
+    "type": "string",
+    "pattern": r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:00(\.0+)?)?$",
+    "description": "Local date-time in the DM timezone, without UTC offset, e.g. 2026-11-02T07:00",
+}
+LocalDateTime = Annotated[
+    datetime, AfterValidator(check_local_datetime), WithJsonSchema(LOCAL_DATETIME_JSON_SCHEMA)
+]
 SourcePath = Annotated[str, AfterValidator(check_source_path)]
 ColumnName = Annotated[str, Field(min_length=1)]
 
@@ -192,7 +200,8 @@ class ProblemInstance(_FrozenModel):
     """The data of one DM, immutable after loading.
 
     ``windows`` maps the id of every ``unavailable`` rule to its windows: inline windows first,
-    then the ones loaded from the rule's CSV source.
+    then the ones loaded from the rule's CSV source. Models are frozen, but the contained dicts
+    and lists are plain containers: treat them as read-only.
     """
 
     resources: tuple[Resource, ...]

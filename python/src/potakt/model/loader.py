@@ -132,6 +132,7 @@ def _parse_local_datetime(value: str) -> datetime:
 class _Table:
     name: str
     columns: dict[str, int]
+    duplicates: frozenset[str]
     width: int
     rows: list[tuple[int, list[str]]]
 
@@ -152,6 +153,10 @@ class _Reader:
         if not path.is_relative_to(self.base_dir):
             self.report(source_loc, f"{source} resolves outside the model directory")
             return None
+        if path.exists() and not path.is_file():
+            # Directories, FIFOs and Windows device names (CON, NUL, COM1...) would block or fail.
+            self.report(source_loc, f"cannot read {source}: not a regular file")
+            return None
         try:
             with path.open(encoding="utf-8-sig", newline="") as handle:
                 reader = csv.reader(handle)
@@ -170,15 +175,19 @@ class _Reader:
             return None
         header = [name.strip() for name in records[0][1]]
         columns: dict[str, int] = {}
+        duplicates: set[str] = set()
         for index, name in enumerate(header):
             if name in columns:
-                self.report(source_loc, f"{source} has a duplicate column {name!r}")
+                duplicates.add(name)
             columns.setdefault(name, index)
-        return _Table(source, columns, len(header), records[1:])
+        return _Table(source, columns, frozenset(duplicates), len(header), records[1:])
 
     def column(self, table: _Table, column: str, loc: Loc) -> int | None:
         if column not in table.columns:
             self.report(loc, f"column {column!r} not found in {table.name}")
+            return None
+        if column in table.duplicates:
+            self.report(loc, f"column {column!r} appears more than once in {table.name}")
             return None
         return table.columns[column]
 
