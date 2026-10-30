@@ -1,0 +1,259 @@
+"""Constraint catalog v0 for the assignment archetype (ADR-0004).
+
+Each template is a Pydantic model; ``Constraint`` is their discriminated union on ``template``.
+Exact scoring semantics live in the checker (TASK-003); here: parameters and allowed hardness.
+"""
+
+from typing import Annotated, Literal, Self
+
+from pydantic import AfterValidator, Field, model_validator
+
+from potakt.model.common import (
+    ConstraintStatus,
+    Hardness,
+    Measure,
+    Period,
+    Provenance,
+    Scope,
+    StrictModel,
+    check_whole_minutes,
+    custom_error,
+    raise_errors,
+)
+from potakt.model.data import TimeWindow, WindowsBinding
+
+
+def _check_distinct_pair(resource_ids: list[str]) -> list[str]:
+    if len(set(resource_ids)) != len(resource_ids):
+        raise custom_error("the two resource ids must be different")
+    return resource_ids
+
+
+Hours = Annotated[int | float, Field(gt=0), AfterValidator(check_whole_minutes)]
+ResourceId = Annotated[str, Field(min_length=1)]
+ResourcePair = Annotated[
+    list[ResourceId], Field(min_length=2, max_length=2), AfterValidator(_check_distinct_pair)
+]
+
+
+# --- common fields ---------------------------------------------------------------------------
+
+
+class _ConstraintBase(StrictModel):
+    id: str = Field(min_length=1)
+    scope: Scope = Field(default_factory=Scope)
+    rationale: str = Field(min_length=1)
+    provenance: Provenance
+    status: ConstraintStatus = "proposed"
+
+
+class _HardOnly(_ConstraintBase):
+    hardness: Literal["hard"]
+
+
+class _SoftOnly(_ConstraintBase):
+    hardness: Literal["soft"]
+    weight: int = Field(ge=1)
+
+
+class _HardOrSoft(_ConstraintBase):
+    hardness: Hardness
+    weight: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def _check_weight(self) -> Self:
+        if self.hardness == "soft" and self.weight is None:
+            raise_errors("Constraint", [(("weight",), "weight is required for soft constraints")])
+        if self.hardness == "hard" and self.weight is not None:
+            raise_errors(
+                "Constraint", [(("weight",), "weight is not allowed for hard constraints")]
+            )
+        return self
+
+
+# --- parameters ------------------------------------------------------------------------------
+
+
+class NoParams(StrictModel):
+    """The template takes no parameters."""
+
+
+class RequiresAttributeParams(StrictModel):
+    task_attribute: str = Field(min_length=1)
+    resource_attribute: str = Field(min_length=1)
+    match: Literal["contains", "equals"]
+
+
+class MinRestParams(StrictModel):
+    hours: Hours
+
+
+class PeriodLimitParams(StrictModel):
+    measure: Measure
+    period: Period
+    limit: int | float = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _check_limit_unit(self) -> Self:
+        if self.measure == "count" and not float(self.limit).is_integer():
+            message = "limit must be a whole number when measure is 'count'"
+            raise_errors("PeriodLimitParams", [(("limit",), message)])
+        if self.measure == "hours":
+            try:
+                check_whole_minutes(self.limit)
+            except ValueError as error:
+                raise_errors("PeriodLimitParams", [(("limit",), str(error))])
+        return self
+
+
+class MaxConsecutiveDaysParams(StrictModel):
+    days: int = Field(ge=1)
+
+
+class UnavailableParams(StrictModel):
+    windows: list[TimeWindow] = Field(default_factory=list[TimeWindow])
+    source: WindowsBinding | None = None
+
+    @model_validator(mode="after")
+    def _check_not_empty(self) -> Self:
+        if not self.windows and self.source is None:
+            raise_errors(
+                "UnavailableParams", [((), "at least one of 'windows' or 'source' is required")]
+            )
+        return self
+
+
+class PreferenceParams(StrictModel):
+    kind: Literal["prefer", "avoid"]
+
+
+class BalanceParams(StrictModel):
+    measure: Measure
+
+
+class ResourcePairParams(StrictModel):
+    resource_ids: ResourcePair
+
+
+class BaselineAssignment(StrictModel):
+    task_id: str = Field(min_length=1)
+    resource_id: ResourceId
+
+
+class StabilityParams(StrictModel):
+    baseline: list[BaselineAssignment]
+
+
+# --- templates -------------------------------------------------------------------------------
+
+
+class Coverage(_HardOnly):
+    """Each in-scope task gets exactly ``demand`` resources (structural, hard only)."""
+
+    template: Literal["coverage"]
+    params: NoParams = Field(default_factory=NoParams)
+
+
+class RequiresAttribute(_HardOrSoft):
+    """A resource may work a task only if its attribute matches the task's requirement.
+
+    Tasks without the task attribute are unrestricted.
+    """
+
+    template: Literal["requires_attribute"]
+    params: RequiresAttributeParams
+
+
+class NoOverlap(_HardOrSoft):
+    """A resource cannot work two time-overlapping tasks."""
+
+    template: Literal["no_overlap"]
+    params: NoParams = Field(default_factory=NoParams)
+
+
+class MinRest(_HardOrSoft):
+    """The gap between consecutive tasks of a resource is at least ``hours``."""
+
+    template: Literal["min_rest"]
+    params: MinRestParams
+
+
+class MaxPerPeriod(_HardOrSoft):
+    """Upper bound of a measure (count or hours) per resource per period."""
+
+    template: Literal["max_per_period"]
+    params: PeriodLimitParams
+
+
+class MinPerPeriod(_HardOrSoft):
+    """Lower bound of a measure (count or hours) per resource per period."""
+
+    template: Literal["min_per_period"]
+    params: PeriodLimitParams
+
+
+class MaxConsecutiveDays(_HardOrSoft):
+    """A resource works at most ``days`` consecutive days."""
+
+    template: Literal["max_consecutive_days"]
+    params: MaxConsecutiveDaysParams
+
+
+class Unavailable(_HardOrSoft):
+    """A resource cannot work tasks that overlap its unavailability windows."""
+
+    template: Literal["unavailable"]
+    params: UnavailableParams
+
+
+class Preference(_SoftOnly):
+    """Scoped resources prefer or avoid scoped tasks (soft only)."""
+
+    template: Literal["preference"]
+    params: PreferenceParams
+
+
+class Balance(_SoftOnly):
+    """Minimize max - min of a measure over scoped resources, counting scoped tasks (soft only)."""
+
+    template: Literal["balance"]
+    params: BalanceParams
+
+
+class Together(_SoftOnly):
+    """The two resources should work the same in-scope tasks (soft only)."""
+
+    template: Literal["together"]
+    params: ResourcePairParams
+
+
+class Apart(_HardOrSoft):
+    """The two resources should not work the same task."""
+
+    template: Literal["apart"]
+    params: ResourcePairParams
+
+
+class Stability(_SoftOnly):
+    """Penalty per baseline assignment that changes (soft only)."""
+
+    template: Literal["stability"]
+    params: StabilityParams
+
+
+Constraint = Annotated[
+    Coverage
+    | RequiresAttribute
+    | NoOverlap
+    | MinRest
+    | MaxPerPeriod
+    | MinPerPeriod
+    | MaxConsecutiveDays
+    | Unavailable
+    | Preference
+    | Balance
+    | Together
+    | Apart
+    | Stability,
+    Field(discriminator="template"),
+]
