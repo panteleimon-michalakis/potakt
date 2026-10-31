@@ -4,6 +4,7 @@ Each template is a Pydantic model; ``Constraint`` is their discriminated union o
 Exact scoring semantics live in the checker (TASK-003); here: parameters and allowed hardness.
 """
 
+import math
 from typing import Annotated, Literal, Self, get_args
 
 from pydantic import (
@@ -170,7 +171,8 @@ class PeriodLimitParams(StrictModel):
         try:
             return handler(value)
         except ValidationError:
-            if isinstance(value, int | float) and not isinstance(value, bool):
+            finite = isinstance(value, int) or (isinstance(value, float) and math.isfinite(value))
+            if finite and not isinstance(value, bool):
                 raise
             raise custom_error(LIMIT_SHAPE) from None
 

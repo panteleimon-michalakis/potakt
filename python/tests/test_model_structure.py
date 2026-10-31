@@ -505,6 +505,18 @@ def test_negative_limit_keeps_the_bound_message() -> None:
     assert (issue.path, issue.message) == (LIMIT, "limit -1 is below the minimum of 0")
 
 
+@pytest.mark.parametrize("literal", ["1e400", "-1e400"])
+def test_non_finite_limit_names_both_forms(literal: str) -> None:
+    # `1e400` is valid JSON but decodes to infinity: not a usable number, so the F7 message.
+    doc = with_constraints(limit_rule("min_per_period", "__LIMIT__"))
+    text = json.dumps(doc).replace('"__LIMIT__"', literal)
+
+    with pytest.raises(DecisionModelError) as caught:
+        parse_decision_model(text)
+
+    assert [str(issue) for issue in caught.value.issues] == [f"{LIMIT}: {LIMIT_SHAPE}"]
+
+
 @pytest.mark.parametrize(("measure", "limit"), [("count", 100_000), ("hours", 8784)])
 def test_limits_at_the_bounds_are_accepted(measure: str, limit: int) -> None:
     doc = with_constraints(limit_rule("max_per_period", limit, measure=measure))
