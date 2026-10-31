@@ -150,7 +150,7 @@ def test_requires_attribute_equals_ignores_list_order_and_matches_scalars() -> N
 
 
 @pytest.mark.parametrize("match", ["contains", "equals"])
-def test_resource_without_the_attribute_matches_only_an_empty_requirement(match: str) -> None:
+def test_resource_without_the_attribute_fails_only_a_non_empty_requirement(match: str) -> None:
     empty = task("empty", "2026-11-02T07:00", "2026-11-02T15:00", needs=[])
     some = task("some", "2026-11-03T07:00", "2026-11-03T15:00", needs=["x"])
     params = {"task_attribute": "needs", "resource_attribute": "certs", "match": match}
@@ -159,6 +159,18 @@ def test_resource_without_the_attribute_matches_only_an_empty_requirement(match:
     result = run(dm, RESOURCES, [empty, some], {"empty": ["r1"], "some": ["r1"]})
 
     assert outcome(result.rule("requires_attribute")) == [("r1", ("some",), None, 1)]
+
+
+@pytest.mark.parametrize("match", ["contains", "equals"])
+def test_empty_requirement_is_no_requirement(match: str) -> None:
+    # ADR-0006 §3: an empty list restricts nobody, also for resources that have the attribute.
+    empty = task("empty", "2026-11-02T07:00", "2026-11-02T15:00", needs=[])
+    params = {"task_attribute": "needs", "resource_attribute": "skills", "match": match}
+    dm = one_rule(rule("requires_attribute", params=params))
+
+    result = run(dm, RESOURCES, [empty], {"empty": ["r1", "r2", "r3"]})
+
+    assert result.rule("requires_attribute").violations == ()
 
 
 # --- no_overlap ------------------------------------------------------------------------------

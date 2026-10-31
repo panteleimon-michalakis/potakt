@@ -963,7 +963,7 @@
     },
     "RequiresAttribute": {
       "additionalProperties": false,
-      "description": "A resource may work a task only if its attribute matches the task's requirement.\n\nTasks without the task attribute are unrestricted.",
+      "description": "A resource may work a task only if its attribute matches the task's requirement.\n\nTasks without the task attribute, or with an empty list, are unrestricted.",
       "properties": {
         "id": {
           "minLength": 1,

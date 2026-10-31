@@ -15,6 +15,7 @@ ATTRIBUTES: dict[str, Any] = {
     "rate": 1.5,
     "senior": True,
     "date": "2026-11-04",
+    "single": ["als"],
 }
 
 
@@ -34,7 +35,6 @@ def holds(attribute: str, op: str, value: object) -> bool:
         ("level", "eq", True, False),
         ("level", "eq", "2", False),
         ("skills", "eq", ["als", "opening"], True),
-        ("skills", "eq", ["opening", "als"], False),
         ("contract", "in", ["part_time", "full_time"], True),
         ("contract", "not_in", ["part_time", "full_time"], False),
         ("contract", "not_in", ["part_time"], True),
@@ -56,6 +56,30 @@ def holds(attribute: str, op: str, value: object) -> bool:
     ],
 )
 def test_condition_semantics(attribute: str, op: str, value: object, expected: bool) -> None:
+    assert holds(attribute, op, value) is expected
+
+
+@pytest.mark.parametrize(
+    ("attribute", "op", "value", "expected"),
+    [
+        ("skills", "eq", ["opening", "als"], True),
+        ("skills", "ne", ["opening", "als"], False),
+        ("skills", "eq", ["opening", "als", "als"], True),
+        ("skills", "eq", ["als"], False),
+        ("skills", "eq", "als", False),
+        ("single", "eq", "als", True),
+        ("single", "ne", "als", False),
+        ("contract", "eq", ["full_time"], True),
+        ("single", "in", ["opening", "als"], True),
+        ("single", "not_in", ["als"], False),
+        ("skills", "in", ["als", "opening"], False),
+    ],
+)
+def test_one_equality_compares_lists_as_sets(
+    attribute: str, op: str, value: object, expected: bool
+) -> None:
+    # ADR-0006 §3: if either side is a list, both are read as lists (a scalar is a one-item
+    # list) and compared ignoring order and repetitions, as requires_attribute 'equals' does.
     assert holds(attribute, op, value) is expected
 
 

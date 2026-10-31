@@ -1,4 +1,4 @@
-"""Scope conditions and attribute comparisons (ADR-0005 §2)."""
+"""Scope conditions and attribute comparisons (ADR-0005 §2, amended by ADR-0006 §3)."""
 
 from collections.abc import Mapping, Sequence
 from typing import Literal, TypeGuard
@@ -7,11 +7,22 @@ from potakt.model import Condition
 from potakt.model.common import AttributeValue, Scalar
 
 
-def values_equal(left: AttributeValue, right: AttributeValue) -> bool:
-    """Equality where a boolean only equals a boolean and numbers compare numerically."""
+def _scalars_equal(left: Scalar, right: Scalar) -> bool:
+    """A boolean only equals a boolean; numbers compare numerically."""
     if isinstance(left, bool) or isinstance(right, bool):
         return type(left) is type(right) and left == right
     return left == right
+
+
+def values_equal(left: AttributeValue, right: AttributeValue) -> bool:
+    """The one equality of the DM (ADR-0006 §3).
+
+    If either value is a list, both are read as lists (a scalar is a one-item list) and must have
+    the same items, order and repetitions ignored; otherwise scalars compare as usual.
+    """
+    if isinstance(left, list) or isinstance(right, list):
+        return same_items(left, right)
+    return _scalars_equal(left, right)
 
 
 def as_items(value: AttributeValue) -> list[Scalar]:
@@ -22,7 +33,7 @@ def as_items(value: AttributeValue) -> list[Scalar]:
 def contains_all(items: AttributeValue, required: AttributeValue) -> bool:
     """Every required item equals some item of ``items``."""
     have = as_items(items)
-    return all(any(values_equal(item, need) for item in have) for need in as_items(required))
+    return all(any(_scalars_equal(item, need) for item in have) for need in as_items(required))
 
 
 def same_items(left: AttributeValue, right: AttributeValue) -> bool:

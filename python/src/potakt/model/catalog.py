@@ -190,7 +190,7 @@ class Coverage(_HardOnly):
 class RequiresAttribute(_HardOrSoft):
     """A resource may work a task only if its attribute matches the task's requirement.
 
-    Tasks without the task attribute are unrestricted.
+    Tasks without the task attribute, or with an empty list, are unrestricted.
     """
 
     template: Literal["requires_attribute"]

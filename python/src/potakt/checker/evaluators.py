@@ -24,7 +24,7 @@ from potakt.checker.context import (
     to_minutes,
 )
 from potakt.checker.result import Violation
-from potakt.checker.scope import contains_all, same_items
+from potakt.checker.scope import contains_all, values_equal
 from potakt.model import (
     Apart,
     Balance,
@@ -71,13 +71,13 @@ def requires_attribute(rule: RequiresAttribute, ctx: RuleContext) -> list[Violat
     violations: list[Violation] = []
     for resource, task in ctx.assignments():
         required = task.task.attributes.get(p.task_attribute)
-        if required is None:
-            continue  # tasks without the attribute are unrestricted
+        if required is None or required == []:
+            continue  # an absent or empty requirement restricts nobody (ADR-0006 §3)
         offered = resource.attributes.get(p.resource_attribute, [])
         matches = (
             contains_all(offered, required)
             if p.match == "contains"
-            else same_items(offered, required)
+            else values_equal(offered, required)
         )
         if not matches:
             verb = "contain" if p.match == "contains" else "equal"
