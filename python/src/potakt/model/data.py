@@ -19,6 +19,9 @@ from potakt.model.common import (
 
 ColumnType = Literal["str", "int", "float", "bool", "list"]
 DEFAULT_LIST_SEPARATOR = ";"
+CsvDelimiter = Literal[",", ";", "\t"]
+CsvDecimal = Literal[".", ","]
+CsvEncoding = Literal["utf-8", "windows-1253", "iso-8859-7"]
 
 
 def check_local_datetime(value: datetime) -> datetime:
@@ -100,10 +103,30 @@ class AttributeBinding(StrictModel):
         return self.separator or DEFAULT_LIST_SEPARATOR
 
 
+class CsvDialect(StrictModel):
+    """How a CSV file is written (ADR-0006 §5): delimiter, decimal separator and encoding.
+
+    The defaults read a plain UTF-8 file (BOM tolerated). ``decimal`` applies to ``float`` cells
+    only; Greek-locale Excel writes ``;``, ``,`` and Windows-1253.
+    """
+
+    delimiter: CsvDelimiter = ","
+    decimal: CsvDecimal = "."
+    encoding: CsvEncoding = "utf-8"
+
+    @model_validator(mode="after")
+    def _check_decimal(self) -> Self:
+        if self.decimal == "," and self.delimiter == ",":
+            message = "decimal ',' needs a delimiter other than ','"
+            raise_errors("CsvDialect", [(("decimal",), message)])
+        return self
+
+
 class _EntityBinding(StrictModel):
     source: SourcePath
     id: ColumnName
     attributes: dict[str, AttributeBinding] = Field(default_factory=dict[str, AttributeBinding])
+    csv: CsvDialect = Field(default_factory=CsvDialect)
 
     @model_validator(mode="after")
     def _check_attribute_names(self) -> Self:
@@ -137,6 +160,7 @@ class WindowsBinding(StrictModel):
     resource_id: ColumnName
     start: ColumnName
     end: ColumnName
+    csv: CsvDialect = Field(default_factory=CsvDialect)
 
 
 class DataBindings(StrictModel):

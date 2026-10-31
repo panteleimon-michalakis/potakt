@@ -2,13 +2,21 @@
 
 import sys
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import pytest
-from helpers import RESOURCES_CSV, TASKS_CSV, constraint, minimal_dm, write_scenario
-from hypothesis import given
+from helpers import (
+    RESOURCES_CSV,
+    TASKS_CSV,
+    constraint,
+    minimal_dm,
+    structural_issues,
+    write_scenario,
+)
+from hypothesis import given, settings
 from hypothesis import strategies as st
 from pydantic import ValidationError
 
@@ -137,7 +145,7 @@ def test_data_file_must_be_utf8(tmp_path: Path) -> None:
     issue = only_issue(model_file)
 
     assert issue.path == "/data/resources/source"
-    assert issue.message == "cannot read resources.csv: not valid UTF-8"
+    assert issue.message == "cannot read resources.csv: not valid utf-8"
 
 
 def test_data_file_needs_a_header_row(tmp_path: Path) -> None:
@@ -733,3 +741,163 @@ def test_missing_window_file_points_at_its_source_field(tmp_path: Path) -> None:
 def test_non_finite_float_is_rejected() -> None:
     with pytest.raises(ValueError, match="is not a finite number"):
         parse_cell("1e999", AttributeBinding(column="c", type="float"))
+
+
+# --- CSV dialect (ADR-0006 §5, C2) ---------------------------------------------------------
+# The file bytes are generated here, never committed, so Git line-ending normalisation cannot
+# alter them.
+
+GREEK_EXCEL = {"delimiter": ";", "decimal": ",", "encoding": "windows-1253"}
+
+
+def staff_dm(csv_block: dict[str, str] | None = None) -> dict[str, Any]:
+    """The minimal DM with a ``contract_hours`` float column and an optional ``csv`` block."""
+    doc = minimal_dm()
+    resources = doc["data"]["resources"]
+    resources["attributes"]["name"] = {"column": "name", "type": "str"}
+    resources["attributes"]["contract_hours"] = {"column": "contract_hours", "type": "float"}
+    if csv_block is not None:
+        resources["csv"] = csv_block
+    return doc
+
+
+def staff_rows(newline: str = "\r\n") -> str:
+    rows = [
+        "id;name;skills;contract;contract_hours",
+        "r1;Μαρία Παπαδοπούλου;als;full_time;32,5",
+        "r2;Ελένη Γεωργίου;;part_time;16",
+        "r3;Άννα Ζαχαρίου;closing;part_time;16,25",
+    ]
+    return newline.join(rows) + newline
+
+
+def load_staff(tmp_path: Path, doc: dict[str, Any], data: bytes) -> ProblemInstance:
+    model_file = write_scenario(tmp_path, doc)
+    (tmp_path / "resources.csv").write_bytes(data)
+    instance, issues = load(model_file)
+    assert issues == []
+    return instance
+
+
+def test_greek_excel_csv_loads_with_names_and_decimal_comma(tmp_path: Path) -> None:
+    data = staff_rows("\r\n").encode("cp1253")
+    assert b"\r\n" in data and "Μαρία".encode("cp1253") in data
+
+    instance = load_staff(tmp_path, staff_dm(GREEK_EXCEL), data)
+
+    assert [r.attributes["name"] for r in instance.resources] == [
+        "Μαρία Παπαδοπούλου",
+        "Ελένη Γεωργίου",
+        "Άννα Ζαχαρίου",
+    ]
+    assert [r.attributes["contract_hours"] for r in instance.resources] == [32.5, 16.0, 16.25]
+
+
+def test_windows_1253_bytes_declared_as_utf8_cannot_be_read(tmp_path: Path) -> None:
+    doc = staff_dm({"delimiter": ";", "decimal": ","})
+    model_file = write_scenario(tmp_path, doc)
+    (tmp_path / "resources.csv").write_bytes(staff_rows().encode("cp1253"))
+
+    issue = only_issue(model_file)
+
+    assert issue.path == "/data/resources/source"
+    assert issue.message == "cannot read resources.csv: not valid utf-8"
+
+
+def test_excel_csv_utf8_with_bom_loads(tmp_path: Path) -> None:
+    data = b"\xef\xbb\xbf" + staff_rows().encode("utf-8")
+
+    instance = load_staff(tmp_path, staff_dm({"delimiter": ";", "decimal": ","}), data)
+
+    assert instance.resources[0].id == "r1"
+    assert instance.resources[0].attributes["contract_hours"] == 32.5
+
+
+def test_iso_8859_7_csv_loads_with_names_intact(tmp_path: Path) -> None:
+    # 'Ά' is 0xA2 in Windows-1253 and 0xB6 in ISO-8859-7: the declared codec must be the one used.
+    data = staff_rows("\n").encode("iso-8859-7")
+    dialect = {"delimiter": ";", "decimal": ",", "encoding": "iso-8859-7"}
+
+    instance = load_staff(tmp_path, staff_dm(dialect), data)
+
+    assert instance.resources[2].attributes["name"] == "Άννα Ζαχαρίου"
+
+
+def test_decimal_comma_needs_another_delimiter() -> None:
+    doc = staff_dm({"delimiter": ",", "decimal": ","})
+
+    issues = structural_issues(doc)
+
+    assert [str(issue) for issue in issues] == [
+        "/data/resources/csv/decimal: decimal ',' needs a delimiter other than ','"
+    ]
+
+
+@pytest.mark.parametrize("cell", ["32,5", "32.5"])
+def test_int_cells_never_accept_a_decimal_separator(tmp_path: Path, cell: str) -> None:
+    doc = staff_dm(GREEK_EXCEL)
+    doc["data"]["resources"]["attributes"]["contract_hours"]["type"] = "int"
+    rows = f"id;name;skills;contract;contract_hours\r\nr1;Μαρία;als;full_time;{cell}\r\n"
+    model_file = write_scenario(tmp_path, doc)
+    (tmp_path / "resources.csv").write_bytes(rows.encode("cp1253"))
+
+    issue = only_issue(model_file)
+
+    assert issue.path == "/data/resources/attributes/contract_hours"
+    assert issue.message == (
+        f"resources.csv line 2, column 'contract_hours': {cell!r} is not an integer"
+    )
+
+
+@pytest.mark.parametrize("cell", ["32.5", "1.234,5"])
+def test_decimal_comma_rejects_points_in_float_cells(cell: str) -> None:
+    # Under decimal ',' a '.' is a thousands separator in those locales: never guess.
+    binding = AttributeBinding(column="c", type="float")
+
+    with pytest.raises(ValueError, match=r"is not a number \(decimal separator ','\)"):
+        parse_cell(cell, binding, decimal=",")
+
+
+@settings(max_examples=200, deadline=None)
+@given(st.decimals(min_value=0, max_value=1000, places=2))
+def test_decimal_comma_and_point_parse_to_the_same_value(value: Decimal) -> None:
+    binding = AttributeBinding(column="c", type="float")
+    with_point = format(value, "f")
+    with_comma = with_point.replace(".", ",")
+
+    parsed = parse_cell(with_comma, binding, decimal=",")
+
+    assert parsed == parse_cell(with_point, binding)
+    assert parsed == float(with_point)
+
+
+def test_tasks_binding_accepts_a_csv_dialect(tmp_path: Path) -> None:
+    doc = minimal_dm()
+    doc["data"]["tasks"]["csv"] = {"delimiter": "\t", "encoding": "windows-1253"}
+    tasks = TASKS_CSV.replace(",", "\t").replace("\n", "\r\n").encode("cp1253")
+    model_file = write_scenario(tmp_path, doc)
+    (tmp_path / "tasks.csv").write_bytes(tasks)
+
+    instance, issues = load(model_file)
+
+    assert issues == []
+    assert [t.attributes["type"] for t in instance.tasks] == ["πρωί", "νύχτα"]
+
+
+def test_window_source_accepts_a_csv_dialect(tmp_path: Path) -> None:
+    source = {
+        "source": "leave.csv",
+        "resource_id": "ποιος",
+        "start": "από",
+        "end": "έως",
+        "csv": {"delimiter": ";", "encoding": "iso-8859-7"},
+    }
+    rule = constraint("unavailable", id="leave", hardness="hard", params={"source": source})
+    model_file = write_scenario(tmp_path, with_constraints(rule))
+    leave = "ποιος;από;έως\r\nr2;2026-11-05T15:00;2026-11-05T23:00\r\n"
+    (tmp_path / "leave.csv").write_bytes(leave.encode("iso-8859-7"))
+
+    instance, issues = load(model_file)
+
+    assert issues == []
+    assert [w.resource_id for w in instance.windows["leave"]] == ["r2"]

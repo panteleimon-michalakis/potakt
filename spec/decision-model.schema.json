@@ -349,6 +349,43 @@
       "title": "Coverage",
       "type": "object"
     },
+    "CsvDialect": {
+      "additionalProperties": false,
+      "description": "How a CSV file is written (ADR-0006 §5): delimiter, decimal separator and encoding.\n\nThe defaults read a plain UTF-8 file (BOM tolerated). ``decimal`` applies to ``float`` cells\nonly; Greek-locale Excel writes ``;``, ``,`` and Windows-1253.",
+      "properties": {
+        "delimiter": {
+          "default": ",",
+          "enum": [
+            ",",
+            ";",
+            "\t"
+          ],
+          "title": "Delimiter",
+          "type": "string"
+        },
+        "decimal": {
+          "default": ".",
+          "enum": [
+            ".",
+            ","
+          ],
+          "title": "Decimal",
+          "type": "string"
+        },
+        "encoding": {
+          "default": "utf-8",
+          "enum": [
+            "utf-8",
+            "windows-1253",
+            "iso-8859-7"
+          ],
+          "title": "Encoding",
+          "type": "string"
+        }
+      },
+      "title": "CsvDialect",
+      "type": "object"
+    },
     "DataBindings": {
       "additionalProperties": false,
       "description": "Where the resources and tasks of a DM come from.",
@@ -1080,6 +1117,9 @@
           },
           "title": "Attributes",
           "type": "object"
+        },
+        "csv": {
+          "$ref": "#/$defs/CsvDialect"
         }
       },
       "required": [
@@ -1227,6 +1267,9 @@
           },
           "title": "Attributes",
           "type": "object"
+        },
+        "csv": {
+          "$ref": "#/$defs/CsvDialect"
         },
         "start": {
           "minLength": 1,
@@ -1483,6 +1526,9 @@
           "minLength": 1,
           "title": "End",
           "type": "string"
+        },
+        "csv": {
+          "$ref": "#/$defs/CsvDialect"
         }
       },
       "required": [

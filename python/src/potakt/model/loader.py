@@ -15,6 +15,8 @@ from potakt.model.catalog import Unavailable
 from potakt.model.common import AttributeValue, Loc, StrictModel
 from potakt.model.data import (
     AttributeBinding,
+    CsvDecimal,
+    CsvEncoding,
     ProblemInstance,
     Resource,
     ResourceBinding,
@@ -45,6 +47,12 @@ _RESERVED_DEVICE_NAMES = frozenset(
     | {f"{port}{suffix}" for port in ("COM", "LPT") for suffix in _DEVICE_SUFFIXES}
 )
 _BASE_NAME_END = re.compile(r"[.:]")
+# Python codecs for the DM's encoding names, chosen here rather than looked up from the OS.
+_CODECS: dict[CsvEncoding, str] = {
+    "utf-8": "utf-8-sig",  # a BOM is tolerated
+    "windows-1253": "cp1253",
+    "iso-8859-7": "iso8859_7",
+}
 
 
 def is_reserved_device_name(source: str) -> bool:
@@ -115,8 +123,13 @@ def split_list(text: str, separator: str) -> list[str]:
     return [item.strip() for item in text.split(separator) if item.strip()]
 
 
-def parse_cell(text: str, binding: AttributeBinding) -> AttributeValue | None:
-    """Parse one CSV cell for ``binding``; ``None`` means the attribute is absent (empty cell)."""
+def parse_cell(
+    text: str, binding: AttributeBinding, decimal: CsvDecimal = "."
+) -> AttributeValue | None:
+    """Parse one CSV cell for ``binding``; ``None`` means the attribute is absent (empty cell).
+
+    ``decimal`` is the decimal separator of ``float`` cells (ADR-0006 §5); other types ignore it.
+    """
     value = text.strip()
     if binding.type == "list":
         return split_list(value, binding.list_separator)
@@ -128,7 +141,7 @@ def parse_cell(text: str, binding: AttributeBinding) -> AttributeValue | None:
         case "int":
             return _parse_int(value)
         case "float":
-            return _parse_float(value)
+            return _parse_float(value, decimal)
         case "bool":
             return _parse_bool(value)
 
@@ -139,10 +152,13 @@ def _parse_int(value: str) -> int:
     return int(value)
 
 
-def _parse_float(value: str) -> float:
-    if not _FLOAT.fullmatch(value):
-        raise ValueError(f"{value!r} is not a number")
-    number = float(value)
+def _parse_float(value: str, decimal: CsvDecimal = ".") -> float:
+    text = value.replace(",", ".") if decimal == "," else value
+    # In decimal-comma locales '.' groups thousands: reject it rather than guess (ADR-0006 §5).
+    if not _FLOAT.fullmatch(text) or (decimal == "," and "." in value):
+        hint = " (decimal separator ',')" if decimal == "," else ""
+        raise ValueError(f"{value!r} is not a number{hint}")
+    number = float(text)
     if not math.isfinite(number):
         raise ValueError(f"{value!r} is not a finite number")
     return number
@@ -189,7 +205,10 @@ class _Reader:
     def report(self, loc: Loc, message: str) -> None:
         self.issues.append(issue_at(loc, message))
 
-    def table(self, source: str, loc: Loc) -> _Table | None:
+    def table(
+        self, binding: ResourceBinding | TaskBinding | WindowsBinding, loc: Loc
+    ) -> _Table | None:
+        source, dialect = binding.source, binding.csv
         source_loc = (*loc, "source")
         if is_reserved_device_name(source):
             # Whether Windows opens these as devices depends on its version; reject them anywhere.
@@ -204,14 +223,14 @@ class _Reader:
             self.report(source_loc, f"cannot read {source}: not a regular file")
             return None
         try:
-            with path.open(encoding="utf-8-sig", newline="") as handle:
-                reader = csv.reader(handle)
+            with path.open(encoding=_CODECS[dialect.encoding], newline="") as handle:
+                reader = csv.reader(handle, delimiter=dialect.delimiter)
                 records = [(reader.line_num, row) for row in reader if row]
         except FileNotFoundError:
             self.report(source_loc, f"cannot read {source}: file not found")
             return None
         except UnicodeDecodeError:
-            self.report(source_loc, f"cannot read {source}: not valid UTF-8")
+            self.report(source_loc, f"cannot read {source}: not valid {dialect.encoding}")
             return None
         except (OSError, csv.Error) as error:
             self.report(source_loc, f"cannot read {source}: {error}")
@@ -298,7 +317,7 @@ def _parse_attributes(
     ok = True
     for name, attribute in binding.attributes.items():
         try:
-            value = parse_cell(cells[name], attribute)
+            value = parse_cell(cells[name], attribute, binding.csv.decimal)
         except ValueError as error:
             reader.cell_error((*loc, "attributes", name), table, line, attribute.column, str(error))
             ok = False
@@ -319,7 +338,7 @@ def _required(
 
 def _load_resources(reader: _Reader, binding: ResourceBinding) -> list[Resource]:
     loc: Loc = ("data", "resources")
-    table = reader.table(binding.source, loc)
+    table = reader.table(binding, loc)
     if table is None:
         return []
     fields = {"_id": reader.column(table, binding.id, (*loc, "id"))}
@@ -335,7 +354,7 @@ def _load_resources(reader: _Reader, binding: ResourceBinding) -> list[Resource]
 
 def _load_tasks(reader: _Reader, binding: TaskBinding) -> list[Task]:
     loc: Loc = ("data", "tasks")
-    table = reader.table(binding.source, loc)
+    table = reader.table(binding, loc)
     if table is None:
         return []
     core = {"id": binding.id, "start": binding.start, "end": binding.end, "demand": binding.demand}
@@ -385,7 +404,7 @@ def _load_windows(reader: _Reader, dm: DecisionModel) -> dict[str, tuple[TimeWin
 
 
 def _load_window_table(reader: _Reader, binding: WindowsBinding, loc: Loc) -> list[TimeWindow]:
-    table = reader.table(binding.source, loc)
+    table = reader.table(binding, loc)
     if table is None:
         return []
     columns = {"resource_id": binding.resource_id, "start": binding.start, "end": binding.end}
