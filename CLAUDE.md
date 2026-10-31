@@ -34,7 +34,7 @@ truth; if a task seems to contradict it, **stop and ask** instead of improvising
    uv run ruff format --check .
    uv run ruff check .
    uv run pyright
-   uv run pytest -q
+   uv run pytest -q --cov=potakt
    uv run --python 3.12 pytest -q   # oldest supported Python, same as CI
    ```
    All must pass. Never weaken a gate (no blanket `# type: ignore`, no disabling rules, no skipping

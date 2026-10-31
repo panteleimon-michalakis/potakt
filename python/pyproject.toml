@@ -40,6 +40,10 @@ markers = [
     "llm: tests that call real LLM APIs (opt-in)",
 ]
 
+[tool.coverage.report]
+fail_under = 95
+show_missing = true
+
 [dependency-groups]
 dev = [
     "hypothesis>=6.170.13",
