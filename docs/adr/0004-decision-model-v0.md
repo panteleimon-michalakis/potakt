@@ -116,3 +116,4 @@ one `coverage`), `assumptions` (`[{id, text, status}]`, unique ids, status `prop
 - Per-person limits that differ by resource (e.g. contract hours) need one rule per group in v0,
   because parameters are constants.
 - A schema version bump and an ADR are needed for any new template, field or semantic change.
+- Scoring semantics: see ADR-0005.
