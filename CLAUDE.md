@@ -29,7 +29,8 @@ truth; if a task seems to contradict it, **stop and ask** instead of improvising
    Run the preflight (Definition of done, item 1), open the work log and write both as its first entry.
 2. Work test-first where code is involved (red → green → refactor). Use the superpowers TDD and
    verification skills; skip brainstorming/planning skills when the task is already fully specified.
-3. Run all six gates before reporting (from `python/`), identical to CI:
+3. Run all six gates before reporting (from `python/`), equivalent to CI. CI runs `uv sync --locked`
+   and a separate Python 3.12 job; locally `uv lock --check` and `--isolated` give the same checks.
    ```
    uv lock --check
    uv run ruff format --check .
@@ -83,8 +84,9 @@ Every task; the evidence goes in the report.
 7. **Docs consistency:** help text, README, ADRs and examples match the behaviour (exit codes,
    messages, schema versions).
 8. **Repository hygiene:** `git ls-files .tasks .claude` prints nothing; no secrets; `git ls-files --eol`
-   shows no `i/crlf` except `*.ps1`, `*.cmd`, `*.bat`; `git log --format=%(trailers) <base>..HEAD`
-   prints nothing.
+   shows no `i/crlf` except `*.ps1`, `*.cmd`, `*.bat`; `git log --format=%(trailers) <base>..HEAD |
+   grep -c .` prints 0 (the git command alone prints one empty line per commit; grep exits 1 when
+   nothing matches, which is the expected result).
 9. **Postflight:** `git status` clean and "ahead of 'origin/main' by N commits", N = the commits in the
    report; nothing pushed.
 
