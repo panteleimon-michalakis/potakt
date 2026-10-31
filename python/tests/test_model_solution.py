@@ -141,6 +141,20 @@ def test_invalid_json_is_reported_at_the_root() -> None:
     assert caught.value.issues[0].message.startswith("invalid JSON at line 1")
 
 
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ("[" * 100_000 + "]" * 100_000, "JSON too deeply nested"),
+        ('{"model_version": ' + "9" * 5000 + "}", "JSON number too large"),
+    ],
+)
+def test_pathological_json_is_an_issue_at_the_root(text: str, message: str) -> None:
+    with pytest.raises(DecisionModelError) as caught:
+        parse_solution(text)
+
+    assert [str(issue) for issue in caught.value.issues] == [f"/: {message}"]
+
+
 def test_load_solution_reads_utf8_files(tmp_path: Path) -> None:
     target = tmp_path / "solution.json"
     target.write_text(json.dumps(minimal_solution()), encoding="utf-8-sig")

@@ -23,6 +23,8 @@ DERIVED_TASK_ATTRIBUTES = frozenset({"weekday", "start_hour", "duration_hours", 
 RESERVED_ATTRIBUTE_NAMES = frozenset({"id", "start", "end", "demand"}) | DERIVED_TASK_ATTRIBUTES
 ATTRIBUTE_NAME_PATTERN = re.compile(r"[a-z][a-z0-9_]*")
 CUSTOM_ERROR_TYPE = "decision_model"
+SOFT_RULE_NEEDS_WEIGHT = "a soft rule needs a weight (integer ≥ 1)"
+WEIGHT_ONLY_ON_SOFT_RULES = "weight is only allowed on soft rules"
 
 
 class StrictModel(BaseModel):

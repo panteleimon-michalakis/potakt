@@ -4,11 +4,20 @@ Each template is a Pydantic model; ``Constraint`` is their discriminated union o
 Exact scoring semantics live in the checker (TASK-003); here: parameters and allowed hardness.
 """
 
-from typing import Annotated, Literal, Self
+from typing import Annotated, Literal, Self, get_args
 
-from pydantic import AfterValidator, Field, model_validator
+from pydantic import (
+    AfterValidator,
+    Field,
+    ValidationError,
+    ValidatorFunctionWrapHandler,
+    field_validator,
+    model_validator,
+)
 
 from potakt.model.common import (
+    SOFT_RULE_NEEDS_WEIGHT,
+    WEIGHT_ONLY_ON_SOFT_RULES,
     ConstraintStatus,
     Hardness,
     Measure,
@@ -21,6 +30,8 @@ from potakt.model.common import (
     raise_errors,
 )
 from potakt.model.data import TimeWindow, WindowsBinding
+
+Handler = ValidatorFunctionWrapHandler
 
 
 def _check_distinct_pair(resource_ids: list[str]) -> list[str]:
@@ -47,13 +58,37 @@ class _ConstraintBase(StrictModel):
     status: ConstraintStatus = "proposed"
 
 
+def _only(
+    model: type[_ConstraintBase], hardness: Hardness, value: object, handler: Handler
+) -> object:
+    """Validate a one-hardness template's ``hardness``; name the template if it is wrong.
+
+    A wrap validator keeps the ``Literal`` type, so the JSON Schema still says ``const``.
+    """
+    try:
+        return handler(value)
+    except ValidationError:
+        template = get_args(model.model_fields["template"].annotation)[0]
+        raise custom_error(f"template {template!r} allows only {hardness} rules") from None
+
+
 class _HardOnly(_ConstraintBase):
     hardness: Literal["hard"]
+
+    @field_validator("hardness", mode="wrap")
+    @classmethod
+    def _check_hardness(cls, value: object, handler: Handler) -> object:
+        return _only(cls, "hard", value, handler)
 
 
 class _SoftOnly(_ConstraintBase):
     hardness: Literal["soft"]
     weight: int = Field(ge=1)
+
+    @field_validator("hardness", mode="wrap")
+    @classmethod
+    def _check_hardness(cls, value: object, handler: Handler) -> object:
+        return _only(cls, "soft", value, handler)
 
 
 class _HardOrSoft(_ConstraintBase):
@@ -63,11 +98,9 @@ class _HardOrSoft(_ConstraintBase):
     @model_validator(mode="after")
     def _check_weight(self) -> Self:
         if self.hardness == "soft" and self.weight is None:
-            raise_errors("Constraint", [(("weight",), "weight is required for soft constraints")])
+            raise_errors("Constraint", [(("weight",), SOFT_RULE_NEEDS_WEIGHT)])
         if self.hardness == "hard" and self.weight is not None:
-            raise_errors(
-                "Constraint", [(("weight",), "weight is not allowed for hard constraints")]
-            )
+            raise_errors("Constraint", [(("weight",), WEIGHT_ONLY_ON_SOFT_RULES)])
         return self
 
 

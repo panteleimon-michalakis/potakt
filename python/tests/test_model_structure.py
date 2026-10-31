@@ -128,18 +128,41 @@ def test_duplicate_constraint_ids_are_rejected() -> None:
     assert "/constraints/1" in issue.message
 
 
+SOFT_RULE_NEEDS_WEIGHT = "a soft rule needs a weight (integer ≥ 1)"
+WEIGHT_ONLY_ON_SOFT_RULES = "weight is only allowed on soft rules"
+
+
 def test_soft_constraint_without_weight_is_rejected() -> None:
     issue = only_issue(with_constraints(constraint("no_overlap", hardness="soft")))
 
     assert issue.path == "/constraints/1/weight"
-    assert issue.message == "weight is required for soft constraints"
+    assert issue.message == SOFT_RULE_NEEDS_WEIGHT
+
+
+def test_soft_only_template_without_weight_is_rejected() -> None:
+    rule = constraint("preference", hardness="soft", params={"kind": "avoid"})
+
+    issue = only_issue(with_constraints(rule))
+
+    assert issue.path == "/constraints/1/weight"
+    assert issue.message == SOFT_RULE_NEEDS_WEIGHT
 
 
 def test_hard_constraint_with_weight_is_rejected() -> None:
     issue = only_issue(with_constraints(constraint("no_overlap", hardness="hard", weight=5)))
 
     assert issue.path == "/constraints/1/weight"
-    assert issue.message == "weight is not allowed for hard constraints"
+    assert issue.message == WEIGHT_ONLY_ON_SOFT_RULES
+
+
+def test_hard_only_template_with_weight_is_rejected() -> None:
+    doc = minimal_dm()
+    doc["constraints"][0]["weight"] = 5
+
+    issue = only_issue(doc)
+
+    assert issue.path == "/constraints/0/weight"
+    assert issue.message == WEIGHT_ONLY_ON_SOFT_RULES
 
 
 def test_soft_only_template_marked_hard_is_rejected() -> None:
@@ -149,7 +172,26 @@ def test_soft_only_template_marked_hard_is_rejected() -> None:
 
     assert "/constraints/1/hardness" in paths(issues)
     hardness = next(i for i in issues if i.path == "/constraints/1/hardness")
-    assert hardness.message == "Input should be 'soft'"
+    assert hardness.message == "template 'balance' allows only soft rules"
+
+
+def test_preference_marked_hard_names_its_template() -> None:
+    rule = constraint("preference", hardness="hard", weight=2, params={"kind": "avoid"})
+
+    issue = only_issue(with_constraints(rule))
+
+    assert issue.path == "/constraints/1/hardness"
+    assert issue.message == "template 'preference' allows only soft rules"
+
+
+def test_coverage_marked_soft_is_rejected() -> None:
+    doc = minimal_dm()
+    doc["constraints"][0]["hardness"] = "soft"
+
+    issue = only_issue(doc)
+
+    assert issue.path == "/constraints/0/hardness"
+    assert issue.message == "template 'coverage' allows only hard rules"
 
 
 def test_missing_coverage_is_rejected() -> None:
@@ -255,6 +297,44 @@ def test_horizon_end_before_start_is_rejected() -> None:
 
     assert issue.path == "/horizon/end"
     assert issue.message == "horizon end 2026-11-02 is before its start 2026-11-08"
+
+
+def test_horizon_of_a_whole_leap_year_is_accepted() -> None:
+    doc = minimal_dm()
+    doc["horizon"] = {"start": "2028-01-01", "end": "2028-12-31"}
+
+    assert structural_issues(doc) == []
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "days"),
+    [("2028-01-01", "2029-01-01", 367), ("2026-01-01", "9999-12-31", 2912443)],
+)
+def test_horizon_longer_than_366_days_is_rejected(start: str, end: str, days: int) -> None:
+    doc = minimal_dm()
+    doc["horizon"] = {"start": start, "end": end}
+
+    issue = only_issue(doc)
+
+    assert issue.path == "/horizon"
+    assert issue.message == f"horizon is {days} days long; at most 366 days are allowed"
+
+
+def test_duplicate_baseline_pair_is_rejected() -> None:
+    baseline = [
+        {"task_id": "t1", "resource_id": "r1"},
+        {"task_id": "t2", "resource_id": "r1"},
+        {"task_id": "t1", "resource_id": "r1"},
+    ]
+    rule = constraint("stability", hardness="soft", weight=1, params={"baseline": baseline})
+
+    issue = only_issue(with_constraints(rule))
+
+    assert issue.path == "/constraints/1/params/baseline/2"
+    assert issue.message == (
+        "duplicate baseline assignment of resource 'r1' to task 't1' "
+        "(first at /constraints/1/params/baseline/0)"
+    )
 
 
 def test_single_day_horizon_is_accepted() -> None:
@@ -372,6 +452,21 @@ def test_invalid_json_is_reported_at_the_root() -> None:
     [issue] = caught.value.issues
     assert issue.path == "/"
     assert issue.message.startswith("invalid JSON")
+
+
+DEEPLY_NESTED = "[" * 100_000 + "]" * 100_000
+HUGE_INTEGER = '{"version": ' + "9" * 5000 + "}"
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [(DEEPLY_NESTED, "JSON too deeply nested"), (HUGE_INTEGER, "JSON number too large")],
+)
+def test_pathological_json_is_an_issue_at_the_root(text: str, message: str) -> None:
+    with pytest.raises(DecisionModelError) as caught:
+        parse_decision_model(text)
+
+    assert [str(issue) for issue in caught.value.issues] == [f"/: {message}"]
 
 
 def test_document_must_be_a_json_object() -> None:

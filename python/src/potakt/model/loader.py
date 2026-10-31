@@ -39,22 +39,24 @@ _INT = re.compile(r"[+-]?\d+", re.ASCII)
 _FLOAT = re.compile(r"[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?", re.ASCII)
 _TRUE = frozenset({"true", "yes", "1"})
 _FALSE = frozenset({"false", "no", "0"})
-_DEVICE_SUFFIXES = "123456789\N{SUPERSCRIPT ONE}\N{SUPERSCRIPT TWO}\N{SUPERSCRIPT THREE}"
+_DEVICE_SUFFIXES = "0123456789\N{SUPERSCRIPT ONE}\N{SUPERSCRIPT TWO}\N{SUPERSCRIPT THREE}"
 _RESERVED_DEVICE_NAMES = frozenset(
-    {"CON", "PRN", "AUX", "NUL"}
+    {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
     | {f"{port}{suffix}" for port in ("COM", "LPT") for suffix in _DEVICE_SUFFIXES}
 )
+_BASE_NAME_END = re.compile(r"[.:]")
 
 
 def is_reserved_device_name(source: str) -> bool:
-    """True if the file name of ``source`` is a Windows device name (CON, NUL, COM1, ...).
+    """True if the file name of ``source`` is a Windows device name (CON, NUL, COM0, CONIN$, ...).
 
-    Checked on every platform so a DM behaves the same everywhere: the base name counts with or
-    without extensions and with trailing dots or spaces, case-insensitively (``nul.csv``,
-    ``Aux.``, ``sub/com1.tar.gz``).
+    Checked on every platform so a DM behaves the same everywhere (ADR-0006 §2): the base name
+    counts with or without extensions and with trailing dots, spaces or colons,
+    case-insensitively (``nul.csv``, ``Aux.``, ``nul:``, ``sub/com1.tar.gz``). A colon is treated
+    like a dot, so the base name ends at the first ``.`` or ``:`` (``nul:x`` is the NUL device).
     """
-    name = PureWindowsPath(source).name.rstrip(". ")
-    stem = name.split(".", 1)[0].rstrip(" ")
+    name = PureWindowsPath(source).name.rstrip(". :")
+    stem = _BASE_NAME_END.split(name, maxsplit=1)[0].rstrip(" ")
     return stem.upper() in _RESERVED_DEVICE_NAMES
 
 
@@ -67,6 +69,11 @@ def _parse_json[M: StrictModel](text: str, model: type[M]) -> M:
     except json.JSONDecodeError as error:
         message = f"invalid JSON at line {error.lineno}, column {error.colno}: {error.msg}"
         raise DecisionModelError([ValidationIssue(ROOT, message)]) from None
+    except RecursionError:
+        raise DecisionModelError([ValidationIssue(ROOT, "JSON too deeply nested")]) from None
+    except ValueError:
+        # The decoder's only other ValueError: an integer longer than int() accepts.
+        raise DecisionModelError([ValidationIssue(ROOT, "JSON number too large")]) from None
     try:
         return model.model_validate_json(text)
     except ValidationError as error:

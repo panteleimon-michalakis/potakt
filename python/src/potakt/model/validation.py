@@ -7,6 +7,7 @@ from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
+from pydantic_core import ErrorDetails
 
 from potakt.model.catalog import (
     Apart,
@@ -16,7 +17,13 @@ from potakt.model.catalog import (
     Together,
     Unavailable,
 )
-from potakt.model.common import CUSTOM_ERROR_TYPE, DERIVED_TASK_ATTRIBUTES, Loc
+from potakt.model.common import (
+    CUSTOM_ERROR_TYPE,
+    DERIVED_TASK_ATTRIBUTES,
+    SOFT_RULE_NEEDS_WEIGHT,
+    WEIGHT_ONLY_ON_SOFT_RULES,
+    Loc,
+)
 from potakt.model.data import ProblemInstance, Task, TimeWindow, local_time_exists
 from potakt.model.decision_model import DecisionModel
 from potakt.model.solution import Solution
@@ -69,9 +76,25 @@ def issues_from_pydantic(error: ValidationError, document: object) -> list[Valid
     for detail in error.errors(include_url=False):
         path = json_pointer(_document_path(detail["loc"], detail["type"], document))
         messages = merged.setdefault(path, [])
-        if detail["msg"] not in messages:
-            messages.append(detail["msg"])
+        message = _message(detail)
+        if message not in messages:
+            messages.append(message)
     return [ValidationIssue(path, "; ".join(messages)) for path, messages in merged.items()]
+
+
+# Pydantic reports these before any validator runs: a soft-only template without ``weight`` and
+# ``weight`` on a hard-only template (``coverage``). ``weight`` exists only on constraints.
+_WEIGHT_MESSAGES = {
+    "missing": SOFT_RULE_NEEDS_WEIGHT,
+    "extra_forbidden": WEIGHT_ONLY_ON_SOFT_RULES,
+}
+
+
+def _message(detail: ErrorDetails) -> str:
+    """The issue message: Pydantic's, except the domain wording for ``weight`` (ADR-0004)."""
+    if detail["loc"][-1:] == ("weight",):
+        return _WEIGHT_MESSAGES.get(detail["type"], detail["msg"])
+    return detail["msg"]
 
 
 def _document_path(loc: Loc, error_type: str, document: object) -> list[str | int]:
@@ -104,11 +127,23 @@ def _document_path(loc: Loc, error_type: str, document: object) -> list[str | in
 def validate_data(dm: DecisionModel, instance: ProblemInstance) -> list[ValidationIssue]:
     """Data-level checks of a loaded instance against its DM (ADR-0004, level 2).
 
-    Ids are unique, task times are valid and start inside the horizon, and every attribute,
-    resource id and task id referenced by scopes and parameters exists in the data.
+    There is at least one resource and one task, ids are unique, task times are valid and start
+    inside the horizon, and every attribute, resource id and task id referenced by scopes and
+    parameters exists in the data.
     """
     resources, tasks = dm.data.resources, dm.data.tasks
-    issues = _duplicate_ids("resource", resources.source, [r.id for r in instance.resources])
+    issues = [
+        issue_at(
+            ("data", f"{kind}s", "source"),
+            f"{source} contains no {kind}s; at least one is required",
+        )
+        for kind, source, items in (
+            ("resource", resources.source, instance.resources),
+            ("task", tasks.source, instance.tasks),
+        )
+        if not items
+    ]
+    issues += _duplicate_ids("resource", resources.source, [r.id for r in instance.resources])
     issues += _duplicate_ids("task", tasks.source, [t.id for t in instance.tasks])
     for task in instance.tasks:
         issues += _task_time_issues(dm, task)

@@ -210,6 +210,23 @@ def test_check_reports_model_and_solution_structure_issues_together(tmp_path: Pa
     ]
 
 
+def test_check_reports_deeply_nested_files_without_a_traceback(tmp_path: Path) -> None:
+    nested = "[" * 100_000 + "]" * 100_000
+    model_file = write_scenario(tmp_path)
+    model_file.write_text(nested, encoding="utf-8")
+    solution_file = tmp_path / "solution.json"
+    solution_file.write_text(nested, encoding="utf-8")
+
+    result = runner.invoke(app, ["check", str(model_file), str(solution_file)])
+
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert result.exit_code == 1
+    assert result.stderr.splitlines() == [
+        "/: JSON too deeply nested",
+        f"{solution_file}#/: JSON too deeply nested",
+    ]
+
+
 def test_check_reports_a_missing_solution_file(tmp_path: Path) -> None:
     model_file = write_scenario(tmp_path)
     missing = tmp_path / "nope.json"

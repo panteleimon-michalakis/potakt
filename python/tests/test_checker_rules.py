@@ -674,8 +674,8 @@ def test_stability_is_zero_when_the_baseline_is_kept() -> None:
     assert result.rule("stability").violations == ()
 
 
-def test_stability_reports_each_missing_baseline_pair_once() -> None:
-    dm = one_rule(stability(("mon-am", "r1"), ("mon-n", "r3"), ("mon-n", "r3"), ("tue-am", "r2")))
+def test_stability_reports_each_missing_baseline_pair() -> None:
+    dm = one_rule(stability(("mon-am", "r1"), ("mon-n", "r3"), ("tue-am", "r2")))
 
     result = run(dm, RESOURCES, TASKS, {"mon-am": ["r2"], "tue-am": ["r2"]})
 

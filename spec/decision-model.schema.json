@@ -369,7 +369,7 @@
     },
     "Horizon": {
       "additionalProperties": false,
-      "description": "The planning period: ``start`` and ``end`` dates, both inclusive.",
+      "description": "The planning period: ``start`` and ``end`` dates, both inclusive, at most 366 days.",
       "properties": {
         "start": {
           "format": "date",

@@ -297,6 +297,20 @@ def test_duplicate_resource_id_is_reported(tmp_path: Path) -> None:
     assert issue.message == "duplicate resource id 'r2' in resources.csv"
 
 
+def test_dataset_without_resources_is_reported_at_its_source(tmp_path: Path) -> None:
+    issue = only_issue(write_scenario(tmp_path, resources="id,name,skills,contract\n"))
+
+    assert issue.path == "/data/resources/source"
+    assert issue.message == "resources.csv contains no resources; at least one is required"
+
+
+def test_dataset_without_tasks_is_reported_at_its_source(tmp_path: Path) -> None:
+    issue = only_issue(write_scenario(tmp_path, tasks="id,start,end,demand,type,required_skill\n"))
+
+    assert issue.path == "/data/tasks/source"
+    assert issue.message == "tasks.csv contains no tasks; at least one is required"
+
+
 @pytest.mark.parametrize(
     ("end", "message"),
     [
@@ -621,7 +635,25 @@ def test_device_names_are_recognised_in_any_form(tmp_path: Path, device: str) ->
     assert issue.message == f"cannot read {device}: reserved device name"
 
 
-@pytest.mark.parametrize("name", ["console.csv", "nullable.csv", "com10.csv", "lpt.csv"])
+@pytest.mark.parametrize(
+    "device",
+    ["COM0", "lpt0.csv", "CONIN$", "conout$.csv", "nul:", "Aux:", "sub/con:", "nul:.csv", "prn:x"],
+)
+def test_console_devices_port_zero_and_colon_forms_are_reserved(
+    tmp_path: Path, device: str
+) -> None:
+    doc = minimal_dm()
+    doc["data"]["resources"]["source"] = device
+
+    issue = only_issue(write_scenario(tmp_path, doc))
+
+    assert issue.path == "/data/resources/source"
+    assert issue.message == f"cannot read {device}: reserved device name"
+
+
+@pytest.mark.parametrize(
+    "name", ["console.csv", "nullable.csv", "com10.csv", "lpt.csv", "conin.csv", "conout.csv"]
+)
 def test_names_that_only_resemble_devices_are_read_normally(tmp_path: Path, name: str) -> None:
     doc = minimal_dm()
     doc["data"]["resources"]["source"] = name
