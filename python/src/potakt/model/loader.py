@@ -7,7 +7,7 @@ import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from pydantic import ValidationError
 
@@ -38,6 +38,23 @@ _INT = re.compile(r"[+-]?\d+", re.ASCII)
 _FLOAT = re.compile(r"[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?", re.ASCII)
 _TRUE = frozenset({"true", "yes", "1"})
 _FALSE = frozenset({"false", "no", "0"})
+_DEVICE_SUFFIXES = "123456789\N{SUPERSCRIPT ONE}\N{SUPERSCRIPT TWO}\N{SUPERSCRIPT THREE}"
+_RESERVED_DEVICE_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"{port}{suffix}" for port in ("COM", "LPT") for suffix in _DEVICE_SUFFIXES}
+)
+
+
+def is_reserved_device_name(source: str) -> bool:
+    """True if the file name of ``source`` is a Windows device name (CON, NUL, COM1, ...).
+
+    Checked on every platform so a DM behaves the same everywhere: the base name counts with or
+    without extensions and with trailing dots or spaces, case-insensitively (``nul.csv``,
+    ``Aux.``, ``sub/com1.tar.gz``).
+    """
+    name = PureWindowsPath(source).name.rstrip(". ")
+    stem = name.split(".", 1)[0].rstrip(" ")
+    return stem.upper() in _RESERVED_DEVICE_NAMES
 
 
 # --- Decision Model JSON ---------------------------------------------------------------------
@@ -149,12 +166,16 @@ class _Reader:
 
     def table(self, source: str, loc: Loc) -> _Table | None:
         source_loc = (*loc, "source")
+        if is_reserved_device_name(source):
+            # Whether Windows opens these as devices depends on its version; reject them anywhere.
+            self.report(source_loc, f"cannot read {source}: reserved device name")
+            return None
         path = (self.base_dir / source).resolve()
         if not path.is_relative_to(self.base_dir):
             self.report(source_loc, f"{source} resolves outside the model directory")
             return None
         if path.exists() and not path.is_file():
-            # Directories, FIFOs and Windows device names (CON, NUL, COM1...) would block or fail.
+            # Directories, FIFOs and other non-files would block or fail when opened.
             self.report(source_loc, f"cannot read {source}: not a regular file")
             return None
         try:

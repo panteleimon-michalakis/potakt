@@ -46,6 +46,7 @@ validation. Exact scoring semantics of each template follow in TASK-003.
   `separator` only for `list`, default `;`).
 - `source` paths are relative to the DM file's directory and must stay inside it (no absolute paths,
   no `..`): a DM is untrusted input (DESIGN §12).
+- `source` must not be a Windows-reserved device name (checked on every platform).
 - CSV: UTF-8 (BOM tolerated), header row required, extra columns ignored, cells trimmed.
   `int`/`float` use a decimal point (no `nan`/`inf`); `bool` accepts `true/false/yes/no/1/0`
   (case-insensitive); `list` splits by `separator`, trims and drops empty items.

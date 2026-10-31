@@ -584,16 +584,51 @@ def test_data_source_must_be_a_regular_file(tmp_path: Path) -> None:
     assert issue.message == "cannot read resources.csv: not a regular file"
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Windows device names")
-@pytest.mark.parametrize("device", ["NUL", "nul.csv"])
-def test_windows_device_names_are_not_opened(tmp_path: Path, device: str) -> None:
+@pytest.mark.skipif(sys.platform != "win32", reason="backslash is a separator only on Windows")
+def test_window_source_must_be_a_regular_file_on_windows(tmp_path: Path) -> None:
+    (tmp_path / "leave").mkdir()
+    (tmp_path / "leave" / "nov").mkdir()
+    source = {"source": "leave\\nov", "resource_id": "who", "start": "from", "end": "to"}
+    rule = constraint("unavailable", hardness="hard", params={"source": source})
+
+    issue = only_issue(write_scenario(tmp_path, with_constraints(rule)))
+
+    assert issue.path == "/constraints/1/params/source/source"
+    assert issue.message == "cannot read leave\\nov: not a regular file"
+
+
+@pytest.mark.parametrize("device", ["NUL", "nul.csv", "Con", "COM1.txt", "lpt9", "aux."])
+def test_windows_device_names_are_rejected_on_every_platform(tmp_path: Path, device: str) -> None:
     doc = minimal_dm()
     doc["data"]["resources"]["source"] = device
 
     issue = only_issue(write_scenario(tmp_path, doc))
 
     assert issue.path == "/data/resources/source"
-    assert issue.message == f"cannot read {device}: not a regular file"
+    assert issue.message == f"cannot read {device}: reserved device name"
+
+
+@pytest.mark.parametrize(
+    "device", ["sub/PRN.tar.gz", "sub\\com9.csv", "LPT¹.csv", "nul .csv", "CON. . "]
+)
+def test_device_names_are_recognised_in_any_form(tmp_path: Path, device: str) -> None:
+    source = {"source": device, "resource_id": "who", "start": "from", "end": "to"}
+    rule = constraint("unavailable", hardness="hard", params={"source": source})
+
+    issue = only_issue(write_scenario(tmp_path, with_constraints(rule)))
+
+    assert issue.path == "/constraints/1/params/source/source"
+    assert issue.message == f"cannot read {device}: reserved device name"
+
+
+@pytest.mark.parametrize("name", ["console.csv", "nullable.csv", "com10.csv", "lpt.csv"])
+def test_names_that_only_resemble_devices_are_read_normally(tmp_path: Path, name: str) -> None:
+    doc = minimal_dm()
+    doc["data"]["resources"]["source"] = name
+    model_file = write_scenario(tmp_path, doc)
+    (tmp_path / name).write_text(RESOURCES_CSV, encoding="utf-8")
+
+    assert load_issues(model_file) == []
 
 
 @pytest.mark.parametrize(
