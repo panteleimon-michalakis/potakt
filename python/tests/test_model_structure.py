@@ -248,14 +248,15 @@ def test_unknown_template_is_rejected() -> None:
     assert "does not match any of the expected tags" in issue.message
 
 
-@pytest.mark.parametrize("hours", [0, -1])
-def test_min_rest_hours_must_be_positive(hours: float) -> None:
+@pytest.mark.parametrize(("hours", "shown"), [(0, "0"), (-1, "-1"), (0.0, "0"), (-1.5, "-1.5")])
+def test_min_rest_hours_must_be_positive(hours: float, shown: str) -> None:
+    # A strict bound (gt) names the value like ge/le; fractional values carry no int-member noise.
     issue = only_issue(
         with_constraints(constraint("min_rest", hardness="hard", params={"hours": hours}))
     )
 
     assert issue.path == "/constraints/1/params/hours"
-    assert issue.message == "Input should be greater than 0"
+    assert issue.message == f"hours {shown} must be greater than 0"
 
 
 @pytest.mark.parametrize(

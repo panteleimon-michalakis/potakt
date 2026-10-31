@@ -1119,6 +1119,23 @@ def test_tab_file_read_with_semicolons_gets_a_delimiter_hint(tmp_path: Path) -> 
     assert issues[0].message == f"column 'id' not found in tasks.csv{TAB_HINT}"
 
 
+COMMA_HINT = ' (the header contains \',\': add "csv": {"delimiter": ","})'
+
+
+@pytest.mark.parametrize("declared", [";", "\t"])
+def test_comma_file_read_with_another_delimiter_gets_a_delimiter_hint(
+    tmp_path: Path, declared: str
+) -> None:
+    doc = minimal_dm()
+    doc["data"]["resources"]["csv"] = {"delimiter": declared}
+    model_file = write_scenario(tmp_path, doc)  # RESOURCES_CSV is comma-separated
+
+    issues = load_issues(model_file)
+
+    assert issues[0].path == "/data/resources/id"
+    assert issues[0].message == f"column 'id' not found in resources.csv{COMMA_HINT}"
+
+
 def test_missing_column_without_a_foreign_delimiter_gets_no_hint(tmp_path: Path) -> None:
     tasks = "id,start,end,demand,required_skill\nt1,2026-11-02T07:00,2026-11-02T15:00,1,\n"
 

@@ -225,12 +225,13 @@ class _Table:
     hint: str  # appended to "column not found" when the file seems to use another delimiter
 
 
-# Excel's other delimiters and how a hint names them (TASK-004b F8).
-_FOREIGN_DELIMITERS = ((";", "';'", ";"), ("\t", "a tab", "\\t"))
+# Every allowed delimiter and how a hint names it; any one other than the declared delimiter is
+# foreign (TASK-004b F8).
+_DELIMITERS = ((",", "','", ","), (";", "';'", ";"), ("\t", "a tab", "\\t"))
 
 
 def _delimiter_hint(header: list[str], delimiter: str) -> str:
-    for candidate, named, written in _FOREIGN_DELIMITERS:
+    for candidate, named, written in _DELIMITERS:
         if candidate != delimiter and any(candidate in name for name in header):
             return f' (the header contains {named}: add "csv": {{"delimiter": "{written}"}})'
     return ""

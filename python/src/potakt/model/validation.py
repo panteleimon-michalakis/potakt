@@ -117,11 +117,13 @@ _WEIGHT_MESSAGES = {
 }
 
 
-# Broken ``ge``/``le`` bounds name the field, the value and the bound (ADR-0006 §6):
-# (ctx key, wording for numbers, wording for dates).
+# Broken bounds, inclusive (``ge``/``le``) and strict (``gt``/``lt``), name the field, the value
+# and the bound (ADR-0006 §6): (ctx key, wording for numbers, wording for dates).
 _BOUND_WORDS = {
     "greater_than_equal": ("ge", "is below the minimum of", "is before the minimum of"),
     "less_than_equal": ("le", "is above the maximum of", "is after the maximum of"),
+    "greater_than": ("gt", "must be greater than", "must be after"),
+    "less_than": ("lt", "must be less than", "must be before"),
 }
 
 
