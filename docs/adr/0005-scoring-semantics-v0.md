@@ -80,7 +80,7 @@ All amounts are non-negative integers. A violation with amount 0 is not listed.
 | `balance` | once per rule | `count`: `max − min` over **all** in-scope resources (zeros included); `hours`: `ceil((max − min) / 60)` with values in minutes |
 | `together` | per in-scope task where exactly one of the two resources is assigned | 1 |
 | `apart` | per in-scope task where both resources are assigned | 1 |
-| `stability` | per in-scope baseline `(task_id, resource_id)` missing from the solution | 1 |
+| `stability` | per in-scope baseline `(task_id, resource_id)` missing from the solution (a pair listed twice counts once) | 1 |
 
 Details:
 - `requires_attribute`: tasks without `task_attribute` are unrestricted. Both values are read as
