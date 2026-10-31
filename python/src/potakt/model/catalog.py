@@ -29,6 +29,7 @@ from potakt.model.common import (
     StrictModel,
     check_whole_minutes,
     custom_error,
+    is_whole,
     raise_errors,
 )
 from potakt.model.data import TimeWindow, WindowsBinding
@@ -153,7 +154,7 @@ class PeriodLimitParams(StrictModel):
     def _check_limit_unit(self) -> Self:
         if isinstance(self.limit, AttributeRef):
             return self  # each resource's value is checked against the data (validate_data)
-        if self.measure == "count" and not float(self.limit).is_integer():
+        if self.measure == "count" and not is_whole(self.limit):
             message = "limit must be a whole number when measure is 'count'"
             raise_errors("PeriodLimitParams", [(("limit",), message)])
         if self.measure == "hours":

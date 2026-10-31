@@ -624,6 +624,43 @@ def test_limit_values_follow_the_rules_of_literal_limits(
     assert issue.message == f"resource 'r2': {message}"
 
 
+HUGE = "9" * 400
+
+
+@pytest.mark.parametrize(
+    ("measure", "column_type", "value"),
+    [("count", "int", HUGE), ("hours", "int", HUGE), ("hours", "float", "1e300")],
+)
+def test_huge_limit_values_are_accepted_without_overflow(
+    tmp_path: Path, measure: str, column_type: str, value: str
+) -> None:
+    model_file = per_resource_scenario(
+        tmp_path, ("32", value, "16"), measure=measure, column_type=column_type
+    )
+
+    assert load_issues(model_file) == []
+
+
+@pytest.mark.parametrize(
+    ("measure", "column_type", "value", "message"),
+    [
+        ("hours", "float", "1e308", "cap 1e+308 hours is too large"),
+        ("count", "int", f"-{HUGE}", f"cap -{HUGE} is negative; a limit must be at least 0"),
+    ],
+)
+def test_oversized_limit_values_are_issues_not_crashes(
+    tmp_path: Path, measure: str, column_type: str, value: str, message: str
+) -> None:
+    model_file = per_resource_scenario(
+        tmp_path, ("32", value, "16"), measure=measure, column_type=column_type
+    )
+
+    issue = only_issue(model_file)
+
+    assert issue.path == "/constraints/1/params/limit"
+    assert issue.message == f"resource 'r2': {message}"
+
+
 def test_non_numeric_limit_value_of_a_hand_built_instance_is_reported(tmp_path: Path) -> None:
     # The loader always produces numbers for int/float columns; an instance built in code may not.
     model_file = per_resource_scenario(tmp_path, ("32", "16", "8"))

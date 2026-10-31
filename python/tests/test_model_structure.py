@@ -491,6 +491,30 @@ def test_invalid_limits_point_into_the_limit(limit: object, path: str, message: 
     assert all(issue.path.startswith(LIMIT) for issue in issues)
 
 
+@pytest.mark.parametrize("measure", ["count", "hours"])
+def test_huge_whole_limits_are_accepted_without_overflow(measure: str) -> None:
+    # No upper bound is a DM rule (that would need an ADR); a huge whole value must not crash.
+    doc = with_constraints(limit_rule("max_per_period", 10**400, measure=measure))
+
+    assert structural_issues(doc) == []
+
+
+@pytest.mark.parametrize(
+    ("template", "params", "field"),
+    [
+        ("max_per_period", {"measure": "hours", "period": "week", "limit": 1e308}, "limit"),
+        ("min_rest", {"hours": 1e308}, "hours"),
+    ],
+)
+def test_hours_too_large_for_minutes_are_an_issue_not_a_crash(
+    template: str, params: dict[str, Any], field: str
+) -> None:
+    issue = only_issue(with_constraints(constraint(template, hardness="hard", params=params)))
+
+    assert issue.path == f"/constraints/1/params/{field}"
+    assert issue.message == "1e+308 hours is too large"
+
+
 def test_values_are_not_coerced() -> None:
     doc = minimal_dm()
     doc["version"] = "1"

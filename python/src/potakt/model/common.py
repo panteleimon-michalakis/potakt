@@ -50,9 +50,22 @@ def raise_errors(title: str, errors: Sequence[tuple[Loc, str]]) -> NoReturn:
     raise ValidationError.from_exception_data(title, details)
 
 
+def is_whole(number: float) -> bool:
+    """An ``int``, or a ``float`` without a fractional part; exact for integers of any size."""
+    return isinstance(number, int) or number.is_integer()
+
+
 def check_whole_minutes(hours: float) -> float:
-    """Reject hour values that are not a whole number of minutes (e.g. 7.501)."""
+    """Reject hour values that are not a whole number of minutes (e.g. 7.501).
+
+    Whole hours of any size qualify; a float whose minutes overflow is reported, not raised as an
+    ``OverflowError`` (which Pydantic would let escape as a traceback).
+    """
+    if isinstance(hours, int):
+        return hours
     minutes = hours * 60
+    if not math.isfinite(minutes):
+        raise custom_error(f"{hours} hours is too large")
     if not math.isclose(minutes, round(minutes), abs_tol=1e-6):
         raise custom_error(f"{hours} hours is not a whole number of minutes")
     return hours

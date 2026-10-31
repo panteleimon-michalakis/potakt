@@ -28,6 +28,7 @@ from potakt.model.common import (
     Loc,
     Measure,
     check_whole_minutes,
+    is_whole,
 )
 from potakt.model.data import (
     ColumnType,
@@ -236,10 +237,12 @@ def _limit_value_problem(resource: Resource, name: str, measure: Measure) -> str
         )
     if isinstance(value, bool) or not isinstance(value, int | float):
         return f"resource {resource.id!r}: {name} {value!r} is not a number"
+    # An int is shown exactly: ``:g`` converts to float and overflows for very large integers.
+    shown = str(value) if isinstance(value, int) else f"{value:g}"
     if value < 0:
-        return f"resource {resource.id!r}: {name} {value:g} is negative; a limit must be at least 0"
-    if measure == "count" and not float(value).is_integer():
-        return f"resource {resource.id!r}: {name} {value:g} is not a whole number (measure 'count')"
+        return f"resource {resource.id!r}: {name} {shown} is negative; a limit must be at least 0"
+    if measure == "count" and not is_whole(value):
+        return f"resource {resource.id!r}: {name} {shown} is not a whole number (measure 'count')"
     if measure == "hours":
         try:
             check_whole_minutes(value)
