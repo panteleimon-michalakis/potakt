@@ -1,0 +1,197 @@
+{
+  "score": {
+    "hard": 0,
+    "soft": 57,
+    "feasible": true
+  },
+  "rules": [
+    {
+      "rule_id": "coverage",
+      "template": "coverage",
+      "hardness": "hard",
+      "weight": null,
+      "amount": 0,
+      "contribution": 0,
+      "violations": []
+    },
+    {
+      "rule_id": "night-requires-als",
+      "template": "requires_attribute",
+      "hardness": "hard",
+      "weight": null,
+      "amount": 0,
+      "contribution": 0,
+      "violations": []
+    },
+    {
+      "rule_id": "min-rest-11h",
+      "template": "min_rest",
+      "hardness": "hard",
+      "weight": null,
+      "amount": 0,
+      "contribution": 0,
+      "violations": []
+    },
+    {
+      "rule_id": "max-one-shift-per-day",
+      "template": "max_per_period",
+      "hardness": "hard",
+      "weight": null,
+      "amount": 0,
+      "contribution": 0,
+      "violations": []
+    },
+    {
+      "rule_id": "max-five-shifts-per-week",
+      "template": "max_per_period",
+      "hardness": "soft",
+      "weight": 10,
+      "amount": 5,
+      "contribution": 50,
+      "violations": [
+        {
+          "resource_id": "n1",
+          "task_ids": [
+            "2026-11-02-apogevma",
+            "2026-11-03-apogevma",
+            "2026-11-05-proi",
+            "2026-11-06-nychta",
+            "2026-11-07-nychta",
+            "2026-11-08-nychta"
+          ],
+          "period": "2026-W45",
+          "amount": 1,
+          "message": "n1 in 2026-W45: 6 tasks, limit 5"
+        },
+        {
+          "resource_id": "n2",
+          "task_ids": [
+            "2026-11-02-nychta",
+            "2026-11-04-proi",
+            "2026-11-05-proi",
+            "2026-11-06-proi",
+            "2026-11-07-proi",
+            "2026-11-08-proi"
+          ],
+          "period": "2026-W45",
+          "amount": 1,
+          "message": "n2 in 2026-W45: 6 tasks, limit 5"
+        },
+        {
+          "resource_id": "n3",
+          "task_ids": [
+            "2026-11-02-apogevma",
+            "2026-11-03-nychta",
+            "2026-11-04-nychta",
+            "2026-11-05-nychta",
+            "2026-11-07-proi",
+            "2026-11-08-apogevma"
+          ],
+          "period": "2026-W45",
+          "amount": 1,
+          "message": "n3 in 2026-W45: 6 tasks, limit 5"
+        },
+        {
+          "resource_id": "n4",
+          "task_ids": [
+            "2026-11-02-proi",
+            "2026-11-03-proi",
+            "2026-11-04-apogevma",
+            "2026-11-05-apogevma",
+            "2026-11-06-apogevma",
+            "2026-11-07-apogevma"
+          ],
+          "period": "2026-W45",
+          "amount": 1,
+          "message": "n4 in 2026-W45: 6 tasks, limit 5"
+        },
+        {
+          "resource_id": "n6",
+          "task_ids": [
+            "2026-11-03-proi",
+            "2026-11-04-proi",
+            "2026-11-05-apogevma",
+            "2026-11-06-apogevma",
+            "2026-11-07-apogevma",
+            "2026-11-08-apogevma"
+          ],
+          "period": "2026-W45",
+          "amount": 1,
+          "message": "n6 in 2026-W45: 6 tasks, limit 5"
+        }
+      ]
+    },
+    {
+      "rule_id": "max-six-shifts-per-week",
+      "template": "max_per_period",
+      "hardness": "hard",
+      "weight": null,
+      "amount": 0,
+      "contribution": 0,
+      "violations": []
+    },
+    {
+      "rule_id": "no-overlap",
+      "template": "no_overlap",
+      "hardness": "hard",
+      "weight": null,
+      "amount": 0,
+      "contribution": 0,
+      "violations": []
+    },
+    {
+      "rule_id": "eleni-avoids-nights",
+      "template": "preference",
+      "hardness": "soft",
+      "weight": 3,
+      "amount": 1,
+      "contribution": 3,
+      "violations": [
+        {
+          "resource_id": "n2",
+          "task_ids": [
+            "2026-11-02-nychta"
+          ],
+          "period": null,
+          "amount": 1,
+          "message": "n2 on 2026-11-02-nychta: avoided assignment"
+        }
+      ]
+    },
+    {
+      "rule_id": "maria-leave-wed",
+      "template": "unavailable",
+      "hardness": "hard",
+      "weight": null,
+      "amount": 0,
+      "contribution": 0,
+      "violations": []
+    },
+    {
+      "rule_id": "nikos-not-fri-afternoon",
+      "template": "unavailable",
+      "hardness": "hard",
+      "weight": null,
+      "amount": 0,
+      "contribution": 0,
+      "violations": []
+    },
+    {
+      "rule_id": "balance-nights-als",
+      "template": "balance",
+      "hardness": "soft",
+      "weight": 2,
+      "amount": 2,
+      "contribution": 4,
+      "violations": [
+        {
+          "resource_id": null,
+          "task_ids": [],
+          "period": null,
+          "amount": 2,
+          "message": "tasks per resource range from 1 (n2) to 3 (n1, n3)"
+        }
+      ]
+    }
+  ]
+}

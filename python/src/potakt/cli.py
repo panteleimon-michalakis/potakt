@@ -20,6 +20,7 @@ from potakt.model import (
     load_instance,
     load_solution,
     render_json_schema,
+    render_solution_json_schema,
     validate_data,
     validate_solution,
 )
@@ -28,9 +29,21 @@ app = typer.Typer(no_args_is_help=True)
 
 
 def use_utf8(stream: object) -> None:
-    """Make a text stream emit UTF-8 (Windows defaults to the ANSI code page when piped)."""
-    if isinstance(stream, io.TextIOWrapper) and stream.encoding.lower() not in ("utf-8", "utf8"):
-        stream.reconfigure(encoding="utf-8")
+    """Make a text stream write UTF-8 with ``\\n`` line endings on every platform (ADR-0006 §1).
+
+    Applied every time, also when the stream is already UTF-8: Windows translates ``\\n`` to
+    ``\\r\\n`` by default. The stream's error handler is kept.
+    """
+    if isinstance(stream, io.TextIOWrapper):
+        stream.reconfigure(encoding="utf-8", errors=stream.errors, newline="\n")
+
+
+def entry_point() -> None:
+    """The ``potakt`` console script: fix the output streams before any argument is parsed, so
+    help, ``--version`` and usage errors are UTF-8 with ``\\n`` too."""
+    use_utf8(sys.stdout)
+    use_utf8(sys.stderr)
+    app()
 
 
 def _version_callback(value: bool) -> None:
@@ -52,19 +65,24 @@ def main(
     ] = False,
 ) -> None:
     """Potakt: the LLM understands, the solver guarantees, the human decides."""
+    # Also here for callers of ``app()`` that bypass the console script (``entry_point``).
     use_utf8(sys.stdout)
     use_utf8(sys.stderr)
 
 
 @app.command()
 def schema(
+    solution: Annotated[
+        bool,
+        typer.Option("--solution", help="The schema of a solution instead of a Decision Model."),
+    ] = False,
     out: Annotated[
         Path | None,
         typer.Option("--out", help="Write the schema to this file instead of printing it."),
     ] = None,
 ) -> None:
-    """Print or write the JSON Schema of the Decision Model."""
-    text = render_json_schema()
+    """Print or write the JSON Schema of the Decision Model (or of a solution)."""
+    text = render_solution_json_schema() if solution else render_json_schema()
     if out is None:
         typer.echo(text, nl=False)
         return
@@ -76,7 +94,10 @@ def schema(
 def validate(
     model: Annotated[Path, typer.Argument(help="Decision Model JSON file.", show_default=False)],
 ) -> None:
-    """Validate a Decision Model and the CSV data it binds (paths relative to the model file)."""
+    """Validate a Decision Model and the CSV data it binds (paths relative to the model file).
+
+    Exit code 0: valid ("OK" on stdout); 1: invalid (one issue per line on stderr); 2: usage error.
+    """
     try:
         dm = load_decision_model(model)
         instance = load_instance(dm, model.parent)
@@ -93,11 +114,12 @@ def validate(
 
 def _fail(issues: Iterable[ValidationIssue]) -> NoReturn:
     for issue in issues:
-        typer.echo(str(issue))
+        typer.echo(str(issue), err=True)
     raise typer.Exit(code=1)
 
 
-EXIT_INFEASIBLE = 2
+# 2 is the framework's usage error (Click/Typer), so "infeasible" gets its own code (ADR-0006 §1).
+EXIT_INFEASIBLE = 3
 
 
 @app.command("check")
@@ -108,8 +130,9 @@ def check_command(
 ) -> None:
     """Score a solution against a Decision Model and its data.
 
-    Exit code 0: feasible (no hard violations); 2: infeasible; 1: invalid input. Input issues go
-    to stderr (solution issues prefixed with the solution file), the report to stdout.
+    Exit code 0: feasible; 1: invalid input; 3: infeasible (hard violations); 2: usage error.
+    Input issues go to stderr (solution issues prefixed with the solution file), the report to
+    stdout.
     """
     dm, instance, parsed = _load_for_check(model, solution)
     result = check(dm, instance, parsed)
