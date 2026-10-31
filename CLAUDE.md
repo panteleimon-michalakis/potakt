@@ -26,6 +26,7 @@ truth; if a task seems to contradict it, **stop and ask** instead of improvising
 
 ## Workflow for every task
 1. Read the task file fully. Restate the goal and the acceptance criteria in 3–6 bullets before coding.
+   Run the preflight (Definition of done, item 1), open the work log and write both as its first entry.
 2. Work test-first where code is involved (red → green → refactor). Use the superpowers TDD and
    verification skills; skip brainstorming/planning skills when the task is already fully specified.
 3. Run all gates before reporting (from `python/`):
@@ -48,8 +49,43 @@ truth; if a task seems to contradict it, **stop and ask** instead of improvising
    ### Commits (git log --oneline <base>..HEAD)
    ### Files changed (git diff --stat <base>..HEAD)
    ### Deviations from the task (and why)
+   ### Definition of done (items 1–9: ✅/❌ + evidence)
+   ### Traceability (task item → tests)
+   ### Tools, plugins and MCP used (tool → what for)
+   ### Work log (path, number of entries)
    ### Open questions / Suggestions
    ```
+
+## Work log
+Every task keeps a work log at `.tasks/logs/TASK-XXX.md` (local only: `.tasks/` is gitignored, never
+commit it). Create it before the first change and append an entry after every step (each TDD cycle,
+each commit, each gate run, each problem). Each entry has: local time; the step; files touched;
+commands run with their outcome (last lines only, e.g. `318 passed`); **decisions taken and the
+reason in one or two sentences**, plus alternatives rejected; tools, plugins and MCP used and what
+for; problems found and how they were resolved; deviations from the task. Keep it concise and
+factual: an engineering log, not a transcript. Never put secrets or `.env` values in it. The final
+report summarises this log.
+
+## Definition of done
+Every task; the evidence goes in the report.
+1. **Preflight** before the first change: clean tree, HEAD = the task's base, up to date with
+   `origin/main`; otherwise stop and report.
+2. **Gates** (Workflow step 3) green on both Pythons.
+3. **Smoke test:** run the CLI on both examples exactly as a user would (`validate` and `check` for
+   `examples/clinic-el` and `examples/retail-en`) and paste the score lines and exit codes.
+4. **Traceability:** a table "task item → test(s) that prove it". Every decision and acceptance
+   criterion has at least one test, or a stated reason why it cannot be tested.
+5. **Regression tests:** every bug fix has a test that failed before the fix (red output in the log).
+6. **Platform independence:** behaviour must not depend on the OS or OS version (local Windows 10,
+   CI Windows and Linux). Our code decides; tests never rely on what an OS does with special names,
+   encodings, line endings or locale.
+7. **Docs consistency:** help text, README, ADRs and examples match the behaviour (exit codes,
+   messages, schema versions).
+8. **Repository hygiene:** `git ls-files .tasks .claude` prints nothing; no secrets; `git ls-files --eol`
+   shows no `i/crlf` except `*.ps1`, `*.cmd`, `*.bat`; `git log --format=%B <base>..HEAD` has no
+   trailers.
+9. **Postflight:** `git status` clean and "ahead of 'origin/main' by N commits", N = the commits in the
+   report; nothing pushed.
 
 ## Environment
 - Windows 10, PowerShell. Python via **uv** only (`uv add`, `uv run`, `uv sync`); never `pip install`
@@ -71,6 +107,10 @@ truth; if a task seems to contradict it, **stop and ask** instead of improvising
 - License: Apache-2.0.
 
 ## Tools, plugins and MCP
+Use plugins, skills and MCP servers proactively, at any step where they help. The list below is a
+minimum, not a whitelist. Each task file names the tools it expects. Log every use (tool and purpose)
+in the work log and list them in the report.
+
 Plugins are installed at user level and load automatically; you do not need to enable them. Use them
 deliberately:
 - **context7 (MCP):** before writing code against any third-party API (Pydantic, Typer, LangGraph,
