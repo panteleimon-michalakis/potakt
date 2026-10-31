@@ -432,6 +432,10 @@ the README. This builds a public track record independent of Potakt's own succes
 2. Exact time model: discrete slots vs continuous intervals in DM v0 (ADR-0004, Phase 0).
 3. Data import formats beyond CSV/XLSX.
 4. Deployment target for the public demo.
+5. Condition semantics (`potakt.model.scope`) are shared by validation and the checker, and a future
+   solver compiler may reuse them. Before the first compiler (Phase 1), add an independent reference
+   implementation used only in tests, so a scope bug cannot pass both the compiler and the checker
+   (DESIGN G3).
 
 ---
 

@@ -29,13 +29,14 @@ truth; if a task seems to contradict it, **stop and ask** instead of improvising
    Run the preflight (Definition of done, item 1), open the work log and write both as its first entry.
 2. Work test-first where code is involved (red → green → refactor). Use the superpowers TDD and
    verification skills; skip brainstorming/planning skills when the task is already fully specified.
-3. Run all gates before reporting (from `python/`):
+3. Run all six gates before reporting (from `python/`), identical to CI:
    ```
+   uv lock --check
    uv run ruff format --check .
    uv run ruff check .
    uv run pyright
    uv run pytest -q --cov=potakt
-   uv run --python 3.12 pytest -q   # oldest supported Python, same as CI
+   uv run --locked --isolated --python 3.12 pytest -q --cov=potakt   # as in CI; leaves .venv on 3.14
    ```
    All must pass. Never weaken a gate (no blanket `# type: ignore`, no disabling rules, no skipping
    tests) to make it pass — if you think a rule is wrong, say so in the report.
@@ -82,10 +83,18 @@ Every task; the evidence goes in the report.
 7. **Docs consistency:** help text, README, ADRs and examples match the behaviour (exit codes,
    messages, schema versions).
 8. **Repository hygiene:** `git ls-files .tasks .claude` prints nothing; no secrets; `git ls-files --eol`
-   shows no `i/crlf` except `*.ps1`, `*.cmd`, `*.bat`; `git log --format=%B <base>..HEAD` has no
-   trailers.
+   shows no `i/crlf` except `*.ps1`, `*.cmd`, `*.bat`; `git log --format=%(trailers) <base>..HEAD`
+   prints nothing.
 9. **Postflight:** `git status` clean and "ahead of 'origin/main' by N commits", N = the commits in the
    report; nothing pushed.
+
+## Editing and shell rules
+- Change source, test and doc files with the **Edit/Write tools**, never `sed -i`/`awk`.
+- Never run a command that waits on stdin (inline `python -` heredocs on Windows, `cat > file`). Put
+  helper scripts in the session scratchpad and run them with `uv run python -I <file>`.
+- Temporary mutations for red evidence: copies **inside the scratchpad** (never `$TEMP`), restore, then
+  prove nothing is left with `git diff --stat`.
+- Scratch files never go into the repository.
 
 ## Environment
 - Windows 10, PowerShell. Python via **uv** only (`uv add`, `uv run`, `uv sync`); never `pip install`
@@ -122,7 +131,10 @@ deliberately:
 - **security-guidance:** runs automatically on edits; treat its warnings as blocking unless clearly a
   false positive (explain it in the report).
 - **Self-review:** for tasks that add or change more than ~200 lines of code, review your own diff
-  (superpowers requesting-code-review) before the report and fix confirmed issues.
+  (superpowers requesting-code-review) before the report and fix confirmed issues: dispatch exactly
+  one reviewer subagent with `model: sonnet` (unless the task says otherwise); give it the task file,
+  the relevant ADRs and your list of interpretations; if it stops on a usage limit, resume the same
+  agent.
 - **mcp-server-dev:** only for tasks that build the MCP server.
 - **playwright, frontend-design, typescript-lsp, playground:** only for web UI tasks (Phase 4).
 - **agent-sdk-dev:** not used; Potakt uses LangGraph (ADR-0003).
