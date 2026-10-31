@@ -12,7 +12,7 @@ from pathlib import Path, PureWindowsPath
 from pydantic import ValidationError
 
 from potakt.model.catalog import Unavailable
-from potakt.model.common import AttributeValue, Loc
+from potakt.model.common import AttributeValue, Loc, StrictModel
 from potakt.model.data import (
     AttributeBinding,
     ProblemInstance,
@@ -25,6 +25,7 @@ from potakt.model.data import (
     check_local_datetime,
 )
 from potakt.model.decision_model import DecisionModel
+from potakt.model.solution import Solution
 from potakt.model.validation import (
     DecisionModelError,
     ValidationIssue,
@@ -60,26 +61,43 @@ def is_reserved_device_name(source: str) -> bool:
 # --- Decision Model JSON ---------------------------------------------------------------------
 
 
-def parse_decision_model(text: str) -> DecisionModel:
-    """Parse and structurally validate DM JSON text; raise ``DecisionModelError`` on issues."""
+def _parse_json[M: StrictModel](text: str, model: type[M]) -> M:
     try:
         document: object = json.loads(text)
     except json.JSONDecodeError as error:
         message = f"invalid JSON at line {error.lineno}, column {error.colno}: {error.msg}"
         raise DecisionModelError([ValidationIssue(ROOT, message)]) from None
     try:
-        return DecisionModel.model_validate_json(text)
+        return model.model_validate_json(text)
     except ValidationError as error:
         raise DecisionModelError(issues_from_pydantic(error, document)) from None
 
 
-def load_decision_model(path: Path) -> DecisionModel:
-    """Read a DM JSON file (UTF-8, BOM tolerated) and structurally validate it."""
+def _read_text(path: Path) -> str:
     try:
-        text = path.read_text(encoding="utf-8-sig")
+        return path.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeDecodeError) as error:
         raise DecisionModelError([ValidationIssue(ROOT, f"cannot read {path}: {error}")]) from None
-    return parse_decision_model(text)
+
+
+def parse_decision_model(text: str) -> DecisionModel:
+    """Parse and structurally validate DM JSON text; raise ``DecisionModelError`` on issues."""
+    return _parse_json(text, DecisionModel)
+
+
+def load_decision_model(path: Path) -> DecisionModel:
+    """Read a DM JSON file (UTF-8, BOM tolerated) and structurally validate it."""
+    return parse_decision_model(_read_text(path))
+
+
+def parse_solution(text: str) -> Solution:
+    """Parse and structurally validate solution JSON text; issue paths point into the solution."""
+    return _parse_json(text, Solution)
+
+
+def load_solution(path: Path) -> Solution:
+    """Read a solution JSON file (UTF-8, BOM tolerated) and structurally validate it."""
+    return parse_solution(_read_text(path))
 
 
 # --- cell parsing ----------------------------------------------------------------------------

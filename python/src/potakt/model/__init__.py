@@ -1,4 +1,4 @@
-"""Decision Model v0 (ADR-0004): types, validation and loading.
+"""Decision Model v0 (ADR-0004) and solutions: types, validation and loading.
 
 Framework-independent by design: depends only on Pydantic, the standard library and tzdata.
 """
@@ -32,12 +32,30 @@ from potakt.model.data import (
     WindowsBinding,
 )
 from potakt.model.decision_model import Assumption, DecisionModel, Horizon, Vocabulary
-from potakt.model.loader import load_decision_model, load_instance, parse_decision_model
-from potakt.model.schema import decision_model_json_schema, render_json_schema
-from potakt.model.validation import DecisionModelError, ValidationIssue, validate_data
+from potakt.model.loader import (
+    load_decision_model,
+    load_instance,
+    load_solution,
+    parse_decision_model,
+    parse_solution,
+)
+from potakt.model.schema import (
+    decision_model_json_schema,
+    render_json_schema,
+    render_solution_json_schema,
+    solution_json_schema,
+)
+from potakt.model.solution import Assignment, Solution, SolutionMetadata
+from potakt.model.validation import (
+    DecisionModelError,
+    ValidationIssue,
+    validate_data,
+    validate_solution,
+)
 
 __all__ = [
     "Apart",
+    "Assignment",
     "Assumption",
     "AttributeBinding",
     "Balance",
@@ -61,6 +79,8 @@ __all__ = [
     "Resource",
     "ResourceBinding",
     "Scope",
+    "Solution",
+    "SolutionMetadata",
     "Stability",
     "Task",
     "TaskBinding",
@@ -73,7 +93,12 @@ __all__ = [
     "decision_model_json_schema",
     "load_decision_model",
     "load_instance",
+    "load_solution",
     "parse_decision_model",
+    "parse_solution",
     "render_json_schema",
+    "render_solution_json_schema",
+    "solution_json_schema",
     "validate_data",
+    "validate_solution",
 ]

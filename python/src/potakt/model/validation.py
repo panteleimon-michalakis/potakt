@@ -19,6 +19,7 @@ from potakt.model.catalog import (
 from potakt.model.common import CUSTOM_ERROR_TYPE, DERIVED_TASK_ATTRIBUTES, Loc
 from potakt.model.data import ProblemInstance, Task, TimeWindow, local_time_exists
 from potakt.model.decision_model import DecisionModel
+from potakt.model.solution import Solution
 
 MAX_TASK_MINUTES = 24 * 60
 # Error types whose location names a field of the document even when it is absent there.
@@ -37,7 +38,7 @@ class ValidationIssue:
 
 
 class DecisionModelError(Exception):
-    """Raised when a Decision Model or its data cannot be loaded; carries every issue found."""
+    """Raised when a DM, its data or a solution cannot be loaded; carries every issue found."""
 
     def __init__(self, issues: Iterable[ValidationIssue]) -> None:
         self.issues: tuple[ValidationIssue, ...] = tuple(issues)
@@ -264,3 +265,33 @@ class _References:
             for field, value in (("start", window.start), ("end", window.end))
             if not local_time_exists(value, self.zone)
         ]
+
+
+# --- solutions -------------------------------------------------------------------------------
+
+
+def validate_solution(
+    dm: DecisionModel, instance: ProblemInstance, solution: Solution
+) -> list[ValidationIssue]:
+    """Data-level checks of a solution against its DM and loaded instance.
+
+    The solution names this model id and version, and every task and resource id exists.
+    Unassigned tasks are allowed: ``coverage`` scores them. Paths point into the solution.
+    """
+    issues: list[ValidationIssue] = []
+    if solution.model_id != dm.id:
+        message = f"solution is for model {solution.model_id!r}, not {dm.id!r}"
+        issues.append(issue_at(("model_id",), message))
+    if solution.model_version != dm.version:
+        message = f"solution is for model version {solution.model_version}, not {dm.version}"
+        issues.append(issue_at(("model_version",), message))
+    task_ids = {task.id for task in instance.tasks}
+    resource_ids = {resource.id for resource in instance.resources}
+    for index, assignment in enumerate(solution.assignments):
+        if assignment.task_id not in task_ids:
+            loc: Loc = ("assignments", index, "task_id")
+            issues.append(issue_at(loc, f"unknown task id {assignment.task_id!r}"))
+        if assignment.resource_id not in resource_ids:
+            loc = ("assignments", index, "resource_id")
+            issues.append(issue_at(loc, f"unknown resource id {assignment.resource_id!r}"))
+    return issues

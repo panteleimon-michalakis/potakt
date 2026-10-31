@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "Assignment": {
+      "additionalProperties": false,
+      "description": "Resource ``resource_id`` works task ``task_id``.",
+      "properties": {
+        "task_id": {
+          "minLength": 1,
+          "title": "Task Id",
+          "type": "string"
+        },
+        "resource_id": {
+          "minLength": 1,
+          "title": "Resource Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "task_id",
+        "resource_id"
+      ],
+      "title": "Assignment",
+      "type": "object"
+    },
+    "SolutionMetadata": {
+      "additionalProperties": false,
+      "description": "Optional, free-form information about where a solution came from.",
+      "properties": {
+        "produced_by": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Produced By"
+        },
+        "created_at": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Created At"
+        },
+        "notes": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Notes"
+        }
+      },
+      "title": "SolutionMetadata",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A set of assignments for model ``model_id`` at ``model_version``.\n\nTasks may be left unassigned (``coverage`` scores them); a pair may appear only once.",
+  "properties": {
+    "schema_version": {
+      "const": "0.1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "model_id": {
+      "minLength": 1,
+      "title": "Model Id",
+      "type": "string"
+    },
+    "model_version": {
+      "minimum": 1,
+      "title": "Model Version",
+      "type": "integer"
+    },
+    "assignments": {
+      "items": {
+        "$ref": "#/$defs/Assignment"
+      },
+      "title": "Assignments",
+      "type": "array"
+    },
+    "metadata": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SolutionMetadata"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "schema_version",
+    "model_id",
+    "model_version",
+    "assignments"
+  ],
+  "title": "Solution",
+  "type": "object"
+}
