@@ -51,17 +51,39 @@ def hostile_environment() -> dict[str, str]:
     return env
 
 
-def potakt(*args: str | Path) -> subprocess.CompletedProcess[bytes]:
+def potakt(
+    *args: str | Path, extra_env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(
         [str(potakt_command()), *map(str, args)],
         capture_output=True,
-        env=hostile_environment(),
+        env=hostile_environment() | (extra_env or {}),
         timeout=120,
         check=False,
     )
 
 
 # --- bytes (A2) ------------------------------------------------------------------------------
+
+FORCED_COLOUR = {"GITHUB_ACTIONS": "true", "FORCE_COLOR": "1"}
+
+
+def test_machine_output_has_no_ansi_codes_even_when_colour_is_forced(tmp_path: Path) -> None:
+    # Help and usage errors may be coloured; reports, JSON and issues never are.
+    as_json = potakt("check", "--json", CLINIC_MODEL, CLINIC_SOLUTION, extra_env=FORCED_COLOUR)
+    as_text = potakt("check", CLINIC_MODEL, CLINIC_SOLUTION, extra_env=FORCED_COLOUR)
+    valid = potakt("validate", CLINIC_MODEL, extra_env=FORCED_COLOUR)
+    broken = tmp_path / "model.json"
+    broken.write_text('{"schema_version": "0.1"}', encoding="utf-8")
+    invalid = potakt("validate", broken, extra_env=FORCED_COLOUR)
+
+    assert as_json.stdout == (GOLDEN / "clinic-el.check.json").read_bytes()
+    assert as_text.stdout == (GOLDEN / "clinic-el.check.txt").read_bytes()
+    assert (valid.returncode, invalid.returncode) == (0, 1)
+    assert valid.stdout.startswith(b"OK: ")
+    assert invalid.stderr.startswith(b"/")
+    for result in (as_json, as_text, valid, invalid):
+        assert b"\x1b" not in result.stdout + result.stderr
 
 
 def test_check_json_matches_the_golden_file_byte_for_byte() -> None:
