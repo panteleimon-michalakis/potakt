@@ -1,6 +1,7 @@
 # ADR-0005: Scoring semantics v0
 
 - **Status:** Accepted
+- Amended by ADR-0006.
 - **Date:** 2026-10-31
 
 ## Context

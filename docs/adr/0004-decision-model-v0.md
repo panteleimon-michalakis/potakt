@@ -1,6 +1,7 @@
 # ADR-0004: Decision Model v0 — assignment archetype, catalog, time model
 
 - **Status:** Accepted
+- Amended by ADR-0006.
 - **Date:** 2026-10-30
 
 ## Context

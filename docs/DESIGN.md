@@ -439,7 +439,9 @@ the README. This builds a public track record independent of Potakt's own succes
 - **ADR-0001** Monorepo with Python core and Java solver service
 - **ADR-0002** LLM emits Decision Model JSON only — no generated code
 - **ADR-0003** LangGraph as agent framework; provider-agnostic LLM gateway
-- **ADR-0004** Decision Model v0: assignment archetype, catalog, time model
+- **ADR-0004** Decision Model v0: assignment archetype, catalog, time model (Accepted)
+- **ADR-0005** Scoring semantics v0 (Accepted)
+- **ADR-0006** Decision Model 0.2 and scoring amendments (Accepted)
 
 ---
 
