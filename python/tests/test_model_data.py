@@ -625,13 +625,19 @@ def test_limit_values_follow_the_rules_of_literal_limits(
 
 
 HUGE = "9" * 400
+ABOVE_HOURS = "hours is above the maximum of 8784 (366 days)"
 
 
 @pytest.mark.parametrize(
     ("measure", "column_type", "value"),
-    [("count", "int", HUGE), ("hours", "int", HUGE), ("hours", "float", "1e300")],
+    [
+        ("hours", "int", "8784"),
+        ("hours", "float", "8784.0"),
+        ("count", "int", "100000"),
+        ("count", "float", "100000.0"),
+    ],
 )
-def test_huge_limit_values_are_accepted_without_overflow(
+def test_limit_values_at_the_bounds_are_accepted(
     tmp_path: Path, measure: str, column_type: str, value: str
 ) -> None:
     model_file = per_resource_scenario(
@@ -644,11 +650,15 @@ def test_huge_limit_values_are_accepted_without_overflow(
 @pytest.mark.parametrize(
     ("measure", "column_type", "value", "message"),
     [
-        ("hours", "float", "1e308", "cap 1e+308 hours is too large"),
+        ("hours", "int", "8785", f"cap 8785 {ABOVE_HOURS}"),
+        ("hours", "float", "1e308", f"cap 1e+308 {ABOVE_HOURS}"),
+        ("hours", "int", HUGE, f"cap {HUGE} {ABOVE_HOURS}"),
+        ("count", "int", "100001", "cap 100001 is above the maximum of 100000"),
+        ("count", "int", HUGE, f"cap {HUGE} is above the maximum of 100000"),
         ("count", "int", f"-{HUGE}", f"cap -{HUGE} is negative; a limit must be at least 0"),
     ],
 )
-def test_oversized_limit_values_are_issues_not_crashes(
+def test_limit_values_outside_the_bounds_are_issues_not_crashes(
     tmp_path: Path, measure: str, column_type: str, value: str, message: str
 ) -> None:
     model_file = per_resource_scenario(

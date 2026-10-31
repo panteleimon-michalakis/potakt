@@ -52,7 +52,7 @@ Amends ADR-0005 §2 and §4:
 Amends ADR-0004 "Time model" and "Validation":
 - **Horizon length** (structural, at `/horizon`): `end − start + 1` is at most **366 days**, so a whole
   leap year fits and absurd horizons (thousands of day periods) are rejected before any scoring.
-  This does not bound the calendar dates themselves; see Consequences.
+  The calendar dates themselves are bounded by §6.
 - **Stability baseline** (structural): a `(task_id, resource_id)` pair may appear only once in
   `stability.baseline`; a repeated pair is an error at the repeated entry. This replaces "a pair listed
   twice counts once" in ADR-0005 §4.
@@ -105,6 +105,37 @@ The DM `schema_version` is **`"0.2"`** and only `"0.2"` is accepted (there are n
 there is no migration code). The solution `schema_version` stays `"0.1"`. The committed schemas in
 `spec/` are regenerated from the models.
 
+### 6. Bounds for dates and numbers (TASK-004b F1)
+Amends ADR-0004 "Time model", "Catalog v0" and "Validation":
+
+| Value | Allowed | Level |
+|---|---|---|
+| `horizon.start`, `horizon.end` | 1970-01-01 … 2999-12-31 | structural, at the field |
+| every other local datetime: `unavailable` windows (inline or CSV) and task `start`/`end` (CSV) | 1970-01-01T00:00 … 3000-01-01T00:00 | structural (inline) / data-level (CSV cell) |
+| `weight` (soft rules and `preference`) | 1 … 10 000 | structural |
+| hours: `min_rest.hours`, `max/min_per_period` limit with `measure: hours`, per-resource hour values | 0 … 8 784 (366 days × 24 h) | structural / data-level |
+| counts: `max/min_per_period` limit with `measure: count`, per-resource count values | 0 … 100 000 | structural / data-level |
+| `max_consecutive_days.days` | 1 … 366 | structural |
+| task `demand` (CSV) | 1 … 10 000 | data-level |
+
+- Out-of-range values are issues found **before** any timezone conversion or arithmetic, so no value
+  can overflow; the overflow-safe helpers stay as defence in depth for values built in code.
+- Messages name the value and the bound: `weight 10001 is above the maximum of 10000`,
+  `limit 9000 hours is above the maximum of 8784 (366 days)`, `start 1969-12-31 is before the minimum
+  of 1970-01-01`, `9999-12-31T20:00 is after the maximum of 3000-01-01T00:00`.
+- Where Pydantic can express a bound it is a `Field` constraint, so the JSON Schema shows
+  `minimum`/`maximum` (weight, `min_rest.hours`, `days`; on each member of a number union so the
+  keywords are standard). JSON Schema has no date bounds, so the horizon and datetime bounds are
+  stated in the field descriptions. The maximum of a `limit` depends on its `measure`, so it is checked
+  in the params model validator and the schema shows only the minimum 0.
+- Interpretation: task `start`/`end` are bounded like windows because a task's `end` is not bounded by
+  the horizon rule (only its start date is); a task starting on 2999-12-31 must therefore end by
+  3000-01-01T00:00.
+- Reason: the IANA tz database is only guaranteed accurate from 1970; the bounds are far beyond any
+  real plan, and they keep every derived value (ISO weeks, UTC conversion, task ends up to +24 h, the
+  solver objective Σ weight × amount) far from Python's `datetime` limits and from 64-bit integer
+  overflow in the Phase 1 solver.
+
 ## Consequences
 - Contract hours and similar per-person limits are one rule bound to a data column instead of one
   rule per group (ADR-0004 "Consequences" no longer applies to them); the LLM only has to name the
@@ -116,7 +147,7 @@ there is no migration code). The solution `schema_version` stays `"0.1"`. The co
 - Scope evaluation is needed by data-level validation (C1: "every in-scope resource"), so the
   condition semantics live in `potakt.model` and the checker uses them from there; there is still one
   implementation.
-- The 366-day cap stops absurd horizons but not dates at the very edge of the calendar (for example a
-  horizon in the last week of the year 9999, or a window near 9999-12-31 in a timezone behind UTC);
-  bounding the calendar range is left to a later decision.
+- With the bounds of §6, every accepted DM and dataset stays far from Python's date and integer
+  limits; dates before 1970 or after 2999 and absurd weights, hours or counts are rejected with a
+  message naming the bound, which the agent can show or repair.
 - Any further change to these rules needs a new ADR.

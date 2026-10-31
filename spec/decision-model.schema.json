@@ -41,6 +41,7 @@
         "weight": {
           "anyOf": [
             {
+              "maximum": 10000,
               "minimum": 1,
               "type": "integer"
             },
@@ -194,6 +195,7 @@
           "type": "string"
         },
         "weight": {
+          "maximum": 10000,
           "minimum": 1,
           "title": "Weight",
           "type": "integer"
@@ -425,11 +427,13 @@
       "description": "The planning period: ``start`` and ``end`` dates, both inclusive, at most 366 days.",
       "properties": {
         "start": {
+          "description": "A date from 1970-01-01 to 2999-12-31",
           "format": "date",
           "title": "Start",
           "type": "string"
         },
         "end": {
+          "description": "A date from 1970-01-01 to 2999-12-31",
           "format": "date",
           "title": "End",
           "type": "string"
@@ -482,6 +486,7 @@
         "weight": {
           "anyOf": [
             {
+              "maximum": 10000,
               "minimum": 1,
               "type": "integer"
             },
@@ -516,6 +521,7 @@
       "additionalProperties": false,
       "properties": {
         "days": {
+          "maximum": 366,
           "minimum": 1,
           "title": "Days",
           "type": "integer"
@@ -567,6 +573,7 @@
         "weight": {
           "anyOf": [
             {
+              "maximum": 10000,
               "minimum": 1,
               "type": "integer"
             },
@@ -637,6 +644,7 @@
         "weight": {
           "anyOf": [
             {
+              "maximum": 10000,
               "minimum": 1,
               "type": "integer"
             },
@@ -707,6 +715,7 @@
         "weight": {
           "anyOf": [
             {
+              "maximum": 10000,
               "minimum": 1,
               "type": "integer"
             },
@@ -743,13 +752,16 @@
         "hours": {
           "anyOf": [
             {
+              "exclusiveMinimum": 0,
+              "maximum": 8784,
               "type": "integer"
             },
             {
+              "exclusiveMinimum": 0,
+              "maximum": 8784,
               "type": "number"
             }
           ],
-          "gt": 0,
           "title": "Hours"
         }
       },
@@ -799,6 +811,7 @@
         "weight": {
           "anyOf": [
             {
+              "maximum": 10000,
               "minimum": 1,
               "type": "integer"
             },
@@ -919,6 +932,7 @@
           "type": "string"
         },
         "weight": {
+          "maximum": 10000,
           "minimum": 1,
           "title": "Weight",
           "type": "integer"
@@ -1062,6 +1076,7 @@
         "weight": {
           "anyOf": [
             {
+              "maximum": 10000,
               "minimum": 1,
               "type": "integer"
             },
@@ -1230,6 +1245,7 @@
           "type": "string"
         },
         "weight": {
+          "maximum": 10000,
           "minimum": 1,
           "title": "Weight",
           "type": "integer"
@@ -1331,13 +1347,13 @@
           "type": "string"
         },
         "start": {
-          "description": "Local date-time in the DM timezone, without UTC offset, e.g. 2026-11-02T07:00",
+          "description": "Local date-time in the DM timezone, without UTC offset, from 1970-01-01T00:00 to 3000-01-01T00:00, e.g. 2026-11-02T07:00",
           "pattern": "^\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}(:00(\\.0+)?)?$",
           "title": "Start",
           "type": "string"
         },
         "end": {
-          "description": "Local date-time in the DM timezone, without UTC offset, e.g. 2026-11-02T07:00",
+          "description": "Local date-time in the DM timezone, without UTC offset, from 1970-01-01T00:00 to 3000-01-01T00:00, e.g. 2026-11-02T07:00",
           "pattern": "^\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}(:00(\\.0+)?)?$",
           "title": "End",
           "type": "string"
@@ -1386,6 +1402,7 @@
           "type": "string"
         },
         "weight": {
+          "maximum": 10000,
           "minimum": 1,
           "title": "Weight",
           "type": "integer"
@@ -1451,6 +1468,7 @@
         "weight": {
           "anyOf": [
             {
+              "maximum": 10000,
               "minimum": 1,
               "type": "integer"
             },

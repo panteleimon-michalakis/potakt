@@ -9,6 +9,7 @@ from pydantic import AfterValidator, ConfigDict, Field, WithJsonSchema, model_va
 
 from potakt.model.common import (
     ATTRIBUTE_NAME_PATTERN,
+    MAX_DEMAND,
     RESERVED_ATTRIBUTE_NAMES,
     AttributeValue,
     Loc,
@@ -33,6 +34,22 @@ def check_local_datetime(value: datetime) -> datetime:
     return value
 
 
+# Bounds of every local datetime (ADR-0006 §6): the tz database is reliable from 1970, and the
+# range stays far from datetime's limits after UTC conversion. The horizon has its own bounds.
+DATETIME_MIN = datetime(1970, 1, 1)
+DATETIME_MAX = datetime(3000, 1, 1)
+
+
+def check_datetime_bounds(value: datetime) -> datetime:
+    """Reject a local datetime outside 1970-01-01T00:00 … 3000-01-01T00:00, naming it."""
+    shown = value.isoformat(timespec="minutes")
+    if value < DATETIME_MIN:
+        raise custom_error(f"{shown} is before the minimum of {DATETIME_MIN:%Y-%m-%dT%H:%M}")
+    if value > DATETIME_MAX:
+        raise custom_error(f"{shown} is after the maximum of {DATETIME_MAX:%Y-%m-%dT%H:%M}")
+    return value
+
+
 def check_source_path(value: str) -> str:
     """Data sources are relative paths that cannot escape the model directory."""
     windows, posix = PureWindowsPath(value), PurePosixPath(value)
@@ -53,10 +70,16 @@ def check_source_path(value: str) -> str:
 LOCAL_DATETIME_JSON_SCHEMA = {
     "type": "string",
     "pattern": r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:00(\.0+)?)?$",
-    "description": "Local date-time in the DM timezone, without UTC offset, e.g. 2026-11-02T07:00",
+    "description": (
+        "Local date-time in the DM timezone, without UTC offset, from 1970-01-01T00:00 to "
+        "3000-01-01T00:00, e.g. 2026-11-02T07:00"
+    ),
 }
 LocalDateTime = Annotated[
-    datetime, AfterValidator(check_local_datetime), WithJsonSchema(LOCAL_DATETIME_JSON_SCHEMA)
+    datetime,
+    AfterValidator(check_local_datetime),
+    AfterValidator(check_datetime_bounds),
+    WithJsonSchema(LOCAL_DATETIME_JSON_SCHEMA),
 ]
 SourcePath = Annotated[str, AfterValidator(check_source_path)]
 ColumnName = Annotated[str, Field(min_length=1)]
@@ -204,7 +227,7 @@ class Task(_FrozenModel):
     id: str = Field(min_length=1)
     start: LocalDateTime
     end: LocalDateTime
-    demand: int = Field(ge=1)
+    demand: int = Field(ge=1, le=MAX_DEMAND)
     attributes: dict[str, AttributeValue] = Field(default_factory=dict[str, AttributeValue])
 
     def duration_minutes(self, zone: ZoneInfo) -> int:

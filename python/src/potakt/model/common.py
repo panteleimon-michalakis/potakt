@@ -26,6 +26,30 @@ CUSTOM_ERROR_TYPE = "decision_model"
 SOFT_RULE_NEEDS_WEIGHT = "a soft rule needs a weight (integer ≥ 1)"
 WEIGHT_ONLY_ON_SOFT_RULES = "weight is only allowed on soft rules"
 
+# Bounds of numeric values (ADR-0006 §6): far beyond any real plan, and far from overflow.
+MAX_WEIGHT = 10_000
+MAX_HOURS = 8_784  # 366 days x 24 h
+MAX_COUNT = 100_000
+MAX_DAYS = 366
+MAX_DEMAND = 10_000
+
+
+def show_number(value: object) -> str:
+    """A number as messages show it: ints exactly, integral floats without ``.0``."""
+    if isinstance(value, float) and value.is_integer() and abs(value) < 1e16:
+        return str(int(value))
+    return str(value)
+
+
+def above_limit_maximum(value: float, measure: Measure) -> str | None:
+    """``"<value> … is above the maximum of …"`` if a period limit exceeds the bound of its
+    measure (ADR-0006 §6), else ``None``. Compares only, so it never overflows."""
+    if measure == "hours" and value > MAX_HOURS:
+        return f"{show_number(value)} hours is above the maximum of {MAX_HOURS} (366 days)"
+    if measure == "count" and value > MAX_COUNT:
+        return f"{show_number(value)} is above the maximum of {MAX_COUNT}"
+    return None
+
 
 class StrictModel(BaseModel):
     """Base for all DM types: strict types, no unknown fields, finite numbers (ADR-0004)."""

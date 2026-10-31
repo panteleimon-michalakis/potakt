@@ -12,7 +12,7 @@ from pathlib import Path, PureWindowsPath
 from pydantic import ValidationError
 
 from potakt.model.catalog import Unavailable
-from potakt.model.common import AttributeValue, Loc, StrictModel
+from potakt.model.common import MAX_DEMAND, AttributeValue, Loc, StrictModel
 from potakt.model.data import (
     AttributeBinding,
     CsvDecimal,
@@ -24,6 +24,7 @@ from potakt.model.data import (
     TaskBinding,
     TimeWindow,
     WindowsBinding,
+    check_datetime_bounds,
     check_local_datetime,
 )
 from potakt.model.decision_model import DecisionModel
@@ -178,9 +179,10 @@ def _parse_local_datetime(value: str) -> datetime:
     except ValueError:
         raise ValueError(f"{value!r} is not an ISO-8601 local datetime") from None
     try:
-        return check_local_datetime(parsed)
+        local = check_local_datetime(parsed)
     except ValueError as error:
         raise ValueError(f"{value!r} {error}") from None
+    return check_datetime_bounds(local)  # its message names the value
 
 
 # --- CSV tables ------------------------------------------------------------------------------
@@ -386,6 +388,8 @@ def _parse_task_field(field: str, text: str) -> str | datetime | int:
         demand = _parse_int(text)
         if demand < 1:
             raise ValueError(f"demand must be at least 1, got {demand}")
+        if demand > MAX_DEMAND:
+            raise ValueError(f"demand {demand} is above the maximum of {MAX_DEMAND}")
         return demand
     return text
 

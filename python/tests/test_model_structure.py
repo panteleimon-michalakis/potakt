@@ -333,7 +333,7 @@ def test_horizon_of_a_whole_leap_year_is_accepted() -> None:
 
 @pytest.mark.parametrize(
     ("start", "end", "days"),
-    [("2028-01-01", "2029-01-01", 367), ("2026-01-01", "9999-12-31", 2912443)],
+    [("2028-01-01", "2029-01-01", 367), ("1970-01-01", "2999-12-31", 376200)],
 )
 def test_horizon_longer_than_366_days_is_rejected(start: str, end: str, days: int) -> None:
     doc = minimal_dm()
@@ -480,7 +480,7 @@ LIMIT = "/constraints/1/params/limit"
         ({"attribute": 5}, f"{LIMIT}/attribute", "Input should be a valid string"),
         ({"attribute": ""}, f"{LIMIT}/attribute", "String should have at least 1 character"),
         ({"column": "x"}, f"{LIMIT}/column", "Extra inputs are not permitted"),
-        (-1, LIMIT, "Input should be greater than or equal to 0"),
+        (-1, LIMIT, "limit -1 is below the minimum of 0"),
         ("32", LIMIT, "Input should be a valid integer; Input should be a valid number"),
     ],
 )
@@ -491,28 +491,35 @@ def test_invalid_limits_point_into_the_limit(limit: object, path: str, message: 
     assert all(issue.path.startswith(LIMIT) for issue in issues)
 
 
-@pytest.mark.parametrize("measure", ["count", "hours"])
-def test_huge_whole_limits_are_accepted_without_overflow(measure: str) -> None:
-    # No upper bound is a DM rule (that would need an ADR); a huge whole value must not crash.
-    doc = with_constraints(limit_rule("max_per_period", 10**400, measure=measure))
+@pytest.mark.parametrize(("measure", "limit"), [("count", 100_000), ("hours", 8784)])
+def test_limits_at_the_bounds_are_accepted(measure: str, limit: int) -> None:
+    doc = with_constraints(limit_rule("max_per_period", limit, measure=measure))
 
     assert structural_issues(doc) == []
 
 
-@pytest.mark.parametrize(
-    ("template", "params", "field"),
-    [
-        ("max_per_period", {"measure": "hours", "period": "week", "limit": 1e308}, "limit"),
-        ("min_rest", {"hours": 1e308}, "hours"),
-    ],
-)
-def test_hours_too_large_for_minutes_are_an_issue_not_a_crash(
-    template: str, params: dict[str, Any], field: str
-) -> None:
-    issue = only_issue(with_constraints(constraint(template, hardness="hard", params=params)))
+HOURS_ABOVE = "hours is above the maximum of 8784 (366 days)"
 
-    assert issue.path == f"/constraints/1/params/{field}"
-    assert issue.message == "1e+308 hours is too large"
+
+@pytest.mark.parametrize(
+    ("measure", "limit", "message"),
+    [
+        ("hours", 8785, f"limit 8785 {HOURS_ABOVE}"),
+        ("hours", 8784.5, f"limit 8784.5 {HOURS_ABOVE}"),
+        ("hours", 1e308, f"limit 1e+308 {HOURS_ABOVE}"),
+        ("hours", 10**400, f"limit {10**400} {HOURS_ABOVE}"),
+        ("count", 100_001, "limit 100001 is above the maximum of 100000"),
+        ("count", 10**400, f"limit {10**400} is above the maximum of 100000"),
+    ],
+    ids=["hours-8785", "hours-8784.5", "hours-1e308", "hours-huge", "count-100001", "count-huge"],
+)
+def test_limits_above_the_bounds_are_an_issue_not_a_crash(
+    measure: str, limit: float, message: str
+) -> None:
+    issue = only_issue(with_constraints(limit_rule("max_per_period", limit, measure=measure)))
+
+    assert issue.path == "/constraints/1/params/limit"
+    assert issue.message == message
 
 
 def test_values_are_not_coerced() -> None:

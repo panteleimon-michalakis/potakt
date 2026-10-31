@@ -18,6 +18,9 @@ from pydantic import (
 )
 
 from potakt.model.common import (
+    MAX_DAYS,
+    MAX_HOURS,
+    MAX_WEIGHT,
     SOFT_RULE_NEEDS_WEIGHT,
     WEIGHT_ONLY_ON_SOFT_RULES,
     ConstraintStatus,
@@ -27,6 +30,7 @@ from potakt.model.common import (
     Provenance,
     Scope,
     StrictModel,
+    above_limit_maximum,
     check_whole_minutes,
     custom_error,
     is_whole,
@@ -43,7 +47,12 @@ def _check_distinct_pair(resource_ids: list[str]) -> list[str]:
     return resource_ids
 
 
-Hours = Annotated[int | float, Field(gt=0), AfterValidator(check_whole_minutes)]
+# Bounds on each member (not the union) so the JSON Schema shows them (ADR-0006 §6).
+Hours = Annotated[
+    Annotated[int, Field(gt=0, le=MAX_HOURS)] | Annotated[float, Field(gt=0, le=MAX_HOURS)],
+    AfterValidator(check_whole_minutes),
+]
+Weight = Annotated[int, Field(ge=1, le=MAX_WEIGHT)]
 ResourceId = Annotated[str, Field(min_length=1)]
 ResourcePair = Annotated[
     list[ResourceId], Field(min_length=2, max_length=2), AfterValidator(_check_distinct_pair)
@@ -86,7 +95,7 @@ class _HardOnly(_ConstraintBase):
 
 class _SoftOnly(_ConstraintBase):
     hardness: Literal["soft"]
-    weight: int = Field(ge=1)
+    weight: Weight
 
     @field_validator("hardness", mode="wrap")
     @classmethod
@@ -96,7 +105,7 @@ class _SoftOnly(_ConstraintBase):
 
 class _HardOrSoft(_ConstraintBase):
     hardness: Hardness
-    weight: int | None = Field(default=None, ge=1)
+    weight: Weight | None = None
 
     @model_validator(mode="after")
     def _check_weight(self) -> Self:
@@ -154,6 +163,11 @@ class PeriodLimitParams(StrictModel):
     def _check_limit_unit(self) -> Self:
         if isinstance(self.limit, AttributeRef):
             return self  # each resource's value is checked against the data (validate_data)
+        # The maximum depends on ``measure``, so it is checked here, before any arithmetic, and
+        # the JSON Schema shows only the minimum (ADR-0006 §6).
+        above = above_limit_maximum(self.limit, self.measure)
+        if above is not None:
+            raise_errors("PeriodLimitParams", [(("limit",), f"limit {above}")])
         if self.measure == "count" and not is_whole(self.limit):
             message = "limit must be a whole number when measure is 'count'"
             raise_errors("PeriodLimitParams", [(("limit",), message)])
@@ -166,7 +180,7 @@ class PeriodLimitParams(StrictModel):
 
 
 class MaxConsecutiveDaysParams(StrictModel):
-    days: int = Field(ge=1)
+    days: int = Field(ge=1, le=MAX_DAYS)
 
 
 class UnavailableParams(StrictModel):

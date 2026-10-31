@@ -29,13 +29,24 @@ Timezone = Annotated[str, AfterValidator(_check_timezone)]
 
 
 MAX_HORIZON_DAYS = 366
+# ADR-0006 §6: the tz database is reliable from 1970; the ISO weeks and UTC conversions of any
+# horizon in this range stay far from datetime's limits. JSON Schema has no date bounds, so the
+# description states them.
+HorizonDate = Annotated[
+    date,
+    Field(
+        ge=date(1970, 1, 1),
+        le=date(2999, 12, 31),
+        description="A date from 1970-01-01 to 2999-12-31",
+    ),
+]
 
 
 class Horizon(StrictModel):
     """The planning period: ``start`` and ``end`` dates, both inclusive, at most 366 days."""
 
-    start: date
-    end: date
+    start: HorizonDate
+    end: HorizonDate
 
     @model_validator(mode="after")
     def _check_order_and_length(self) -> Self:

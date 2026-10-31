@@ -27,8 +27,10 @@ from potakt.model.common import (
     WEIGHT_ONLY_ON_SOFT_RULES,
     Loc,
     Measure,
+    above_limit_maximum,
     check_whole_minutes,
     is_whole,
+    show_number,
 )
 from potakt.model.data import (
     ColumnType,
@@ -84,16 +86,25 @@ def issues_from_pydantic(error: ValidationError, document: object) -> list[Valid
 
     Pydantic locations also contain union tags (the ``template`` of a constraint) and union
     member names; walking the input document drops those so the path is a real JSON pointer.
-    Messages of errors that land on the same path (alternatives of a union) are merged.
+    Messages of errors that land on the same path (alternatives of a union) are merged; when a
+    bound is broken there, the int member's "valid integer" error is noise and is dropped.
     """
-    merged: dict[str, list[str]] = {}
+    merged: dict[str, list[ErrorDetails]] = {}
     for detail in error.errors(include_url=False):
-        path = json_pointer(_document_path(detail["loc"], detail["type"], document))
-        messages = merged.setdefault(path, [])
-        message = _message(detail)
-        if message not in messages:
-            messages.append(message)
-    return [ValidationIssue(path, "; ".join(messages)) for path, messages in merged.items()]
+        parts = _document_path(detail["loc"], detail["type"], document)
+        merged.setdefault(json_pointer(parts), []).append(detail)
+    issues: list[ValidationIssue] = []
+    for path, details in merged.items():
+        bounded = any(detail["type"] in _BOUND_WORDS for detail in details)
+        messages: list[str] = []
+        for detail in details:
+            if bounded and detail["type"] == "int_type":
+                continue
+            message = _message(detail, path)
+            if message not in messages:
+                messages.append(message)
+        issues.append(ValidationIssue(path, "; ".join(messages)))
+    return issues
 
 
 # Pydantic reports these before any validator runs: a soft-only template without ``weight`` and
@@ -106,11 +117,28 @@ _WEIGHT_MESSAGES = {
 }
 
 
-def _message(detail: ErrorDetails) -> str:
-    """The issue message: Pydantic's, except the domain wording for a rule's ``weight``."""
-    loc = detail["loc"]
-    if len(loc) == 4 and loc[0] == "constraints" and loc[3] == "weight":
-        return _WEIGHT_MESSAGES.get(detail["type"], detail["msg"])
+# Broken ``ge``/``le`` bounds name the field, the value and the bound (ADR-0006 §6):
+# (ctx key, wording for numbers, wording for dates).
+_BOUND_WORDS = {
+    "greater_than_equal": ("ge", "is below the minimum of", "is before the minimum of"),
+    "less_than_equal": ("le", "is above the maximum of", "is after the maximum of"),
+}
+
+
+def _message(detail: ErrorDetails, path: str) -> str:
+    """The issue message: Pydantic's, except the domain wording for a rule's ``weight`` and for
+    broken bounds."""
+    loc, error_type = detail["loc"], detail["type"]
+    own_weight = len(loc) == 4 and loc[0] == "constraints" and loc[3] == "weight"
+    if own_weight and error_type in _WEIGHT_MESSAGES:
+        return _WEIGHT_MESSAGES[error_type]
+    words = _BOUND_WORDS.get(error_type)
+    field = path.rsplit("/", 1)[-1]
+    if words is not None and field and not field.isdigit():
+        key, number_words, date_words = words
+        bound = (detail.get("ctx") or {})[key]
+        wording = date_words if isinstance(bound, str) else number_words
+        return f"{field} {show_number(detail['input'])} {wording} {show_number(bound)}"
     return detail["msg"]
 
 
@@ -237,10 +265,12 @@ def _limit_value_problem(resource: Resource, name: str, measure: Measure) -> str
         )
     if isinstance(value, bool) or not isinstance(value, int | float):
         return f"resource {resource.id!r}: {name} {value!r} is not a number"
-    # An int is shown exactly: ``:g`` converts to float and overflows for very large integers.
-    shown = str(value) if isinstance(value, int) else f"{value:g}"
+    shown = show_number(value)
     if value < 0:
         return f"resource {resource.id!r}: {name} {shown} is negative; a limit must be at least 0"
+    above = above_limit_maximum(value, measure)  # before any arithmetic (ADR-0006 §6)
+    if above is not None:
+        return f"resource {resource.id!r}: {name} {above}"
     if measure == "count" and not is_whole(value):
         return f"resource {resource.id!r}: {name} {shown} is not a whole number (measure 'count')"
     if measure == "hours":
