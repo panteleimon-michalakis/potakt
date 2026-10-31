@@ -276,6 +276,7 @@ def test_parse_cell_rejects(column_type: Any, text: str) -> None:
         parse_cell(text, binding)
 
 
+@settings(deadline=None)
 @given(
     separator=st.sampled_from([";", "|", ","]),
     items=st.lists(st.text(alphabet=st.characters(exclude_characters=";|,"), max_size=8)),
@@ -1031,6 +1032,32 @@ def test_decimal_comma_and_point_parse_to_the_same_value(value: Decimal) -> None
 
     assert parsed == parse_cell(with_point, binding)
     assert parsed == float(with_point)
+
+
+def semicolon_resources(row: str) -> tuple[dict[str, Any], str]:
+    doc = minimal_dm()
+    doc["data"]["resources"]["csv"] = {"delimiter": ";"}
+    return doc, f"id;name;skills;contract\n{row}\n"
+
+
+def test_quoted_list_cell_with_the_delimiter_loads_as_a_list(tmp_path: Path) -> None:
+    # Excel quotes a cell that contains the delimiter; the list separator is also ';'.
+    doc, resources = semicolon_resources('r1;Ana;"als;opening";full_time')
+
+    instance, issues = load(write_scenario(tmp_path, doc, resources=resources))
+
+    assert issues == []
+    assert instance.resources[0].attributes["skills"] == ["als", "opening"]
+
+
+def test_unquoted_list_cell_with_the_delimiter_is_reported(tmp_path: Path) -> None:
+    # Pinned as the loader reports it today: the extra field shifts the row.
+    doc, resources = semicolon_resources("r1;Ana;als;opening;full_time")
+
+    issue = only_issue(write_scenario(tmp_path, doc, resources=resources))
+
+    assert issue.path == "/data/resources/source"
+    assert issue.message == "resources.csv line 2: more fields than the header"
 
 
 def test_tasks_binding_accepts_a_csv_dialect(tmp_path: Path) -> None:

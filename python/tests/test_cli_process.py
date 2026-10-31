@@ -18,6 +18,21 @@ GOLDEN = Path(__file__).resolve().parent / "golden"
 CLINIC_MODEL = REPO / "examples" / "clinic-el" / "model.json"
 CLINIC_SOLUTION = REPO / "examples" / "clinic-el" / "solution.json"
 CLINIC_TITLE = json.loads(CLINIC_MODEL.read_text(encoding="utf-8"))["title"]
+RETAIL_MODEL = REPO / "examples" / "retail-en" / "model.json"
+RETAIL_SOLUTION = REPO / "examples" / "retail-en" / "solution.json"
+# Two moved shifts put one full-timer and one part-timer under their own contract hours.
+RETAIL_MOVES = {("tue-open", "s1"): "s6", ("sat-mid", "s7"): "s2"}
+
+
+def retail_variant(directory: Path) -> Path:
+    """The retail reference solution with ``RETAIL_MOVES`` applied, written to ``directory``."""
+    solution = json.loads(RETAIL_SOLUTION.read_text(encoding="utf-8"))
+    for assignment in solution["assignments"]:
+        key = (assignment["task_id"], assignment["resource_id"])
+        assignment["resource_id"] = RETAIL_MOVES.get(key, assignment["resource_id"])
+    target = directory / "solution.json"
+    target.write_text(json.dumps(solution), encoding="utf-8")
+    return target
 
 
 def potakt_command() -> Path:
@@ -55,6 +70,15 @@ def test_check_json_matches_the_golden_file_byte_for_byte() -> None:
     assert result.returncode == 0, result.stderr
     assert result.stderr == b""
     assert result.stdout == (GOLDEN / "clinic-el.check.json").read_bytes()
+
+
+def test_retail_json_with_per_person_limits_matches_the_golden_file(tmp_path: Path) -> None:
+    result = potakt("check", "--json", RETAIL_MODEL, retail_variant(tmp_path))
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (GOLDEN / "retail-en.check.json").read_bytes()
+    assert b"24 h worked, minimum 32 h" in result.stdout  # s1, full-time
+    assert b"12 h worked, minimum 16 h" in result.stdout  # s7, part-time
 
 
 def test_text_report_matches_the_golden_file_byte_for_byte() -> None:

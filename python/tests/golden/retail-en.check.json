@@ -1,0 +1,111 @@
+{
+  "score": {
+    "hard": 0,
+    "soft": 40,
+    "feasible": true
+  },
+  "rules": [
+    {
+      "rule_id": "coverage",
+      "template": "coverage",
+      "hardness": "hard",
+      "weight": null,
+      "amount": 0,
+      "contribution": 0,
+      "violations": []
+    },
+    {
+      "rule_id": "opening-closing-skills",
+      "template": "requires_attribute",
+      "hardness": "hard",
+      "weight": null,
+      "amount": 0,
+      "contribution": 0,
+      "violations": []
+    },
+    {
+      "rule_id": "no-overlap",
+      "template": "no_overlap",
+      "hardness": "hard",
+      "weight": null,
+      "amount": 0,
+      "contribution": 0,
+      "violations": []
+    },
+    {
+      "rule_id": "max-40h-week",
+      "template": "max_per_period",
+      "hardness": "hard",
+      "weight": null,
+      "amount": 0,
+      "contribution": 0,
+      "violations": []
+    },
+    {
+      "rule_id": "contract-hours",
+      "template": "min_per_period",
+      "hardness": "soft",
+      "weight": 3,
+      "amount": 12,
+      "contribution": 36,
+      "violations": [
+        {
+          "resource_id": "s1",
+          "task_ids": [
+            "fri-close",
+            "mon-close",
+            "sat-close"
+          ],
+          "period": "2026-W45",
+          "amount": 8,
+          "message": "s1 in 2026-W45: 24 h worked, minimum 32 h"
+        },
+        {
+          "resource_id": "s7",
+          "task_ids": [
+            "thu-mid",
+            "tue-mid"
+          ],
+          "period": "2026-W45",
+          "amount": 4,
+          "message": "s7 in 2026-W45: 12 h worked, minimum 16 h"
+        }
+      ]
+    },
+    {
+      "rule_id": "max-5-consecutive-days",
+      "template": "max_consecutive_days",
+      "hardness": "hard",
+      "weight": null,
+      "amount": 0,
+      "contribution": 0,
+      "violations": []
+    },
+    {
+      "rule_id": "balance-weekend-shifts",
+      "template": "balance",
+      "hardness": "soft",
+      "weight": 2,
+      "amount": 2,
+      "contribution": 4,
+      "violations": [
+        {
+          "resource_id": null,
+          "task_ids": [],
+          "period": null,
+          "amount": 2,
+          "message": "tasks per resource range from 0 (s7) to 2 (s2, s6)"
+        }
+      ]
+    },
+    {
+      "rule_id": "chloe-emma-apart",
+      "template": "apart",
+      "hardness": "hard",
+      "weight": null,
+      "amount": 0,
+      "contribution": 0,
+      "violations": []
+    }
+  ]
+}
