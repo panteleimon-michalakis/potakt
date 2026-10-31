@@ -198,3 +198,58 @@ def test_removing_an_assignment_never_increases_conflict_amounts(
 
     for rule_id in MONOTONE:
         assert after.rule(rule_id).amount <= before.rule(rule_id).amount, rule_id
+
+
+# --- per-resource limits (ADR-0006 §5, C1) -------------------------------------------------
+
+FULL_TIME = {"resources": [{"attribute": "contract", "op": "eq", "value": "full"}]}
+
+
+@settings(max_examples=150, deadline=None)
+@given(
+    people=resources(),
+    work=tasks(),
+    template=st.sampled_from(["max_per_period", "min_per_period"]),
+    measure=st.sampled_from(["count", "hours"]),
+    period=st.sampled_from(["day", "week", "horizon"]),
+    hardness=st.sampled_from(["hard", "soft"]),
+    scoped=st.booleans(),
+    data=st.data(),
+)
+def test_attribute_limit_equal_to_the_literal_scores_identically(
+    people: list[Resource],
+    work: list[Task],
+    template: str,
+    measure: str,
+    period: str,
+    hardness: str,
+    scoped: bool,
+    data: st.DataObject,
+) -> None:
+    # count: 0-4 tasks; hours: 0-24 h in quarter hours (always a whole number of minutes).
+    if measure == "count":
+        limit: float = data.draw(st.integers(0, 4))
+    else:
+        limit = data.draw(st.integers(0, 96)) / 4
+    scope = FULL_TIME if scoped else {}
+    in_scope = [not scoped or r.attributes["contract"] == "full" for r in people]
+    # In-scope resources hold exactly the literal; the others hold anything or nothing.
+    other = st.one_of(st.none(), st.integers(0, 50), st.floats(0, 50, allow_nan=False))
+    capped = []
+    for resource, inside in zip(people, in_scope, strict=True):
+        value = limit if inside else data.draw(other)
+        extra = {} if value is None else {"cap": value}
+        capped.append(Resource(id=resource.id, attributes={**resource.attributes, **extra}))
+    pairs = [(t.id, r.id) for t in work for r in people]
+    assignments = data.draw(st.lists(st.sampled_from(pairs), unique=True))
+
+    def limited(value: object) -> DecisionModel:
+        params = {"measure": measure, "period": period, "limit": value}
+        doc = dm_document(rule(template, hardness, 2, params=params, scope=scope), horizon=HORIZON)
+        return model(doc)
+
+    literal = run(limited(limit), capped, work, assignments)
+    per_resource = run(limited({"attribute": "cap"}), capped, work, assignments)
+
+    assert per_resource == literal
+    assert per_resource.to_json() == literal.to_json()

@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.1",
+  "schema_version": "0.2",
   "id": "retail-en-2026-w45",
   "version": 1,
   "status": "confirmed",
@@ -16,6 +16,7 @@
       "attributes": {
         "name": {"column": "name", "type": "str"},
         "contract": {"column": "contract", "type": "str"},
+        "contract_hours": {"column": "contract_hours", "type": "float"},
         "skills": {"column": "skills", "type": "list", "separator": ";"}
       }
     },
@@ -67,24 +68,12 @@
       "status": "confirmed"
     },
     {
-      "id": "contract-hours-full-time",
+      "id": "contract-hours",
       "template": "min_per_period",
       "hardness": "soft",
       "weight": 3,
-      "scope": {"resources": [{"attribute": "contract", "op": "eq", "value": "full_time"}]},
-      "params": {"measure": "hours", "period": "week", "limit": 32},
-      "rationale": "Full-time staff should get at least their 32 contract hours.",
-      "provenance": {"kind": "utterance", "quote": "Full-timers are contracted for 32 hours a week and part-timers for 16; please try to give everyone at least their contract hours."},
-      "status": "confirmed"
-    },
-    {
-      "id": "contract-hours-part-time",
-      "template": "min_per_period",
-      "hardness": "soft",
-      "weight": 3,
-      "scope": {"resources": [{"attribute": "contract", "op": "eq", "value": "part_time"}]},
-      "params": {"measure": "hours", "period": "week", "limit": 16},
-      "rationale": "Part-time staff should get at least their 16 contract hours.",
+      "params": {"measure": "hours", "period": "week", "limit": {"attribute": "contract_hours"}},
+      "rationale": "Everyone should get at least their own weekly contract hours from staff.csv (32 for full-timers, 16 for part-timers).",
       "provenance": {"kind": "utterance", "quote": "Full-timers are contracted for 32 hours a week and part-timers for 16; please try to give everyone at least their contract hours."},
       "status": "confirmed"
     },

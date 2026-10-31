@@ -14,7 +14,7 @@ JSON_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
 
 
 def decision_model_json_schema() -> dict[str, Any]:
-    """The JSON Schema (draft 2020-12) of DM v0 in validation mode."""
+    """The JSON Schema (draft 2020-12) of the Decision Model in validation mode."""
     return {"$schema": JSON_SCHEMA_DIALECT, **DecisionModel.model_json_schema()}
 
 

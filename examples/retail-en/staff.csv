@@ -1,9 +1,9 @@
-id,name,contract,skills
-s1,Alice Brown,full_time,opening;closing
-s2,Ben Carter,full_time,opening
-s3,Chloe Davis,full_time,closing
-s4,Dan Evans,full_time,opening;closing
-s5,Emma Davis,part_time,closing
-s6,Finn Garcia,part_time,opening
-s7,Grace Hill,part_time,
-s8,Hugo Ito,part_time,opening;closing
+id,name,contract,contract_hours,skills
+s1,Alice Brown,full_time,32,opening;closing
+s2,Ben Carter,full_time,32,opening
+s3,Chloe Davis,full_time,32,closing
+s4,Dan Evans,full_time,32,opening;closing
+s5,Emma Davis,part_time,16,closing
+s6,Finn Garcia,part_time,16,opening
+s7,Grace Hill,part_time,16,
+s8,Hugo Ito,part_time,16,opening;closing

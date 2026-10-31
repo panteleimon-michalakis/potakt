@@ -24,9 +24,9 @@ from potakt.checker.context import (
     to_minutes,
 )
 from potakt.checker.result import Violation
-from potakt.checker.scope import contains_all, values_equal
 from potakt.model import (
     Apart,
+    AttributeRef,
     Balance,
     Coverage,
     MaxConsecutiveDays,
@@ -41,7 +41,9 @@ from potakt.model import (
     Together,
     Unavailable,
 )
+from potakt.model.catalog import PeriodLimitParams
 from potakt.model.common import AttributeValue, Measure
+from potakt.model.scope import contains_all, values_equal
 
 Evaluator = Callable[[Any, RuleContext], list[Violation]]
 
@@ -131,11 +133,26 @@ class _PeriodTotal:
     limit: int  # count, or minutes for ``hours``
 
 
+def _limit_of(params: PeriodLimitParams, resource: Resource) -> int:
+    """The resource's limit in tasks (``count``) or minutes (``hours``): the literal, or its
+    own value of the named attribute (ADR-0006 §5)."""
+    limit = params.limit
+    if isinstance(limit, AttributeRef):
+        value = resource.attributes.get(limit.attribute)
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            raise ValueError(
+                f"resource {resource.id!r} has no numeric {limit.attribute!r}; "
+                "run validate_data first"
+            )
+        limit = value
+    return int(limit) if params.measure == "count" else to_minutes(limit)
+
+
 def _period_totals(rule: MaxPerPeriod | MinPerPeriod, ctx: RuleContext) -> Iterator[_PeriodTotal]:
     """The measure of every in-scope resource in every period of the horizon."""
     p = rule.params
-    limit = int(p.limit) if p.measure == "count" else to_minutes(p.limit)
     for resource in ctx.resources:
+        limit = _limit_of(p, resource)
         worked = ctx.tasks_of(resource.id)
         for period in period_spans(p.period, ctx.horizon):
             tasks = tuple(task for task in worked if period.contains(task.day))

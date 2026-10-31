@@ -433,6 +433,61 @@ def test_min_hours_counts_started_hours_of_shortfall() -> None:
     )
 
 
+# --- per-resource limits (ADR-0006 §5, C1) -------------------------------------------------
+
+
+def own_limit(template: str, measure: str, period: str, **fields: Any) -> dict[str, Any]:
+    params = {"measure": measure, "period": period, "limit": {"attribute": "cap"}}
+    return rule(template, params=params, **fields)
+
+
+def test_min_per_period_uses_each_resources_own_limit() -> None:
+    people = [res("r1", cap=16), res("r2", cap=8.5), res("r3", cap=0)]
+    dm = one_rule(own_limit("min_per_period", "hours", "week"))
+
+    result = run(dm, people, TASKS, {"mon-am": ["r1", "r2"]}).rule("min_per_period")
+
+    assert outcome(result) == [
+        ("r1", ("mon-am",), "2026-W45", 8),
+        ("r2", ("mon-am",), "2026-W45", 1),
+    ]
+    assert [v.message for v in result.violations] == [
+        "r1 in 2026-W45: 8 h worked, minimum 16 h",
+        "r2 in 2026-W45: 8 h worked, minimum 8 h 30 min",
+    ]
+
+
+def test_max_per_period_uses_each_resources_own_limit() -> None:
+    people = [res("r1", cap=1), res("r2", cap=2.0), res("r3", cap=0)]
+    dm = one_rule(own_limit("max_per_period", "count", "day"))
+    assignments = {"mon-am": ["r1", "r2"], "mon-pm": ["r1", "r2"], "mon-n": ["r3"]}
+
+    result = run(dm, people, TASKS, assignments).rule("max_per_period")
+
+    assert outcome(result) == [
+        ("r1", ("mon-am", "mon-pm"), "2026-11-02", 1),
+        ("r3", ("mon-n",), "2026-11-02", 1),
+    ]
+    assert result.violations[1].message == "r3 in 2026-11-02: 1 tasks, limit 0"
+
+
+def test_out_of_scope_resources_need_no_limit_value_in_the_checker() -> None:
+    people = [res("r1", cap=8), res("r2")]
+    r1_only = {"resources": [{"attribute": "id", "op": "eq", "value": "r1"}]}
+    dm = one_rule(own_limit("min_per_period", "hours", "week", scope=r1_only))
+
+    result = run(dm, people, TASKS, {"mon-am": ["r1", "r2"]})
+
+    assert result.rule("min_per_period").violations == ()
+
+
+def test_check_rejects_an_in_scope_resource_without_its_limit_value() -> None:
+    dm = one_rule(own_limit("min_per_period", "hours", "week"))
+
+    with pytest.raises(ValueError, match="resource 'r2' has no numeric 'cap'"):
+        run(dm, [res("r1", cap=8), res("r2", cap="x")], TASKS, {})
+
+
 # --- max_consecutive_days --------------------------------------------------------------------
 
 

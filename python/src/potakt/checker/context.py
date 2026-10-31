@@ -5,10 +5,10 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from potakt.checker.scope import in_scope
 from potakt.model import DecisionModel, Horizon, ProblemInstance, Resource, Scope, Solution, Task
 from potakt.model.common import AttributeValue, Period
 from potakt.model.data import TimeWindow, to_utc
+from potakt.model.scope import in_scope
 
 # --- time ------------------------------------------------------------------------------------
 

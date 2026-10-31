@@ -8,9 +8,12 @@ import pytest
 from helpers import constraint, minimal_dm, paths, structural_issues
 
 from potakt.model import (
+    AttributeRef,
     Coverage,
     DecisionModel,
     DecisionModelError,
+    MaxPerPeriod,
+    MinPerPeriod,
     MinRest,
     ValidationIssue,
     load_decision_model,
@@ -413,6 +416,57 @@ def test_data_sources_must_stay_inside_the_model_directory(source: str) -> None:
 
     assert issue.path == "/data/resources/source"
     assert "relative path inside the model directory" in issue.message
+
+
+@pytest.mark.parametrize("version", ["0.1", "0.3", 0.2])
+def test_only_schema_version_0_2_is_accepted(version: object) -> None:
+    doc = minimal_dm()
+    doc["schema_version"] = version
+
+    issue = only_issue(doc)
+
+    assert issue.path == "/schema_version"
+    assert issue.message == "Input should be '0.2'"
+
+
+# --- per-resource limits (ADR-0006 §5, C1) -------------------------------------------------
+
+
+def limit_rule(template: str, limit: object, measure: str = "hours") -> dict[str, Any]:
+    params = {"measure": measure, "period": "week", "limit": limit}
+    return constraint(template, hardness="soft", weight=3, params=params)
+
+
+@pytest.mark.parametrize("template", ["max_per_period", "min_per_period"])
+def test_limit_may_name_a_resource_attribute(template: str) -> None:
+    doc = with_constraints(limit_rule(template, {"attribute": "contract_hours"}))
+
+    dm = parse_decision_model(json.dumps(doc))
+
+    rule = dm.constraints[1]
+    assert isinstance(rule, MaxPerPeriod | MinPerPeriod)
+    assert rule.params.limit == AttributeRef(attribute="contract_hours")
+    assert parse_decision_model(dm.model_dump_json()) == dm
+
+
+LIMIT = "/constraints/1/params/limit"
+
+
+@pytest.mark.parametrize(
+    ("limit", "path", "message"),
+    [
+        ({"attribute": 5}, f"{LIMIT}/attribute", "Input should be a valid string"),
+        ({"attribute": ""}, f"{LIMIT}/attribute", "String should have at least 1 character"),
+        ({"column": "x"}, f"{LIMIT}/column", "Extra inputs are not permitted"),
+        (-1, LIMIT, "Input should be greater than or equal to 0"),
+        ("32", LIMIT, "Input should be a valid integer; Input should be a valid number"),
+    ],
+)
+def test_invalid_limits_point_into_the_limit(limit: object, path: str, message: str) -> None:
+    issues = structural_issues(with_constraints(limit_rule("min_per_period", limit)))
+
+    assert (path, message) in [(issue.path, issue.message) for issue in issues]
+    assert all(issue.path.startswith(LIMIT) for issue in issues)
 
 
 def test_values_are_not_coerced() -> None:

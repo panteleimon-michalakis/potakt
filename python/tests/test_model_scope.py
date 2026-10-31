@@ -4,8 +4,8 @@ from typing import Any
 
 import pytest
 
-from potakt.checker.scope import condition_holds, in_scope
 from potakt.model import Condition
+from potakt.model.scope import condition_holds, in_scope
 
 ATTRIBUTES: dict[str, Any] = {
     "id": "r1",

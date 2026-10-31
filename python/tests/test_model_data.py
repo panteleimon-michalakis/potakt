@@ -525,6 +525,121 @@ def test_csv_window_resource_must_exist(tmp_path: Path) -> None:
     assert issue.message == "unknown resource id 'r9' in leave.csv"
 
 
+# --- per-resource limits (ADR-0006 §5, C1) -------------------------------------------------
+
+
+def per_resource_scenario(
+    tmp_path: Path,
+    values: tuple[str, str, str],
+    *,
+    measure: str = "hours",
+    column_type: str = "float",
+    attribute: str = "cap",
+    scope: dict[str, Any] | None = None,
+) -> Path:
+    """Resources r1-r3 with a ``cap`` column holding ``values`` and one rule limited by it."""
+    doc = minimal_dm()
+    doc["data"]["resources"]["attributes"]["cap"] = {"column": "cap", "type": column_type}
+    params = {"measure": measure, "period": "week", "limit": {"attribute": attribute}}
+    rule = constraint("min_per_period", hardness="soft", weight=3, params=params)
+    if scope is not None:
+        rule["scope"] = scope
+    doc["constraints"].append(rule)
+    rows = [
+        f"{line},{value}"
+        for line, value in zip(RESOURCES_CSV.splitlines()[1:], values, strict=True)
+    ]
+    resources = "\n".join(["id,name,skills,contract,cap", *rows]) + "\n"
+    return write_scenario(tmp_path, doc, resources=resources)
+
+
+@pytest.mark.parametrize(
+    ("measure", "column_type", "values"),
+    [
+        ("hours", "float", ("32", "16", "7.25")),
+        ("hours", "int", ("32", "16", "0")),
+        ("count", "int", ("5", "3", "0")),
+        ("count", "float", ("5", "3.0", "0")),
+    ],
+)
+def test_per_resource_limit_values_are_accepted(
+    tmp_path: Path, measure: str, column_type: str, values: tuple[str, str, str]
+) -> None:
+    model_file = per_resource_scenario(tmp_path, values, measure=measure, column_type=column_type)
+
+    assert load_issues(model_file) == []
+
+
+def test_limit_attribute_must_be_bound(tmp_path: Path) -> None:
+    issue = only_issue(per_resource_scenario(tmp_path, ("1", "2", "3"), attribute="hours"))
+
+    assert issue.path == "/constraints/1/params/limit/attribute"
+    assert issue.message == "unknown resource attribute 'hours'; known: cap, contract, skills"
+
+
+def test_limit_attribute_must_be_numeric(tmp_path: Path) -> None:
+    issue = only_issue(per_resource_scenario(tmp_path, ("1", "2", "3"), attribute="contract"))
+
+    assert issue.path == "/constraints/1/params/limit/attribute"
+    assert issue.message == (
+        "limit attribute 'contract' is bound as 'str'; it must be bound as 'int' or 'float'"
+    )
+
+
+def test_every_in_scope_resource_needs_a_limit_value(tmp_path: Path) -> None:
+    issues = load_issues(per_resource_scenario(tmp_path, ("32", "", "")))
+
+    assert [(i.path, i.message) for i in issues] == [
+        (
+            "/constraints/1/params/limit",
+            f"resource {rid!r} has no cap; every resource in the rule's scope needs a limit value",
+        )
+        for rid in ("r2", "r3")
+    ]
+
+
+@pytest.mark.parametrize("value", ["", "-5"])
+def test_out_of_scope_resources_need_no_limit_value(tmp_path: Path, value: str) -> None:
+    full_time = {"resources": [{"attribute": "contract", "op": "eq", "value": "full_time"}]}
+    # r2 is part-time, so out of scope: its value (missing or invalid) is never read.
+    model_file = per_resource_scenario(tmp_path, ("32", value, "16"), scope=full_time)
+
+    assert load_issues(model_file) == []
+
+
+@pytest.mark.parametrize(
+    ("measure", "value", "message"),
+    [
+        ("hours", "-1", "cap -1 is negative; a limit must be at least 0"),
+        ("hours", "7.501", "cap 7.501 hours is not a whole number of minutes"),
+        ("count", "2.5", "cap 2.5 is not a whole number (measure 'count')"),
+    ],
+)
+def test_limit_values_follow_the_rules_of_literal_limits(
+    tmp_path: Path, measure: str, value: str, message: str
+) -> None:
+    issue = only_issue(per_resource_scenario(tmp_path, ("32", value, "16"), measure=measure))
+
+    assert issue.path == "/constraints/1/params/limit"
+    assert issue.message == f"resource 'r2': {message}"
+
+
+def test_non_numeric_limit_value_of_a_hand_built_instance_is_reported(tmp_path: Path) -> None:
+    # The loader always produces numbers for int/float columns; an instance built in code may not.
+    model_file = per_resource_scenario(tmp_path, ("32", "16", "8"))
+    dm = load_decision_model(model_file)
+    instance = load_instance(dm, model_file.parent)
+    first = instance.resources[0]
+    broken = first.model_copy(update={"attributes": {**first.attributes, "cap": "x"}})
+    changed = instance.model_copy(update={"resources": (broken, *instance.resources[1:])})
+
+    issues = validate_data(dm, changed)
+
+    assert [str(issue) for issue in issues] == [
+        "/constraints/1/params/limit: resource 'r1': cap 'x' is not a number"
+    ]
+
+
 # --- time model ------------------------------------------------------------------------------
 
 

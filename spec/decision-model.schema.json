@@ -143,6 +143,22 @@
       "title": "AttributeBinding",
       "type": "object"
     },
+    "AttributeRef": {
+      "additionalProperties": false,
+      "description": "A per-resource value: each resource's value of the named attribute (ADR-0006 §5).",
+      "properties": {
+        "attribute": {
+          "minLength": 1,
+          "title": "Attribute",
+          "type": "string"
+        }
+      },
+      "required": [
+        "attribute"
+      ],
+      "title": "AttributeRef",
+      "type": "object"
+    },
     "Balance": {
       "additionalProperties": false,
       "description": "Minimize max - min of a measure over scoped resources, counting scoped tasks (soft only).",
@@ -840,15 +856,23 @@
           "type": "string"
         },
         "limit": {
-          "anyOf": [
+          "oneOf": [
             {
-              "type": "integer"
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "minimum": 0,
+                  "type": "number"
+                }
+              ]
             },
             {
-              "type": "number"
+              "$ref": "#/$defs/AttributeRef"
             }
           ],
-          "ge": 0,
           "title": "Limit"
         }
       },
@@ -1542,10 +1566,10 @@
     }
   },
   "additionalProperties": false,
-  "description": "A typed, solver-agnostic description of an assignment decision problem (DM v0).",
+  "description": "A typed, solver-agnostic description of an assignment decision problem (DM 0.2).",
   "properties": {
     "schema_version": {
-      "const": "0.1",
+      "const": "0.2",
       "title": "Schema Version",
       "type": "string"
     },

@@ -65,9 +65,9 @@ class Assumption(StrictModel):
 
 
 class DecisionModel(StrictModel):
-    """A typed, solver-agnostic description of an assignment decision problem (DM v0)."""
+    """A typed, solver-agnostic description of an assignment decision problem (DM 0.2)."""
 
-    schema_version: Literal["0.1"]
+    schema_version: Literal["0.2"]
     id: str = Field(min_length=1)
     version: int = Field(ge=1)
     parent_version: int | None = Field(default=None, ge=1)

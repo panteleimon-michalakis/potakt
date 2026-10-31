@@ -8,7 +8,7 @@ from typing import Any
 from potakt.model import DecisionModelError, ValidationIssue, parse_decision_model
 
 _MINIMAL_DM: dict[str, Any] = {
-    "schema_version": "0.1",
+    "schema_version": "0.2",
     "id": "dm-test",
     "version": 1,
     "status": "draft",

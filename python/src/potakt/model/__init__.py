@@ -1,10 +1,11 @@
-"""Decision Model v0 (ADR-0004) and solutions: types, validation and loading.
+"""Decision Model 0.2 (ADR-0004, ADR-0006) and solutions: types, validation and loading.
 
 Framework-independent by design: depends only on Pydantic, the standard library and tzdata.
 """
 
 from potakt.model.catalog import (
     Apart,
+    AttributeRef,
     Balance,
     Constraint,
     Coverage,
@@ -58,6 +59,7 @@ __all__ = [
     "Assignment",
     "Assumption",
     "AttributeBinding",
+    "AttributeRef",
     "Balance",
     "Condition",
     "Constraint",

@@ -1,4 +1,4 @@
-"""Constraint catalog v0 for the assignment archetype (ADR-0004).
+"""Constraint catalog of the assignment archetype (ADR-0004, amended by ADR-0006).
 
 Each template is a Pydantic model; ``Constraint`` is their discriminated union on ``template``.
 Exact scoring semantics live in the checker (TASK-003); here: parameters and allowed hardness.
@@ -8,7 +8,9 @@ from typing import Annotated, Literal, Self, get_args
 
 from pydantic import (
     AfterValidator,
+    Discriminator,
     Field,
+    Tag,
     ValidationError,
     ValidatorFunctionWrapHandler,
     field_validator,
@@ -121,13 +123,36 @@ class MinRestParams(StrictModel):
     hours: Hours
 
 
+class AttributeRef(StrictModel):
+    """A per-resource value: each resource's value of the named attribute (ADR-0006 §5)."""
+
+    attribute: str = Field(min_length=1)
+
+
+def _limit_kind(value: object) -> str:
+    return "per_resource" if isinstance(value, dict | AttributeRef) else "literal"
+
+
+# Tagged by shape so an invalid limit reports one alternative's errors, not every member's.
+Limit = Annotated[
+    Annotated[
+        Annotated[int, Field(ge=0)] | Annotated[float, Field(ge=0)],
+        Tag("literal"),
+    ]
+    | Annotated[AttributeRef, Tag("per_resource")],
+    Discriminator(_limit_kind),
+]
+
+
 class PeriodLimitParams(StrictModel):
     measure: Measure
     period: Period
-    limit: int | float = Field(ge=0)
+    limit: Limit
 
     @model_validator(mode="after")
     def _check_limit_unit(self) -> Self:
+        if isinstance(self.limit, AttributeRef):
+            return self  # each resource's value is checked against the data (validate_data)
         if self.measure == "count" and not float(self.limit).is_integer():
             message = "limit must be a whole number when measure is 'count'"
             raise_errors("PeriodLimitParams", [(("limit",), message)])

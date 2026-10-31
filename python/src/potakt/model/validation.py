@@ -1,6 +1,6 @@
 """Validation issues, their conversion from Pydantic errors and data-level checks (ADR-0004)."""
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, cast
@@ -11,7 +11,10 @@ from pydantic_core import ErrorDetails
 
 from potakt.model.catalog import (
     Apart,
+    AttributeRef,
     Constraint,
+    MaxPerPeriod,
+    MinPerPeriod,
     RequiresAttribute,
     Stability,
     Together,
@@ -23,9 +26,19 @@ from potakt.model.common import (
     SOFT_RULE_NEEDS_WEIGHT,
     WEIGHT_ONLY_ON_SOFT_RULES,
     Loc,
+    Measure,
+    check_whole_minutes,
 )
-from potakt.model.data import ProblemInstance, Task, TimeWindow, local_time_exists
+from potakt.model.data import (
+    ColumnType,
+    ProblemInstance,
+    Resource,
+    Task,
+    TimeWindow,
+    local_time_exists,
+)
 from potakt.model.decision_model import DecisionModel
+from potakt.model.scope import in_scope
 from potakt.model.solution import Solution
 
 MAX_TASK_MINUTES = 24 * 60
@@ -154,6 +167,7 @@ def validate_data(dm: DecisionModel, instance: ProblemInstance) -> list[Validati
         task_ids=frozenset(t.id for t in instance.tasks),
         resource_attributes=frozenset(resources.attributes),
         task_attributes=frozenset(tasks.attributes),
+        resource_types={name: binding.type for name, binding in resources.attributes.items()},
     )
     for index, rule in enumerate(dm.constraints):
         issues += references.check(("constraints", index), rule, instance)
@@ -209,6 +223,28 @@ def _unknown_attribute(kind: str, name: str, known: frozenset[str]) -> str:
     return f"unknown {kind} attribute {name!r}; known: {', '.join(sorted(known))}"
 
 
+def _limit_value_problem(resource: Resource, name: str, measure: Measure) -> str | None:
+    """Why a resource's own limit is unusable, or ``None``: the rules of literal limits apply."""
+    value = resource.attributes.get(name)
+    if value is None:
+        return (
+            f"resource {resource.id!r} has no {name}; "
+            "every resource in the rule's scope needs a limit value"
+        )
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return f"resource {resource.id!r}: {name} {value!r} is not a number"
+    if value < 0:
+        return f"resource {resource.id!r}: {name} {value:g} is negative; a limit must be at least 0"
+    if measure == "count" and not float(value).is_integer():
+        return f"resource {resource.id!r}: {name} {value:g} is not a whole number (measure 'count')"
+    if measure == "hours":
+        try:
+            check_whole_minutes(value)
+        except ValueError as error:
+            return f"resource {resource.id!r}: {name} {error}"
+    return None
+
+
 @dataclass(frozen=True)
 class _References:
     """What scopes and parameters may refer to in one loaded instance."""
@@ -219,6 +255,7 @@ class _References:
     task_ids: frozenset[str]
     resource_attributes: frozenset[str]
     task_attributes: frozenset[str]
+    resource_types: Mapping[str, ColumnType]
 
     def check(
         self, base: Loc, rule: Constraint, instance: ProblemInstance
@@ -243,9 +280,35 @@ class _References:
                     issues += self._resource((*entry, "resource_id"), assignment.resource_id)
             case Unavailable():
                 issues += self._windows(params, rule, instance)
+            case MaxPerPeriod() | MinPerPeriod():
+                issues += self._per_resource_limits(params, rule, instance)
             case _:
                 pass
         return issues
+
+    def _per_resource_limits(
+        self, params: Loc, rule: MaxPerPeriod | MinPerPeriod, instance: ProblemInstance
+    ) -> list[ValidationIssue]:
+        """A limit read from a numeric attribute that every in-scope resource has (ADR-0006 §5)."""
+        limit = rule.params.limit
+        if not isinstance(limit, AttributeRef):
+            return []
+        name, loc = limit.attribute, (*params, "limit", "attribute")
+        column_type = self.resource_types.get(name)
+        if column_type is None:
+            return [issue_at(loc, _unknown_attribute("resource", name, self.resource_attributes))]
+        if column_type not in ("int", "float"):
+            message = (
+                f"limit attribute {name!r} is bound as {column_type!r}; "
+                "it must be bound as 'int' or 'float'"
+            )
+            return [issue_at(loc, message)]
+        return [
+            issue_at((*params, "limit"), problem)
+            for resource in instance.resources
+            if in_scope(rule.scope.resources, {**resource.attributes, "id": resource.id})
+            and (problem := _limit_value_problem(resource, name, rule.params.measure)) is not None
+        ]
 
     def _scope(self, base: Loc, rule: Constraint) -> list[ValidationIssue]:
         resource_known = self.resource_attributes | {"id"}

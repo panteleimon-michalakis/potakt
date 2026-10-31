@@ -8,7 +8,9 @@ from typer.testing import CliRunner
 from potakt.checker import CheckResult, Score, check
 from potakt.cli import app
 from potakt.model import (
+    AttributeRef,
     DecisionModel,
+    MinPerPeriod,
     ProblemInstance,
     Solution,
     load_decision_model,
@@ -186,7 +188,37 @@ def test_putting_emma_on_chloes_shift_breaks_only_apart() -> None:
 
     assert hard_violations(result) == {"chloe-emma-apart": [(None, ("fri-close",), None, 1)]}
     # Alice drops to 24 h: 8 started hours under her 32 contract hours, x 3; weekend balance 2.
+    assert [v.message for v in result.rule("contract-hours").violations] == [
+        "s1 in 2026-W45: 24 h worked, minimum 32 h"
+    ]
     assert result.score == Score(hard=1, soft=26)
+
+
+def test_retail_contract_hours_are_one_rule_read_from_staff_csv() -> None:
+    dm, instance, _ = load_reference("retail-en")
+
+    minimums = [rule for rule in dm.constraints if isinstance(rule, MinPerPeriod)]
+
+    assert [rule.id for rule in minimums] == ["contract-hours"]
+    assert minimums[0].params.limit == AttributeRef(attribute="contract_hours")
+    contract_hours = {r.id: r.attributes["contract_hours"] for r in instance.resources}
+    assert contract_hours == {f"s{i}": 32.0 for i in range(1, 5)} | {
+        f"s{i}": 16.0 for i in range(5, 9)
+    }
+
+
+def test_moving_a_part_timers_shift_shows_the_part_time_minimum() -> None:
+    dm, instance, solution = load_reference("retail-en")
+    # Ben (s2, full-time, 34 h) takes the Saturday mid shift of Grace (s7, part-time, 18 h).
+    changed = with_changes(solution, {("sat-mid", "s7"): "s2"})
+
+    result = check(dm, instance, changed)
+
+    assert [v.message for v in result.rule("contract-hours").violations] == [
+        "s7 in 2026-W45: 12 h worked, minimum 16 h"
+    ]
+    # 4 started hours under 16, x 3; weekend shifts now range from 0 (s7) to 2 (s2, s6), x 2.
+    assert result.score == Score(hard=0, soft=16)
 
 
 @pytest.mark.parametrize("name", EXAMPLES)

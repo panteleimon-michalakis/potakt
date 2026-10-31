@@ -1,10 +1,13 @@
-"""Scope conditions and attribute comparisons (ADR-0005 §2, amended by ADR-0006 §3)."""
+"""Scope conditions and attribute comparisons (ADR-0005 §2, amended by ADR-0006 §3).
+
+The reference semantics of conditions: data-level validation (ADR-0006 §5) and the checker
+both use them.
+"""
 
 from collections.abc import Mapping, Sequence
 from typing import Literal, TypeGuard
 
-from potakt.model import Condition
-from potakt.model.common import AttributeValue, Scalar
+from potakt.model.common import AttributeValue, Condition, Scalar
 
 
 def _scalars_equal(left: Scalar, right: Scalar) -> bool:
