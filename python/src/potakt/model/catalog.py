@@ -154,10 +154,25 @@ Limit = Annotated[
 ]
 
 
+LIMIT_SHAPE = 'limit must be a number (at least 0) or {"attribute": "<resource attribute>"}'
+
+
 class PeriodLimitParams(StrictModel):
     measure: Measure
     period: Period
     limit: Limit
+
+    @field_validator("limit", mode="wrap")
+    @classmethod
+    def _check_limit_shape(cls, value: object, handler: Handler) -> object:
+        """A limit of the wrong shape gets one message naming both forms (helps LLM repair); a
+        number out of range keeps its bound message. The wrap keeps the JSON Schema unchanged."""
+        try:
+            return handler(value)
+        except ValidationError:
+            if isinstance(value, int | float) and not isinstance(value, bool):
+                raise
+            raise custom_error(LIMIT_SHAPE) from None
 
     @model_validator(mode="after")
     def _check_limit_unit(self) -> Self:

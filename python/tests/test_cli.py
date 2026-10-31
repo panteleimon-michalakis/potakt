@@ -296,8 +296,8 @@ def test_check_reports_deeply_nested_files_without_a_traceback(tmp_path: Path) -
     assert result.exception is None or isinstance(result.exception, SystemExit)
     assert result.exit_code == 1
     assert result.stderr.splitlines() == [
-        "/: JSON too deeply nested",
-        f"{solution_file}#/: JSON too deeply nested",
+        "/: JSON nested more than 64 levels deep",
+        f"{solution_file}#/: JSON nested more than 64 levels deep",
     ]
 
 

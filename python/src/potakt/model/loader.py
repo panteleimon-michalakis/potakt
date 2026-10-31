@@ -1,5 +1,6 @@
 """Loading Decision Models from JSON and problem instances from CSV bindings (ADR-0004)."""
 
+import codecs
 import csv
 import json
 import math
@@ -8,6 +9,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PureWindowsPath
+from typing import cast
 
 from pydantic import ValidationError
 
@@ -72,6 +74,29 @@ def is_reserved_device_name(source: str) -> bool:
 # --- Decision Model JSON ---------------------------------------------------------------------
 
 
+# One nesting limit decided by our code (ADR-0006 §4): the decoder's and Pydantic's recursion
+# thresholds differ by platform and Python version; a real DM is fewer than 10 levels deep.
+MAX_NESTING = 64
+_TOO_DEEP = f"JSON nested more than {MAX_NESTING} levels deep"
+
+
+def _nesting_depth(document: object) -> int:
+    """Levels of nested arrays/objects (``[]`` is 1), found iteratively; stops past the limit."""
+    deepest = 0
+    pending: list[tuple[object, int]] = [(document, 1)]
+    while pending and deepest <= MAX_NESTING:
+        node, depth = pending.pop()
+        if isinstance(node, dict):
+            children: list[object] = list(cast("dict[str, object]", node).values())
+        elif isinstance(node, list):
+            children = list(cast("list[object]", node))
+        else:
+            continue
+        deepest = max(deepest, depth)
+        pending.extend((child, depth + 1) for child in children)
+    return deepest
+
+
 def _parse_json[M: StrictModel](text: str, model: type[M]) -> M:
     try:
         document: object = json.loads(text)
@@ -79,10 +104,12 @@ def _parse_json[M: StrictModel](text: str, model: type[M]) -> M:
         message = f"invalid JSON at line {error.lineno}, column {error.colno}: {error.msg}"
         raise DecisionModelError([ValidationIssue(ROOT, message)]) from None
     except RecursionError:
-        raise DecisionModelError([ValidationIssue(ROOT, "JSON too deeply nested")]) from None
+        raise DecisionModelError([ValidationIssue(ROOT, _TOO_DEEP)]) from None
     except ValueError:
         # The decoder's only other ValueError: an integer longer than int() accepts.
         raise DecisionModelError([ValidationIssue(ROOT, "JSON number too large")]) from None
+    if _nesting_depth(document) > MAX_NESTING:
+        raise DecisionModelError([ValidationIssue(ROOT, _TOO_DEEP)])
     try:
         return model.model_validate_json(text)
     except ValidationError as error:
@@ -195,6 +222,18 @@ class _Table:
     duplicates: frozenset[str]
     width: int
     rows: list[tuple[int, list[str]]]
+    hint: str  # appended to "column not found" when the file seems to use another delimiter
+
+
+# Excel's other delimiters and how a hint names them (TASK-004b F8).
+_FOREIGN_DELIMITERS = ((";", "';'", ";"), ("\t", "a tab", "\\t"))
+
+
+def _delimiter_hint(header: list[str], delimiter: str) -> str:
+    for candidate, named, written in _FOREIGN_DELIMITERS:
+        if candidate != delimiter and any(candidate in name for name in header):
+            return f' (the header contains {named}: add "csv": {{"delimiter": "{written}"}})'
+    return ""
 
 
 class _Reader:
@@ -225,6 +264,15 @@ class _Reader:
             self.report(source_loc, f"cannot read {source}: not a regular file")
             return None
         try:
+            with path.open("rb") as raw:
+                starts_with_bom = raw.read(len(codecs.BOM_UTF8)) == codecs.BOM_UTF8
+            if starts_with_bom and dialect.encoding != "utf-8":
+                # Excel's "CSV UTF-8" declared as a Greek single-byte encoding (TASK-004b F8).
+                message = (
+                    f'{source} starts with a UTF-8 byte order mark; declare "encoding": "utf-8"'
+                )
+                self.report(source_loc, message)
+                return None
             with path.open(encoding=_CODECS[dialect.encoding], newline="") as handle:
                 reader = csv.reader(handle, delimiter=dialect.delimiter)
                 records = [(reader.line_num, row) for row in reader if row]
@@ -247,11 +295,12 @@ class _Reader:
             if name in columns:
                 duplicates.add(name)
             columns.setdefault(name, index)
-        return _Table(source, columns, frozenset(duplicates), len(header), records[1:])
+        hint = _delimiter_hint(header, dialect.delimiter)
+        return _Table(source, columns, frozenset(duplicates), len(header), records[1:], hint)
 
     def column(self, table: _Table, column: str, loc: Loc) -> int | None:
         if column not in table.columns:
-            self.report(loc, f"column {column!r} not found in {table.name}")
+            self.report(loc, f"column {column!r} not found in {table.name}{table.hint}")
             return None
         if column in table.duplicates:
             self.report(loc, f"column {column!r} appears more than once in {table.name}")

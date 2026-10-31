@@ -1063,3 +1063,54 @@ def test_window_source_accepts_a_csv_dialect(tmp_path: Path) -> None:
 
     assert issues == []
     assert [w.resource_id for w in instance.windows["leave"]] == ["r2"]
+
+
+# --- CSV hints for common Excel mistakes (TASK-004b F8) ------------------------------------
+
+SEMICOLON_HINT = ' (the header contains \';\': add "csv": {"delimiter": ";"})'
+TAB_HINT = ' (the header contains a tab: add "csv": {"delimiter": "\\t"})'
+
+
+def test_semicolon_file_read_with_commas_gets_a_delimiter_hint(tmp_path: Path) -> None:
+    model_file = write_scenario(tmp_path, resources=staff_rows("\n"))  # ';' file, default ','
+
+    issues = load_issues(model_file)
+
+    assert issues[0].path == "/data/resources/id"
+    assert issues[0].message == f"column 'id' not found in resources.csv{SEMICOLON_HINT}"
+    assert all(issue.message.endswith(SEMICOLON_HINT) for issue in issues)
+
+
+def test_tab_file_read_with_semicolons_gets_a_delimiter_hint(tmp_path: Path) -> None:
+    doc = minimal_dm()
+    doc["data"]["tasks"]["csv"] = {"delimiter": ";"}
+    model_file = write_scenario(tmp_path, doc, tasks=TASKS_CSV.replace(",", "\t"))
+
+    issues = load_issues(model_file)
+
+    assert issues[0].path == "/data/tasks/id"
+    assert issues[0].message == f"column 'id' not found in tasks.csv{TAB_HINT}"
+
+
+def test_missing_column_without_a_foreign_delimiter_gets_no_hint(tmp_path: Path) -> None:
+    tasks = "id,start,end,demand,required_skill\nt1,2026-11-02T07:00,2026-11-02T15:00,1,\n"
+
+    issue = only_issue(write_scenario(tmp_path, tasks=tasks))
+
+    assert issue.message == "column 'type' not found in tasks.csv"
+
+
+@pytest.mark.parametrize("encoding", ["windows-1253", "iso-8859-7"])
+def test_utf8_bom_with_a_greek_single_byte_encoding_is_reported(
+    tmp_path: Path, encoding: str
+) -> None:
+    dialect = {"delimiter": ";", "decimal": ",", "encoding": encoding}
+    model_file = write_scenario(tmp_path, staff_dm(dialect))
+    (tmp_path / "resources.csv").write_bytes(b"\xef\xbb\xbf" + staff_rows().encode("utf-8"))
+
+    issue = only_issue(model_file)
+
+    assert issue.path == "/data/resources/source"
+    assert issue.message == (
+        'resources.csv starts with a UTF-8 byte order mark; declare "encoding": "utf-8"'
+    )

@@ -61,6 +61,12 @@ Amends ADR-0004 "Time model" and "Validation":
 - **Pathological JSON** in a DM or solution file (for example nesting so deep that the JSON decoder
   overflows, or an integer with thousands of digits) is reported as a normal issue at `/`, never as
   a crash.
+- **One nesting limit** (TASK-004b F6): DM and solution files have at most **64** levels of JSON
+  nesting (`[]` is one level), checked by our code on the parsed document, iteratively and before
+  Pydantic. Deeper input gives one issue at `/` with the same message for every depth,
+  `JSON nested more than 64 levels deep`, including input so deep that the JSON decoder itself
+  overflows. Reason: the decoder's and Pydantic's recursion thresholds differ by platform and Python
+  version, and a real DM is fewer than 10 levels deep.
 
 ### 5. Decision Model 0.2 (C1–C3)
 

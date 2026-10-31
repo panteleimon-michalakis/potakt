@@ -153,9 +153,11 @@ def test_invalid_json_is_reported_at_the_root() -> None:
 @pytest.mark.parametrize(
     ("text", "message"),
     [
-        ("[" * 100_000 + "]" * 100_000, "JSON too deeply nested"),
+        ("[" * 65 + "]" * 65, "JSON nested more than 64 levels deep"),
+        ("[" * 100_000 + "]" * 100_000, "JSON nested more than 64 levels deep"),
         ('{"model_version": ' + "9" * 5000 + "}", "JSON number too large"),
     ],
+    ids=["65", "100000", "huge-integer"],
 )
 def test_pathological_json_is_an_issue_at_the_root(text: str, message: str) -> None:
     with pytest.raises(DecisionModelError) as caught:

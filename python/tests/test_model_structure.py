@@ -474,21 +474,35 @@ def test_limit_may_name_a_resource_attribute(template: str) -> None:
 LIMIT = "/constraints/1/params/limit"
 
 
-@pytest.mark.parametrize(
-    ("limit", "path", "message"),
-    [
-        ({"attribute": 5}, f"{LIMIT}/attribute", "Input should be a valid string"),
-        ({"attribute": ""}, f"{LIMIT}/attribute", "String should have at least 1 character"),
-        ({"column": "x"}, f"{LIMIT}/column", "Extra inputs are not permitted"),
-        (-1, LIMIT, "limit -1 is below the minimum of 0"),
-        ("32", LIMIT, "Input should be a valid integer; Input should be a valid number"),
-    ],
-)
-def test_invalid_limits_point_into_the_limit(limit: object, path: str, message: str) -> None:
-    issues = structural_issues(with_constraints(limit_rule("min_per_period", limit)))
+LIMIT_SHAPE = 'limit must be a number (at least 0) or {"attribute": "<resource attribute>"}'
 
-    assert (path, message) in [(issue.path, issue.message) for issue in issues]
-    assert all(issue.path.startswith(LIMIT) for issue in issues)
+
+@pytest.mark.parametrize(
+    "limit",
+    [
+        {"attribute": 5},
+        {"attribute": ""},
+        {"column": "x"},
+        {"attribute": "a", "x": 1},
+        "32",
+        True,
+        None,
+        [],
+    ],
+    ids=["attr-int", "attr-empty", "extra-key", "attr-and-extra", "string", "bool", "null", "list"],
+)
+def test_limit_of_a_wrong_shape_names_both_forms(limit: object) -> None:
+    # TASK-004b F7: one message at the limit that shows both accepted forms (helps LLM repair).
+    issue = only_issue(with_constraints(limit_rule("min_per_period", limit)))
+
+    assert issue.path == LIMIT
+    assert issue.message == LIMIT_SHAPE
+
+
+def test_negative_limit_keeps_the_bound_message() -> None:
+    issue = only_issue(with_constraints(limit_rule("min_per_period", -1)))
+
+    assert (issue.path, issue.message) == (LIMIT, "limit -1 is below the minimum of 0")
 
 
 @pytest.mark.parametrize(("measure", "limit"), [("count", 100_000), ("hours", 8784)])
@@ -561,19 +575,39 @@ def test_invalid_json_is_reported_at_the_root() -> None:
     assert issue.message.startswith("invalid JSON")
 
 
-DEEPLY_NESTED = "[" * 100_000 + "]" * 100_000
+TOO_DEEP = "JSON nested more than 64 levels deep"
 HUGE_INTEGER = '{"version": ' + "9" * 5000 + "}"
+
+
+def nested(depth: int) -> str:
+    """A JSON array ``depth`` levels deep (``[]`` is one level)."""
+    return "[" * depth + "]" * depth
 
 
 @pytest.mark.parametrize(
     ("text", "message"),
-    [(DEEPLY_NESTED, "JSON too deeply nested"), (HUGE_INTEGER, "JSON number too large")],
+    [
+        (nested(65), TOO_DEEP),
+        (nested(300), TOO_DEEP),  # previously Pydantic's own recursion message
+        (nested(100_000), TOO_DEEP),  # json.loads RecursionError
+        ('{"vocabulary": ' + nested(70) + "}", TOO_DEEP),
+        (HUGE_INTEGER, "JSON number too large"),
+    ],
+    ids=["65", "300", "100000", "inside-an-object", "huge-integer"],
 )
 def test_pathological_json_is_an_issue_at_the_root(text: str, message: str) -> None:
     with pytest.raises(DecisionModelError) as caught:
         parse_decision_model(text)
 
     assert [str(issue) for issue in caught.value.issues] == [f"/: {message}"]
+
+
+def test_64_levels_of_nesting_are_accepted() -> None:
+    with pytest.raises(DecisionModelError) as caught:
+        parse_decision_model(nested(64))
+
+    assert [str(issue) for issue in caught.value.issues] != [f"/: {TOO_DEEP}"]
+    assert TOO_DEEP not in str(caught.value)  # not a DM, but the nesting is fine
 
 
 def test_document_must_be_a_json_object() -> None:
