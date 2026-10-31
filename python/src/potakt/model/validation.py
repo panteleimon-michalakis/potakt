@@ -96,7 +96,9 @@ def issues_from_pydantic(error: ValidationError, document: object) -> list[Valid
 
 
 # Pydantic reports these before any validator runs: a soft-only template without ``weight`` and
-# ``weight`` on a hard-only template (``coverage``). ``weight`` exists only on constraints.
+# ``weight`` on a hard-only template (``coverage``). They apply only to a constraint's own field,
+# located as ("constraints", index, template tag, "weight"); a ``weight`` anywhere else keeps
+# Pydantic's message.
 _WEIGHT_MESSAGES = {
     "missing": SOFT_RULE_NEEDS_WEIGHT,
     "extra_forbidden": WEIGHT_ONLY_ON_SOFT_RULES,
@@ -104,8 +106,9 @@ _WEIGHT_MESSAGES = {
 
 
 def _message(detail: ErrorDetails) -> str:
-    """The issue message: Pydantic's, except the domain wording for ``weight`` (ADR-0004)."""
-    if detail["loc"][-1:] == ("weight",):
+    """The issue message: Pydantic's, except the domain wording for a rule's ``weight``."""
+    loc = detail["loc"]
+    if len(loc) == 4 and loc[0] == "constraints" and loc[3] == "weight":
         return _WEIGHT_MESSAGES.get(detail["type"], detail["msg"])
     return detail["msg"]
 

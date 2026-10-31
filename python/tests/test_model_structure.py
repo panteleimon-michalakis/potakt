@@ -197,6 +197,28 @@ def test_coverage_marked_soft_is_rejected() -> None:
     assert issue.message == "template 'coverage' allows only hard rules"
 
 
+@pytest.mark.parametrize("where", ["params", "provenance", "scope"])
+def test_weight_misplaced_inside_a_soft_rule_keeps_the_generic_message(where: str) -> None:
+    # Only a constraint's own `weight` field gets the domain wording; elsewhere it would mislead.
+    rule = constraint("balance", hardness="soft", weight=2, params={"measure": "count"})
+    rule.setdefault(where, {})["weight"] = 3
+
+    issue = only_issue(with_constraints(rule))
+
+    assert issue.path == f"/constraints/1/{where}/weight"
+    assert issue.message == "Extra inputs are not permitted"
+
+
+def test_weight_at_the_document_root_keeps_the_generic_message() -> None:
+    doc = minimal_dm()
+    doc["weight"] = 1
+
+    issue = only_issue(doc)
+
+    assert issue.path == "/weight"
+    assert issue.message == "Extra inputs are not permitted"
+
+
 def test_missing_coverage_is_rejected() -> None:
     doc = minimal_dm()
     doc["constraints"] = [constraint("no_overlap", hardness="hard")]

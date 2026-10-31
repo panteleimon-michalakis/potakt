@@ -133,6 +133,15 @@ def test_duplicate_assignment_pairs_are_rejected() -> None:
     ]
 
 
+def test_weight_in_a_solution_keeps_the_generic_message() -> None:
+    doc = minimal_solution()
+    doc["assignments"][0]["weight"] = 2
+
+    assert [str(issue) for issue in solution_issues(doc)] == [
+        "/assignments/0/weight: Extra inputs are not permitted"
+    ]
+
+
 def test_invalid_json_is_reported_at_the_root() -> None:
     with pytest.raises(DecisionModelError) as caught:
         parse_solution("{")
