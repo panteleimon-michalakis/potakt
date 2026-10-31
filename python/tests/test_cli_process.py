@@ -57,6 +57,14 @@ def test_check_json_matches_the_golden_file_byte_for_byte() -> None:
     assert result.stdout == (GOLDEN / "clinic-el.check.json").read_bytes()
 
 
+def test_text_report_matches_the_golden_file_byte_for_byte() -> None:
+    # The JSON golden is ASCII; this one starts with the Greek title, so CI compares Greek bytes.
+    result = potakt("check", CLINIC_MODEL, CLINIC_SOLUTION)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (GOLDEN / "clinic-el.check.txt").read_bytes()
+
+
 def test_text_report_is_utf8_with_lf_line_endings() -> None:
     # The JSON report is ASCII; the text report starts with the Greek title of the model.
     result = potakt("check", CLINIC_MODEL, CLINIC_SOLUTION)

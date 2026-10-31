@@ -1,0 +1,17 @@
+Βάρδιες νοσηλευτών Παθολογικής, 2–8/11/2026 (clinic-el-2026-w45 v1)
+Score: hard 0, soft 57 (feasible)
+
+max-five-shifts-per-week — max_per_period, soft, weight 10: amount 5, soft +50
+  - n1 in 2026-W45: 6 tasks, limit 5
+  - n2 in 2026-W45: 6 tasks, limit 5
+  - n3 in 2026-W45: 6 tasks, limit 5
+  - n4 in 2026-W45: 6 tasks, limit 5
+  - n6 in 2026-W45: 6 tasks, limit 5
+
+eleni-avoids-nights — preference, soft, weight 3: amount 1, soft +3
+  - n2 on 2026-11-02-nychta: avoided assignment
+
+balance-nights-als — balance, soft, weight 2: amount 2, soft +4
+  - tasks per resource range from 1 (n2) to 3 (n1, n3)
+
+Rules without violations: coverage, night-requires-als, min-rest-11h, max-one-shift-per-day, max-six-shifts-per-week, no-overlap, maria-leave-wed, nikos-not-fri-afternoon
