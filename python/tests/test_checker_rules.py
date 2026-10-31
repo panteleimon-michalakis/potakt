@@ -149,6 +149,18 @@ def test_requires_attribute_equals_ignores_list_order_and_matches_scalars() -> N
     ]
 
 
+@pytest.mark.parametrize("match", ["contains", "equals"])
+def test_resource_without_the_attribute_matches_only_an_empty_requirement(match: str) -> None:
+    empty = task("empty", "2026-11-02T07:00", "2026-11-02T15:00", needs=[])
+    some = task("some", "2026-11-03T07:00", "2026-11-03T15:00", needs=["x"])
+    params = {"task_attribute": "needs", "resource_attribute": "certs", "match": match}
+    dm = one_rule(rule("requires_attribute", params=params))
+
+    result = run(dm, RESOURCES, [empty, some], {"empty": ["r1"], "some": ["r1"]})
+
+    assert outcome(result.rule("requires_attribute")) == [("r1", ("some",), None, 1)]
+
+
 # --- no_overlap ------------------------------------------------------------------------------
 
 
@@ -319,6 +331,46 @@ def test_night_across_the_dst_fall_back_counts_its_real_length() -> None:
     assert outcome(over) == [("r1", ("night",), "2026-10-24", 1)]
     assert over.violations[0].message == "r1 in 2026-10-24: 9 h worked, limit 8 h"
     assert exact.violations == ()
+
+
+def test_weeks_are_iso_weeks_even_when_the_horizon_starts_mid_week() -> None:
+    # Thursday 5 Nov to Tuesday 10 Nov: the end of ISO week 45 and the start of week 46.
+    shifts = [
+        task(name, f"2026-11-{day:02d}T07:00", f"2026-11-{day:02d}T15:00")
+        for name, day in (("thu", 5), ("fri", 6), ("mon", 9), ("tue", 10))
+    ]
+    two_people = {"resources": [{"attribute": "id", "op": "in", "value": ["r1", "r2"]}]}
+    dm = one_rule(
+        limit_rule("max_per_period", "count", "week", 1),
+        limit_rule("min_per_period", "count", "week", 2, scope=two_people),
+        horizon=("2026-11-05", "2026-11-10"),
+    )
+
+    result = run(dm, RESOURCES, shifts, {"thu": ["r1"], "fri": ["r1"], "mon": ["r1"]})
+
+    assert outcome(result.rule("max_per_period")) == [("r1", ("fri", "thu"), "2026-W45", 1)]
+    # The partial first week still demands the full weekly minimum (ADR-0005 known limitation).
+    assert outcome(result.rule("min_per_period")) == [
+        ("r1", ("mon",), "2026-W46", 1),
+        ("r2", (), "2026-W45", 2),
+        ("r2", (), "2026-W46", 2),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("horizon", "labels"),
+    [
+        (("2025-12-31", "2026-01-05"), ["2026-W01", "2026-W02"]),
+        (("2026-12-31", "2027-01-04"), ["2026-W53", "2027-W01"]),
+    ],
+)
+def test_week_labels_use_the_iso_year(horizon: tuple[str, str], labels: list[str]) -> None:
+    r1 = {"resources": [{"attribute": "id", "op": "eq", "value": "r1"}]}
+    dm = one_rule(limit_rule("min_per_period", "count", "week", 1, scope=r1), horizon=horizon)
+
+    result = run(dm, RESOURCES, [], {})
+
+    assert [v.period for v in result.rule("min_per_period").violations] == labels
 
 
 # --- min_per_period --------------------------------------------------------------------------
@@ -640,6 +692,15 @@ def test_stability_reports_each_missing_baseline_pair_once() -> None:
 def test_stability_ignores_out_of_scope_baseline_pairs() -> None:
     scope = {"resources": [{"attribute": "id", "op": "ne", "value": "r3"}]}
     dm = one_rule(stability(("mon-am", "r1"), ("mon-n", "r3"), scope=scope))
+
+    result = run(dm, RESOURCES, TASKS, {})
+
+    assert outcome(result.rule("stability")) == [("r1", ("mon-am",), None, 1)]
+
+
+def test_stability_ignores_baseline_pairs_of_out_of_scope_tasks() -> None:
+    mornings = {"tasks": [{"attribute": "type", "op": "eq", "value": "am"}]}
+    dm = one_rule(stability(("mon-am", "r1"), ("mon-n", "r3"), scope=mornings))
 
     result = run(dm, RESOURCES, TASKS, {})
 
