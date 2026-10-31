@@ -7,7 +7,28 @@ plain language (English or Greek) into a verified, explainable decision model, s
 optimization solvers, explain the result, answer "what-if" questions, and publish a decision only after
 a human approves it. **The LLM understands, the solver guarantees, the human decides.**
 
-**Status: early development (Phase 0).** Nothing below is implemented yet beyond the project skeleton.
+## Status
+
+**Early development (Phase 0).** What exists today:
+
+- the **Decision Model** (schema version 0.2): typed JSON validated structurally and against the CSV
+  data it binds, with every issue reported as a JSON pointer and a message;
+- the **independent checker**, which scores any solution against a model (hard and soft score, per-rule
+  violations) without trusting whoever produced it;
+- the CLI commands **`potakt validate`**, **`potakt check`** (exit code 0 feasible, 1 invalid input,
+  3 infeasible) and **`potakt schema`** (`--solution` for the solution schema).
+
+There is no LLM, solver, agent or server yet; the capabilities below are planned.
+
+## Try it
+
+```
+# from the repository root (needs uv: https://docs.astral.sh/uv/)
+cd python
+uv sync
+uv run potakt validate ../examples/clinic-el/model.json
+uv run potakt check ../examples/clinic-el/model.json ../examples/clinic-el/solution.json
+```
 
 ## Planned capabilities
 
