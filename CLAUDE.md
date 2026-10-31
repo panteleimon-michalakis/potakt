@@ -80,7 +80,9 @@ Every task; the evidence goes in the report.
 5. **Regression tests:** every bug fix has a test that failed before the fix (red output in the log).
 6. **Platform independence:** behaviour must not depend on the OS or OS version (local Windows 10,
    CI Windows and Linux). Our code decides; tests never rely on what an OS does with special names,
-   encodings, line endings or locale.
+   encodings, line endings or locale. Tests never depend on environment variables (colour, terminal
+   width, CI); tests/conftest.py resets them. Before reporting, run the suite once with
+   `GITHUB_ACTIONS=true FORCE_COLOR=1 COLUMNS=40 uv run pytest -q` (Git Bash).
 7. **Docs consistency:** help text, README, ADRs and examples match the behaviour (exit codes,
    messages, schema versions).
 8. **Repository hygiene:** `git ls-files .tasks .claude` prints nothing; no secrets; `git ls-files --eol`
