@@ -31,10 +31,18 @@ from potakt.evaluation.scenario import (
     UnsupportedRequest,
     load_scenario,
 )
+from potakt.evaluation.test_a import (
+    INSTRUCTION_PATH,
+    Prompt,
+    evaluate_candidate,
+    extract_candidate,
+    render_test_a,
+)
 from potakt.evaluation.vacuity import is_vacuous
 
 __all__ = [
     "CATEGORIES",
+    "INSTRUCTION_PATH",
     "SCENARIO_TAGS",
     "Bundle",
     "BundleFile",
@@ -46,6 +54,7 @@ __all__ = [
     "LoadedModel",
     "LoadedScenario",
     "MatchedPair",
+    "Prompt",
     "ReferenceScore",
     "Scenario",
     "ScenarioError",
@@ -57,8 +66,11 @@ __all__ = [
     "build_bundle",
     "compare_models",
     "denote",
+    "evaluate_candidate",
+    "extract_candidate",
     "is_vacuous",
     "load_model",
     "load_scenario",
     "render_bundle",
+    "render_test_a",
 ]

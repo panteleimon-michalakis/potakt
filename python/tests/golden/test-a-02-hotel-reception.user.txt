@@ -1,0 +1,1822 @@
+## Request
+
+[22/11/26, 18:02] Δέσποινα (Υποδοχή): Καλησπέρα! Σου στέλνω τα αρχεία για το πρόγραμμα της υποδοχής για την επόμενη βδομάδα, Δευτέρα 23 με Κυριακή 29/11 🙂
+[22/11/26, 18:02] Δέσποινα (Υποδοχή): ypodoxi_prosopiko.csv και ypodoxi_vardies.csv, τα έβγαλα από το Excel όπως πάντα
+[22/11/26, 18:04] Δέσποινα (Υποδοχή): Τρεις βάρδιες όπως ξέρεις, πρωί 7-3, απόγευμα 3-11 και νύχτα 11-7. Πόσα άτομα θέλει η καθεμία το γράφει το αρχείο
+[22/11/26, 18:05] Δέσποινα (Υποδοχή): Ανάμεσα σε δύο βάρδιες θέλω οπωσδήποτε έντεκα ώρες ξεκούραση, δεν παίζουμε με αυτό
+[22/11/26, 18:05] Δέσποινα (Υποδοχή): Πάνω από πέντε βάρδιες τη βδομάδα απαγορεύεται, το λέει και η σύμβαση
+[22/11/26, 18:07] Δέσποινα (Υποδοχή): Ιδανικά όχι πάνω από τέσσερις μέρες συνεχόμενες δουλειά για κανέναν
+[22/11/26, 18:08] Δέσποινα (Υποδοχή): Προσπάθησε επίσης ο καθένας να βγάλει τις ώρες της σύμβασής του, είναι στη στήλη «Ώρες σύμβασης»
+[22/11/26, 18:10] Δέσποινα (Υποδοχή): Την Τετάρτη το απόγευμα έρχεται το γκρουπ του συνεδρίου από τη Γαλλία, την Παρασκευή το απόγευμα οι Γερμανοί και φεύγουν την Κυριακή το πρωί
+[22/11/26, 18:11] Δέσποινα (Υποδοχή): Όπου γράφει γλώσσα στο αρχείο με τις βάρδιες, θέλω οπωσδήποτε όποιον βάλεις να τη μιλάει
+[22/11/26, 18:13] Δέσποινα (Υποδοχή): Τις νύχτες μοίρασέ τις όσο πιο δίκαια γίνεται σε όλους, να μην τις φορτωθεί πάλι ένας
+[22/11/26, 18:15] Δέσποινα (Υποδοχή): Η Κατερίνα έχει εξεταστική και την Πέμπτη 26/11 δεν μπορεί καθόλου, όλο το 24ωρο
+[22/11/26, 18:16] Δέσποινα (Υποδοχή): Ο Γιάννης θέλει πρωινά αν γίνεται
+[22/11/26, 18:20] Δέσποινα (Υποδοχή): Α, και την Παρασκευή έρχεται ο τεχνικός για το ασανσέρ, αλλά αυτό δεν σε αφορά 😅
+[22/11/26, 18:21] Δέσποινα (Υποδοχή): Ευχαριστώ πολύ!! 🙏
+
+## Data files
+
+### ypodoxi_prosopiko.csv (encoding: windows-1253)
+
+```
+Κωδικός;Ονοματεπώνυμο;Γλώσσες;Ώρες σύμβασης;Σημειώσεις
+Υ1;Μαρία Αλεξίου;αγγλικά, γερμανικά;40;
+Υ2;Γιάννης Παπαδάκης;αγγλικά;40;
+Υ3;Ελένη Τσιρίγου;αγγλικά, γαλλικά;40;
+Υ4;Νίκος Βλάχος;αγγλικά, γερμανικά;37,5;
+Υ5;Κατερίνα Ζαχαρίου;αγγλικά, ιταλικά;30;φοιτήτρια
+Υ6;Πέτρος Ιωαννίδης;αγγλικά, γαλλικά;30;
+Υ7;Σοφία Μιχαηλίδου;αγγλικά;20;
+Υ8;Άρης Καλογεράκης;αγγλικά, γερμανικά;20;νέος συνάδελφος από 1/11
+```
+
+### ypodoxi_vardies.csv (encoding: windows-1253)
+
+```
+Κωδικός;Έναρξη;Λήξη;Άτομα;Βάρδια;Γλώσσα
+ΔΕ23-Π;2026-11-23 07:00;2026-11-23 15:00;2;πρωί;
+ΔΕ23-Α;2026-11-23 15:00;2026-11-23 23:00;2;απόγευμα;
+ΔΕ23-Ν;2026-11-23 23:00;2026-11-24 07:00;1;νύχτα;
+ΤΡ24-Π;2026-11-24 07:00;2026-11-24 15:00;2;πρωί;
+ΤΡ24-Α;2026-11-24 15:00;2026-11-24 23:00;2;απόγευμα;
+ΤΡ24-Ν;2026-11-24 23:00;2026-11-25 07:00;1;νύχτα;
+ΤΕ25-Π;2026-11-25 07:00;2026-11-25 15:00;2;πρωί;
+ΤΕ25-Α;2026-11-25 15:00;2026-11-25 23:00;2;απόγευμα;γαλλικά
+ΤΕ25-Ν;2026-11-25 23:00;2026-11-26 07:00;1;νύχτα;
+ΠΕ26-Π;2026-11-26 07:00;2026-11-26 15:00;2;πρωί;
+ΠΕ26-Α;2026-11-26 15:00;2026-11-26 23:00;2;απόγευμα;
+ΠΕ26-Ν;2026-11-26 23:00;2026-11-27 07:00;1;νύχτα;
+ΠΑ27-Π;2026-11-27 07:00;2026-11-27 15:00;2;πρωί;
+ΠΑ27-Α;2026-11-27 15:00;2026-11-27 23:00;2;απόγευμα;γερμανικά
+ΠΑ27-Ν;2026-11-27 23:00;2026-11-28 07:00;1;νύχτα;
+ΣΑ28-Π;2026-11-28 07:00;2026-11-28 15:00;2;πρωί;
+ΣΑ28-Α;2026-11-28 15:00;2026-11-28 23:00;2;απόγευμα;
+ΣΑ28-Ν;2026-11-28 23:00;2026-11-29 07:00;1;νύχτα;
+ΚΥ29-Π;2026-11-29 07:00;2026-11-29 15:00;2;πρωί;γερμανικά
+ΚΥ29-Α;2026-11-29 15:00;2026-11-29 23:00;2;απόγευμα;
+ΚΥ29-Ν;2026-11-29 23:00;2026-11-30 07:00;1;νύχτα;
+```
+
+## Decision Model JSON Schema
+
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "Apart": {
+      "additionalProperties": false,
+      "description": "The two resources should not work the same task.",
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/Scope"
+        },
+        "rationale": {
+          "minLength": 1,
+          "title": "Rationale",
+          "type": "string"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "status": {
+          "default": "proposed",
+          "enum": [
+            "proposed",
+            "confirmed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "hardness": {
+          "enum": [
+            "hard",
+            "soft"
+          ],
+          "title": "Hardness",
+          "type": "string"
+        },
+        "weight": {
+          "anyOf": [
+            {
+              "maximum": 10000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Weight"
+        },
+        "template": {
+          "const": "apart",
+          "title": "Template",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/ResourcePairParams"
+        }
+      },
+      "required": [
+        "id",
+        "rationale",
+        "provenance",
+        "hardness",
+        "template",
+        "params"
+      ],
+      "title": "Apart",
+      "type": "object"
+    },
+    "Assumption": {
+      "additionalProperties": false,
+      "description": "Something the agent assumed and still needs to confirm.",
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "text": {
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "proposed",
+            "confirmed"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "text",
+        "status"
+      ],
+      "title": "Assumption",
+      "type": "object"
+    },
+    "AttributeBinding": {
+      "additionalProperties": false,
+      "description": "Maps one CSV column to a typed attribute.",
+      "properties": {
+        "column": {
+          "minLength": 1,
+          "title": "Column",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "str",
+            "int",
+            "float",
+            "bool",
+            "list"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "separator": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Separator"
+        }
+      },
+      "required": [
+        "column",
+        "type"
+      ],
+      "title": "AttributeBinding",
+      "type": "object"
+    },
+    "AttributeRef": {
+      "additionalProperties": false,
+      "description": "A per-resource value: each resource's value of the named attribute (ADR-0006 §5).",
+      "properties": {
+        "attribute": {
+          "minLength": 1,
+          "title": "Attribute",
+          "type": "string"
+        }
+      },
+      "required": [
+        "attribute"
+      ],
+      "title": "AttributeRef",
+      "type": "object"
+    },
+    "Balance": {
+      "additionalProperties": false,
+      "description": "Minimize max - min of a measure over scoped resources, counting scoped tasks (soft only).",
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/Scope"
+        },
+        "rationale": {
+          "minLength": 1,
+          "title": "Rationale",
+          "type": "string"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "status": {
+          "default": "proposed",
+          "enum": [
+            "proposed",
+            "confirmed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "hardness": {
+          "const": "soft",
+          "title": "Hardness",
+          "type": "string"
+        },
+        "weight": {
+          "maximum": 10000,
+          "minimum": 1,
+          "title": "Weight",
+          "type": "integer"
+        },
+        "template": {
+          "const": "balance",
+          "title": "Template",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/BalanceParams"
+        }
+      },
+      "required": [
+        "id",
+        "rationale",
+        "provenance",
+        "hardness",
+        "weight",
+        "template",
+        "params"
+      ],
+      "title": "Balance",
+      "type": "object"
+    },
+    "BalanceParams": {
+      "additionalProperties": false,
+      "properties": {
+        "measure": {
+          "enum": [
+            "count",
+            "hours"
+          ],
+          "title": "Measure",
+          "type": "string"
+        }
+      },
+      "required": [
+        "measure"
+      ],
+      "title": "BalanceParams",
+      "type": "object"
+    },
+    "BaselineAssignment": {
+      "additionalProperties": false,
+      "properties": {
+        "task_id": {
+          "minLength": 1,
+          "title": "Task Id",
+          "type": "string"
+        },
+        "resource_id": {
+          "minLength": 1,
+          "title": "Resource Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "task_id",
+        "resource_id"
+      ],
+      "title": "BaselineAssignment",
+      "type": "object"
+    },
+    "Condition": {
+      "additionalProperties": false,
+      "description": "One filter ``{attribute, op, value}``; the conditions of a scope are combined with AND.",
+      "properties": {
+        "attribute": {
+          "minLength": 1,
+          "title": "Attribute",
+          "type": "string"
+        },
+        "op": {
+          "enum": [
+            "eq",
+            "ne",
+            "in",
+            "not_in",
+            "contains",
+            "gte",
+            "lte"
+          ],
+          "title": "Op",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          ],
+          "title": "Value"
+        }
+      },
+      "required": [
+        "attribute",
+        "op",
+        "value"
+      ],
+      "title": "Condition",
+      "type": "object"
+    },
+    "Coverage": {
+      "additionalProperties": false,
+      "description": "Each in-scope task gets exactly ``demand`` resources (structural, hard only).",
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/Scope"
+        },
+        "rationale": {
+          "minLength": 1,
+          "title": "Rationale",
+          "type": "string"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "status": {
+          "default": "proposed",
+          "enum": [
+            "proposed",
+            "confirmed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "hardness": {
+          "const": "hard",
+          "title": "Hardness",
+          "type": "string"
+        },
+        "template": {
+          "const": "coverage",
+          "title": "Template",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/NoParams"
+        }
+      },
+      "required": [
+        "id",
+        "rationale",
+        "provenance",
+        "hardness",
+        "template"
+      ],
+      "title": "Coverage",
+      "type": "object"
+    },
+    "CsvDialect": {
+      "additionalProperties": false,
+      "description": "How a CSV file is written (ADR-0006 §5): delimiter, decimal separator and encoding.\n\nThe defaults read a plain UTF-8 file (BOM tolerated). ``decimal`` applies to ``float`` cells\nonly; Greek-locale Excel writes ``;``, ``,`` and Windows-1253.",
+      "properties": {
+        "delimiter": {
+          "default": ",",
+          "enum": [
+            ",",
+            ";",
+            "\t"
+          ],
+          "title": "Delimiter",
+          "type": "string"
+        },
+        "decimal": {
+          "default": ".",
+          "enum": [
+            ".",
+            ","
+          ],
+          "title": "Decimal",
+          "type": "string"
+        },
+        "encoding": {
+          "default": "utf-8",
+          "enum": [
+            "utf-8",
+            "windows-1253",
+            "iso-8859-7"
+          ],
+          "title": "Encoding",
+          "type": "string"
+        }
+      },
+      "title": "CsvDialect",
+      "type": "object"
+    },
+    "DataBindings": {
+      "additionalProperties": false,
+      "description": "Where the resources and tasks of a DM come from.",
+      "properties": {
+        "resources": {
+          "$ref": "#/$defs/ResourceBinding"
+        },
+        "tasks": {
+          "$ref": "#/$defs/TaskBinding"
+        }
+      },
+      "required": [
+        "resources",
+        "tasks"
+      ],
+      "title": "DataBindings",
+      "type": "object"
+    },
+    "Horizon": {
+      "additionalProperties": false,
+      "description": "The planning period: ``start`` and ``end`` dates, both inclusive, at most 366 days.",
+      "properties": {
+        "start": {
+          "description": "A date from 1970-01-01 to 2999-12-31",
+          "format": "date",
+          "title": "Start",
+          "type": "string"
+        },
+        "end": {
+          "description": "A date from 1970-01-01 to 2999-12-31",
+          "format": "date",
+          "title": "End",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "title": "Horizon",
+      "type": "object"
+    },
+    "MaxConsecutiveDays": {
+      "additionalProperties": false,
+      "description": "A resource works at most ``days`` consecutive days.",
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/Scope"
+        },
+        "rationale": {
+          "minLength": 1,
+          "title": "Rationale",
+          "type": "string"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "status": {
+          "default": "proposed",
+          "enum": [
+            "proposed",
+            "confirmed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "hardness": {
+          "enum": [
+            "hard",
+            "soft"
+          ],
+          "title": "Hardness",
+          "type": "string"
+        },
+        "weight": {
+          "anyOf": [
+            {
+              "maximum": 10000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Weight"
+        },
+        "template": {
+          "const": "max_consecutive_days",
+          "title": "Template",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/MaxConsecutiveDaysParams"
+        }
+      },
+      "required": [
+        "id",
+        "rationale",
+        "provenance",
+        "hardness",
+        "template",
+        "params"
+      ],
+      "title": "MaxConsecutiveDays",
+      "type": "object"
+    },
+    "MaxConsecutiveDaysParams": {
+      "additionalProperties": false,
+      "properties": {
+        "days": {
+          "maximum": 366,
+          "minimum": 1,
+          "title": "Days",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "days"
+      ],
+      "title": "MaxConsecutiveDaysParams",
+      "type": "object"
+    },
+    "MaxPerPeriod": {
+      "additionalProperties": false,
+      "description": "Upper bound of a measure (count or hours) per resource per period.",
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/Scope"
+        },
+        "rationale": {
+          "minLength": 1,
+          "title": "Rationale",
+          "type": "string"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "status": {
+          "default": "proposed",
+          "enum": [
+            "proposed",
+            "confirmed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "hardness": {
+          "enum": [
+            "hard",
+            "soft"
+          ],
+          "title": "Hardness",
+          "type": "string"
+        },
+        "weight": {
+          "anyOf": [
+            {
+              "maximum": 10000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Weight"
+        },
+        "template": {
+          "const": "max_per_period",
+          "title": "Template",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/PeriodLimitParams"
+        }
+      },
+      "required": [
+        "id",
+        "rationale",
+        "provenance",
+        "hardness",
+        "template",
+        "params"
+      ],
+      "title": "MaxPerPeriod",
+      "type": "object"
+    },
+    "MinPerPeriod": {
+      "additionalProperties": false,
+      "description": "Lower bound of a measure (count or hours) per resource per period.",
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/Scope"
+        },
+        "rationale": {
+          "minLength": 1,
+          "title": "Rationale",
+          "type": "string"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "status": {
+          "default": "proposed",
+          "enum": [
+            "proposed",
+            "confirmed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "hardness": {
+          "enum": [
+            "hard",
+            "soft"
+          ],
+          "title": "Hardness",
+          "type": "string"
+        },
+        "weight": {
+          "anyOf": [
+            {
+              "maximum": 10000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Weight"
+        },
+        "template": {
+          "const": "min_per_period",
+          "title": "Template",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/PeriodLimitParams"
+        }
+      },
+      "required": [
+        "id",
+        "rationale",
+        "provenance",
+        "hardness",
+        "template",
+        "params"
+      ],
+      "title": "MinPerPeriod",
+      "type": "object"
+    },
+    "MinRest": {
+      "additionalProperties": false,
+      "description": "The gap between consecutive tasks of a resource is at least ``hours``.",
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/Scope"
+        },
+        "rationale": {
+          "minLength": 1,
+          "title": "Rationale",
+          "type": "string"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "status": {
+          "default": "proposed",
+          "enum": [
+            "proposed",
+            "confirmed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "hardness": {
+          "enum": [
+            "hard",
+            "soft"
+          ],
+          "title": "Hardness",
+          "type": "string"
+        },
+        "weight": {
+          "anyOf": [
+            {
+              "maximum": 10000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Weight"
+        },
+        "template": {
+          "const": "min_rest",
+          "title": "Template",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/MinRestParams"
+        }
+      },
+      "required": [
+        "id",
+        "rationale",
+        "provenance",
+        "hardness",
+        "template",
+        "params"
+      ],
+      "title": "MinRest",
+      "type": "object"
+    },
+    "MinRestParams": {
+      "additionalProperties": false,
+      "properties": {
+        "hours": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 8784,
+              "type": "integer"
+            },
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 8784,
+              "type": "number"
+            }
+          ],
+          "title": "Hours"
+        }
+      },
+      "required": [
+        "hours"
+      ],
+      "title": "MinRestParams",
+      "type": "object"
+    },
+    "NoOverlap": {
+      "additionalProperties": false,
+      "description": "A resource cannot work two time-overlapping tasks.",
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/Scope"
+        },
+        "rationale": {
+          "minLength": 1,
+          "title": "Rationale",
+          "type": "string"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "status": {
+          "default": "proposed",
+          "enum": [
+            "proposed",
+            "confirmed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "hardness": {
+          "enum": [
+            "hard",
+            "soft"
+          ],
+          "title": "Hardness",
+          "type": "string"
+        },
+        "weight": {
+          "anyOf": [
+            {
+              "maximum": 10000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Weight"
+        },
+        "template": {
+          "const": "no_overlap",
+          "title": "Template",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/NoParams"
+        }
+      },
+      "required": [
+        "id",
+        "rationale",
+        "provenance",
+        "hardness",
+        "template"
+      ],
+      "title": "NoOverlap",
+      "type": "object"
+    },
+    "NoParams": {
+      "additionalProperties": false,
+      "description": "The template takes no parameters.",
+      "properties": {},
+      "title": "NoParams",
+      "type": "object"
+    },
+    "PeriodLimitParams": {
+      "additionalProperties": false,
+      "properties": {
+        "measure": {
+          "enum": [
+            "count",
+            "hours"
+          ],
+          "title": "Measure",
+          "type": "string"
+        },
+        "period": {
+          "enum": [
+            "day",
+            "week",
+            "horizon"
+          ],
+          "title": "Period",
+          "type": "string"
+        },
+        "limit": {
+          "oneOf": [
+            {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "minimum": 0,
+                  "type": "number"
+                }
+              ]
+            },
+            {
+              "$ref": "#/$defs/AttributeRef"
+            }
+          ],
+          "title": "Limit"
+        }
+      },
+      "required": [
+        "measure",
+        "period",
+        "limit"
+      ],
+      "title": "PeriodLimitParams",
+      "type": "object"
+    },
+    "Preference": {
+      "additionalProperties": false,
+      "description": "Scoped resources prefer or avoid scoped tasks (soft only).",
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/Scope"
+        },
+        "rationale": {
+          "minLength": 1,
+          "title": "Rationale",
+          "type": "string"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "status": {
+          "default": "proposed",
+          "enum": [
+            "proposed",
+            "confirmed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "hardness": {
+          "const": "soft",
+          "title": "Hardness",
+          "type": "string"
+        },
+        "weight": {
+          "maximum": 10000,
+          "minimum": 1,
+          "title": "Weight",
+          "type": "integer"
+        },
+        "template": {
+          "const": "preference",
+          "title": "Template",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/PreferenceParams"
+        }
+      },
+      "required": [
+        "id",
+        "rationale",
+        "provenance",
+        "hardness",
+        "weight",
+        "template",
+        "params"
+      ],
+      "title": "Preference",
+      "type": "object"
+    },
+    "PreferenceParams": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "prefer",
+            "avoid"
+          ],
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "PreferenceParams",
+      "type": "object"
+    },
+    "Provenance": {
+      "additionalProperties": false,
+      "description": "Where a rule came from: a user utterance, a data column, an assumption or a default.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "utterance",
+            "data",
+            "assumption",
+            "default"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turn Id"
+        },
+        "quote": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Quote"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "Provenance",
+      "type": "object"
+    },
+    "RequiresAttribute": {
+      "additionalProperties": false,
+      "description": "A resource may work a task only if its attribute matches the task's requirement.\n\nTasks without the task attribute, or with an empty list, are unrestricted.",
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/Scope"
+        },
+        "rationale": {
+          "minLength": 1,
+          "title": "Rationale",
+          "type": "string"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "status": {
+          "default": "proposed",
+          "enum": [
+            "proposed",
+            "confirmed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "hardness": {
+          "enum": [
+            "hard",
+            "soft"
+          ],
+          "title": "Hardness",
+          "type": "string"
+        },
+        "weight": {
+          "anyOf": [
+            {
+              "maximum": 10000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Weight"
+        },
+        "template": {
+          "const": "requires_attribute",
+          "title": "Template",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/RequiresAttributeParams"
+        }
+      },
+      "required": [
+        "id",
+        "rationale",
+        "provenance",
+        "hardness",
+        "template",
+        "params"
+      ],
+      "title": "RequiresAttribute",
+      "type": "object"
+    },
+    "RequiresAttributeParams": {
+      "additionalProperties": false,
+      "properties": {
+        "task_attribute": {
+          "minLength": 1,
+          "title": "Task Attribute",
+          "type": "string"
+        },
+        "resource_attribute": {
+          "minLength": 1,
+          "title": "Resource Attribute",
+          "type": "string"
+        },
+        "match": {
+          "enum": [
+            "contains",
+            "equals"
+          ],
+          "title": "Match",
+          "type": "string"
+        }
+      },
+      "required": [
+        "task_attribute",
+        "resource_attribute",
+        "match"
+      ],
+      "title": "RequiresAttributeParams",
+      "type": "object"
+    },
+    "ResourceBinding": {
+      "additionalProperties": false,
+      "description": "CSV binding for resources: id column plus typed attribute columns.",
+      "properties": {
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "attributes": {
+          "additionalProperties": {
+            "$ref": "#/$defs/AttributeBinding"
+          },
+          "title": "Attributes",
+          "type": "object"
+        },
+        "csv": {
+          "$ref": "#/$defs/CsvDialect"
+        }
+      },
+      "required": [
+        "source",
+        "id"
+      ],
+      "title": "ResourceBinding",
+      "type": "object"
+    },
+    "ResourcePairParams": {
+      "additionalProperties": false,
+      "properties": {
+        "resource_ids": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "title": "Resource Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "resource_ids"
+      ],
+      "title": "ResourcePairParams",
+      "type": "object"
+    },
+    "Scope": {
+      "additionalProperties": false,
+      "description": "Which resources and tasks a rule applies to; an empty list means all.",
+      "properties": {
+        "resources": {
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "title": "Resources",
+          "type": "array"
+        },
+        "tasks": {
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "title": "Tasks",
+          "type": "array"
+        }
+      },
+      "title": "Scope",
+      "type": "object"
+    },
+    "Stability": {
+      "additionalProperties": false,
+      "description": "Penalty per baseline assignment that changes (soft only).",
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/Scope"
+        },
+        "rationale": {
+          "minLength": 1,
+          "title": "Rationale",
+          "type": "string"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "status": {
+          "default": "proposed",
+          "enum": [
+            "proposed",
+            "confirmed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "hardness": {
+          "const": "soft",
+          "title": "Hardness",
+          "type": "string"
+        },
+        "weight": {
+          "maximum": 10000,
+          "minimum": 1,
+          "title": "Weight",
+          "type": "integer"
+        },
+        "template": {
+          "const": "stability",
+          "title": "Template",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/StabilityParams"
+        }
+      },
+      "required": [
+        "id",
+        "rationale",
+        "provenance",
+        "hardness",
+        "weight",
+        "template",
+        "params"
+      ],
+      "title": "Stability",
+      "type": "object"
+    },
+    "StabilityParams": {
+      "additionalProperties": false,
+      "properties": {
+        "baseline": {
+          "items": {
+            "$ref": "#/$defs/BaselineAssignment"
+          },
+          "title": "Baseline",
+          "type": "array"
+        }
+      },
+      "required": [
+        "baseline"
+      ],
+      "title": "StabilityParams",
+      "type": "object"
+    },
+    "TaskBinding": {
+      "additionalProperties": false,
+      "description": "CSV binding for tasks: id, start, end and demand columns plus typed attribute columns.",
+      "properties": {
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "attributes": {
+          "additionalProperties": {
+            "$ref": "#/$defs/AttributeBinding"
+          },
+          "title": "Attributes",
+          "type": "object"
+        },
+        "csv": {
+          "$ref": "#/$defs/CsvDialect"
+        },
+        "start": {
+          "minLength": 1,
+          "title": "Start",
+          "type": "string"
+        },
+        "end": {
+          "minLength": 1,
+          "title": "End",
+          "type": "string"
+        },
+        "demand": {
+          "minLength": 1,
+          "title": "Demand",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "id",
+        "start",
+        "end",
+        "demand"
+      ],
+      "title": "TaskBinding",
+      "type": "object"
+    },
+    "TimeWindow": {
+      "additionalProperties": false,
+      "description": "A local time interval ``[start, end)`` during which a resource is unavailable.",
+      "properties": {
+        "resource_id": {
+          "minLength": 1,
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "start": {
+          "description": "Local date-time in the DM timezone, without UTC offset, from 1970-01-01T00:00 to 3000-01-01T00:00, e.g. 2026-11-02T07:00",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}(:00(\\.0+)?)?$",
+          "title": "Start",
+          "type": "string"
+        },
+        "end": {
+          "description": "Local date-time in the DM timezone, without UTC offset, from 1970-01-01T00:00 to 3000-01-01T00:00, e.g. 2026-11-02T07:00",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}(:00(\\.0+)?)?$",
+          "title": "End",
+          "type": "string"
+        }
+      },
+      "required": [
+        "resource_id",
+        "start",
+        "end"
+      ],
+      "title": "TimeWindow",
+      "type": "object"
+    },
+    "Together": {
+      "additionalProperties": false,
+      "description": "The two resources should work the same in-scope tasks (soft only).",
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/Scope"
+        },
+        "rationale": {
+          "minLength": 1,
+          "title": "Rationale",
+          "type": "string"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "status": {
+          "default": "proposed",
+          "enum": [
+            "proposed",
+            "confirmed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "hardness": {
+          "const": "soft",
+          "title": "Hardness",
+          "type": "string"
+        },
+        "weight": {
+          "maximum": 10000,
+          "minimum": 1,
+          "title": "Weight",
+          "type": "integer"
+        },
+        "template": {
+          "const": "together",
+          "title": "Template",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/ResourcePairParams"
+        }
+      },
+      "required": [
+        "id",
+        "rationale",
+        "provenance",
+        "hardness",
+        "weight",
+        "template",
+        "params"
+      ],
+      "title": "Together",
+      "type": "object"
+    },
+    "Unavailable": {
+      "additionalProperties": false,
+      "description": "A resource cannot work tasks that overlap its unavailability windows.",
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/Scope"
+        },
+        "rationale": {
+          "minLength": 1,
+          "title": "Rationale",
+          "type": "string"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "status": {
+          "default": "proposed",
+          "enum": [
+            "proposed",
+            "confirmed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "hardness": {
+          "enum": [
+            "hard",
+            "soft"
+          ],
+          "title": "Hardness",
+          "type": "string"
+        },
+        "weight": {
+          "anyOf": [
+            {
+              "maximum": 10000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Weight"
+        },
+        "template": {
+          "const": "unavailable",
+          "title": "Template",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/UnavailableParams"
+        }
+      },
+      "required": [
+        "id",
+        "rationale",
+        "provenance",
+        "hardness",
+        "template",
+        "params"
+      ],
+      "title": "Unavailable",
+      "type": "object"
+    },
+    "UnavailableParams": {
+      "additionalProperties": false,
+      "properties": {
+        "windows": {
+          "items": {
+            "$ref": "#/$defs/TimeWindow"
+          },
+          "title": "Windows",
+          "type": "array"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WindowsBinding"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "UnavailableParams",
+      "type": "object"
+    },
+    "Vocabulary": {
+      "additionalProperties": false,
+      "description": "Domain words for display only, e.g. ``{\"resource\": \"employee\", \"task\": \"shift\"}``.",
+      "properties": {
+        "resource": {
+          "minLength": 1,
+          "title": "Resource",
+          "type": "string"
+        },
+        "task": {
+          "minLength": 1,
+          "title": "Task",
+          "type": "string"
+        }
+      },
+      "required": [
+        "resource",
+        "task"
+      ],
+      "title": "Vocabulary",
+      "type": "object"
+    },
+    "WindowsBinding": {
+      "additionalProperties": false,
+      "description": "CSV binding for unavailability windows (one row per window).",
+      "properties": {
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "resource_id": {
+          "minLength": 1,
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "start": {
+          "minLength": 1,
+          "title": "Start",
+          "type": "string"
+        },
+        "end": {
+          "minLength": 1,
+          "title": "End",
+          "type": "string"
+        },
+        "csv": {
+          "$ref": "#/$defs/CsvDialect"
+        }
+      },
+      "required": [
+        "source",
+        "resource_id",
+        "start",
+        "end"
+      ],
+      "title": "WindowsBinding",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A typed, solver-agnostic description of an assignment decision problem (DM 0.2).",
+  "properties": {
+    "schema_version": {
+      "const": "0.2",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "id": {
+      "minLength": 1,
+      "title": "Id",
+      "type": "string"
+    },
+    "version": {
+      "minimum": 1,
+      "title": "Version",
+      "type": "integer"
+    },
+    "parent_version": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Version"
+    },
+    "status": {
+      "enum": [
+        "draft",
+        "confirmed",
+        "approved"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "title": {
+      "minLength": 1,
+      "title": "Title",
+      "type": "string"
+    },
+    "language": {
+      "enum": [
+        "en",
+        "el"
+      ],
+      "title": "Language",
+      "type": "string"
+    },
+    "archetype": {
+      "const": "assignment",
+      "title": "Archetype",
+      "type": "string"
+    },
+    "vocabulary": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Vocabulary"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "timezone": {
+      "title": "Timezone",
+      "type": "string"
+    },
+    "horizon": {
+      "$ref": "#/$defs/Horizon"
+    },
+    "data": {
+      "$ref": "#/$defs/DataBindings"
+    },
+    "constraints": {
+      "items": {
+        "discriminator": {
+          "mapping": {
+            "apart": "#/$defs/Apart",
+            "balance": "#/$defs/Balance",
+            "coverage": "#/$defs/Coverage",
+            "max_consecutive_days": "#/$defs/MaxConsecutiveDays",
+            "max_per_period": "#/$defs/MaxPerPeriod",
+            "min_per_period": "#/$defs/MinPerPeriod",
+            "min_rest": "#/$defs/MinRest",
+            "no_overlap": "#/$defs/NoOverlap",
+            "preference": "#/$defs/Preference",
+            "requires_attribute": "#/$defs/RequiresAttribute",
+            "stability": "#/$defs/Stability",
+            "together": "#/$defs/Together",
+            "unavailable": "#/$defs/Unavailable"
+          },
+          "propertyName": "template"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/$defs/Coverage"
+          },
+          {
+            "$ref": "#/$defs/RequiresAttribute"
+          },
+          {
+            "$ref": "#/$defs/NoOverlap"
+          },
+          {
+            "$ref": "#/$defs/MinRest"
+          },
+          {
+            "$ref": "#/$defs/MaxPerPeriod"
+          },
+          {
+            "$ref": "#/$defs/MinPerPeriod"
+          },
+          {
+            "$ref": "#/$defs/MaxConsecutiveDays"
+          },
+          {
+            "$ref": "#/$defs/Unavailable"
+          },
+          {
+            "$ref": "#/$defs/Preference"
+          },
+          {
+            "$ref": "#/$defs/Balance"
+          },
+          {
+            "$ref": "#/$defs/Together"
+          },
+          {
+            "$ref": "#/$defs/Apart"
+          },
+          {
+            "$ref": "#/$defs/Stability"
+          }
+        ]
+      },
+      "minItems": 1,
+      "title": "Constraints",
+      "type": "array"
+    },
+    "assumptions": {
+      "items": {
+        "$ref": "#/$defs/Assumption"
+      },
+      "title": "Assumptions",
+      "type": "array"
+    },
+    "objective": {
+      "const": "lexicographic_hard_then_soft",
+      "default": "lexicographic_hard_then_soft",
+      "title": "Objective",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "id",
+    "version",
+    "status",
+    "title",
+    "language",
+    "archetype",
+    "timezone",
+    "horizon",
+    "data",
+    "constraints"
+  ],
+  "title": "DecisionModel",
+  "type": "object"
+}
