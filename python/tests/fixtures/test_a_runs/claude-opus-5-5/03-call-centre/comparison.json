@@ -1,0 +1,90 @@
+{
+  "candidate_count": 8,
+  "categories": {
+    "missing": 1,
+    "wrong_hardness": 1,
+    "wrong_parameters": 1,
+    "wrong_scope": 0
+  },
+  "issues": [],
+  "matched": [
+    {
+      "candidate_id": "c7-jamal",
+      "hardness": "soft",
+      "template": "preference",
+      "truth_id": "jamal-early"
+    },
+    {
+      "candidate_id": "c1-billing",
+      "hardness": "hard",
+      "template": "requires_attribute",
+      "truth_id": "late-needs-billing"
+    },
+    {
+      "candidate_id": "c2-one-at-a-time",
+      "hardness": "hard",
+      "template": "no_overlap",
+      "truth_id": "no-parallel-shifts"
+    },
+    {
+      "candidate_id": "c6-part-timers",
+      "hardness": "soft",
+      "template": "min_per_period",
+      "truth_id": "part-timers-two-shifts"
+    },
+    {
+      "candidate_id": "c4-weekly-cap",
+      "hardness": "hard",
+      "template": "max_per_period",
+      "truth_id": "weekly-max-hours"
+    }
+  ],
+  "matched_count": 5,
+  "merged_matched_count": 5,
+  "merged_recall": 0.625,
+  "merged_truth_count": 8,
+  "precision": 0.625,
+  "recall": 0.625,
+  "truth_count": 8,
+  "unmatched_candidate": [
+    {
+      "candidate_id": "c3-days-in-a-row",
+      "hardness": "hard",
+      "template": "max_consecutive_days"
+    },
+    {
+      "candidate_id": "c5-rest",
+      "hardness": "hard",
+      "template": "min_rest"
+    },
+    {
+      "candidate_id": "c8-one-shift-a-day",
+      "hardness": "hard",
+      "template": "max_per_period"
+    }
+  ],
+  "unmatched_truth": [
+    {
+      "category": "missing",
+      "closest_candidate_id": null,
+      "hardness": "soft",
+      "template": "together",
+      "truth_id": "leo-shadows-priya"
+    },
+    {
+      "category": "wrong_parameters",
+      "closest_candidate_id": "c3-days-in-a-row",
+      "hardness": "hard",
+      "template": "max_consecutive_days",
+      "truth_id": "max-five-days-in-a-row"
+    },
+    {
+      "category": "wrong_hardness",
+      "closest_candidate_id": "c5-rest",
+      "hardness": "soft",
+      "template": "min_rest",
+      "truth_id": "rest-12h"
+    }
+  ],
+  "valid": true
+}

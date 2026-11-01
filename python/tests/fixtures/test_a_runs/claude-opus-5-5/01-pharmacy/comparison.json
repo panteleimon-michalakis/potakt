@@ -1,0 +1,52 @@
+{
+  "candidate_count": 5,
+  "categories": {
+    "missing": 0,
+    "wrong_hardness": 0,
+    "wrong_parameters": 0,
+    "wrong_scope": 0
+  },
+  "issues": [],
+  "matched": [
+    {
+      "candidate_id": "assistants-max-25h",
+      "hardness": "hard",
+      "template": "max_per_period",
+      "truth_id": "assistants-max-25h"
+    },
+    {
+      "candidate_id": "ioanna-leave",
+      "hardness": "hard",
+      "template": "unavailable",
+      "truth_id": "ioanna-leave"
+    },
+    {
+      "candidate_id": "one-shift-per-day",
+      "hardness": "hard",
+      "template": "max_per_period",
+      "truth_id": "one-shift-per-day"
+    },
+    {
+      "candidate_id": "pharmacist-slot",
+      "hardness": "hard",
+      "template": "requires_attribute",
+      "truth_id": "pharmacist-slot"
+    },
+    {
+      "candidate_id": "stelios-avoids-afternoons",
+      "hardness": "soft",
+      "template": "preference",
+      "truth_id": "stelios-avoids-afternoons"
+    }
+  ],
+  "matched_count": 5,
+  "merged_matched_count": 5,
+  "merged_recall": 1.0,
+  "merged_truth_count": 5,
+  "precision": 1.0,
+  "recall": 1.0,
+  "truth_count": 5,
+  "unmatched_candidate": [],
+  "unmatched_truth": [],
+  "valid": true
+}

@@ -1,0 +1,107 @@
+{
+  "candidate_count": 13,
+  "cost_usd": 0.504,
+  "diagnostics": {
+    "missing": 13,
+    "wrong_hardness": 1,
+    "wrong_parameters": 1,
+    "wrong_scope": 0
+  },
+  "matched_count": 10,
+  "merged_matched_count": 10,
+  "merged_recall": 0.4,
+  "merged_truth_count": 25,
+  "model": "claude-opus-5-5",
+  "not_scored": [],
+  "notes": [],
+  "precision": 0.7692307692307693,
+  "recall": 0.4,
+  "recall_by_hardness": {
+    "hard": {
+      "matched": 7,
+      "recall": 0.5,
+      "truth": 14
+    },
+    "soft": {
+      "matched": 3,
+      "recall": 0.2727272727272727,
+      "truth": 11
+    }
+  },
+  "recall_by_language": {
+    "el": {
+      "matched": 5,
+      "recall": 1.0,
+      "truth": 5
+    },
+    "en": {
+      "matched": 5,
+      "recall": 0.25,
+      "truth": 20
+    }
+  },
+  "recall_by_template": {
+    "apart": {
+      "matched": 0,
+      "recall": 0.0,
+      "truth": 1
+    },
+    "balance": {
+      "matched": 0,
+      "recall": 0.0,
+      "truth": 1
+    },
+    "max_consecutive_days": {
+      "matched": 0,
+      "recall": 0.0,
+      "truth": 2
+    },
+    "max_per_period": {
+      "matched": 3,
+      "recall": 0.75,
+      "truth": 4
+    },
+    "min_per_period": {
+      "matched": 1,
+      "recall": 0.5,
+      "truth": 2
+    },
+    "min_rest": {
+      "matched": 0,
+      "recall": 0.0,
+      "truth": 2
+    },
+    "no_overlap": {
+      "matched": 1,
+      "recall": 0.5,
+      "truth": 2
+    },
+    "preference": {
+      "matched": 2,
+      "recall": 0.5,
+      "truth": 4
+    },
+    "requires_attribute": {
+      "matched": 2,
+      "recall": 0.6666666666666666,
+      "truth": 3
+    },
+    "together": {
+      "matched": 0,
+      "recall": 0.0,
+      "truth": 2
+    },
+    "unavailable": {
+      "matched": 1,
+      "recall": 0.5,
+      "truth": 2
+    }
+  },
+  "scenarios_run": 3,
+  "truth_count": 25,
+  "usage": {
+    "input_tokens": 36000,
+    "output_tokens": 18000
+  },
+  "valid": 2
+}

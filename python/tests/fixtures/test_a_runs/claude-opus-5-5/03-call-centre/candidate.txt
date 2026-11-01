@@ -1,0 +1,115 @@
+{
+  "schema_version": "0.2",
+  "id": "candidate-call-centre",
+  "version": 1,
+  "status": "draft",
+  "title": "Phone line schedule (hand-made imperfect candidate)",
+  "language": "en",
+  "archetype": "assignment",
+  "timezone": "America/New_York",
+  "horizon": {"start": "2026-12-07", "end": "2026-12-13"},
+  "data": {
+    "resources": {
+      "source": "agents.csv",
+      "id": "agent_id",
+      "attributes": {
+        "trained_in": {"column": "skills", "type": "list", "separator": ";"},
+        "contract": {"column": "contract", "type": "str"},
+        "weekly_cap": {"column": "max_hours", "type": "float"}
+      }
+    },
+    "tasks": {
+      "source": "shifts.csv",
+      "id": "shift_id",
+      "start": "start",
+      "end": "end",
+      "demand": "agents_needed",
+      "attributes": {
+        "kind": {"column": "shift_type", "type": "str"},
+        "queue": {"column": "skill_required", "type": "list"}
+      }
+    }
+  },
+  "constraints": [
+    {
+      "id": "c0-coverage",
+      "template": "coverage",
+      "hardness": "hard",
+      "rationale": "Staff every shift with its demand.",
+      "provenance": {"kind": "default"}
+    },
+    {
+      "id": "c1-billing",
+      "template": "requires_attribute",
+      "hardness": "hard",
+      "params": {"task_attribute": "queue", "resource_attribute": "trained_in", "match": "contains"},
+      "rationale": "Billing queue needs billing training.",
+      "provenance": {"kind": "utterance", "quote": "Only agents trained on billing can take a late shift"}
+    },
+    {
+      "id": "c2-one-at-a-time",
+      "template": "no_overlap",
+      "hardness": "hard",
+      "rationale": "No parallel shifts.",
+      "provenance": {"kind": "utterance", "quote": "Nobody can work two shifts that run at the same time."}
+    },
+    {
+      "id": "c3-days-in-a-row",
+      "template": "max_consecutive_days",
+      "hardness": "hard",
+      "params": {"days": 6},
+      "rationale": "Wrong parameter on purpose: six instead of five.",
+      "provenance": {"kind": "utterance", "quote": "Under no circumstances should anyone work more than five days in a row."}
+    },
+    {
+      "id": "c4-weekly-cap",
+      "template": "max_per_period",
+      "hardness": "hard",
+      "params": {"measure": "hours", "period": "week", "limit": {"attribute": "weekly_cap"}},
+      "rationale": "Per-agent weekly maximum.",
+      "provenance": {"kind": "utterance", "quote": "we can never go over it"}
+    },
+    {
+      "id": "c5-rest",
+      "template": "min_rest",
+      "hardness": "hard",
+      "params": {"hours": 12.0},
+      "rationale": "Wrong hardness on purpose: hard instead of soft.",
+      "provenance": {"kind": "utterance", "quote": "leave at least 12 hours"}
+    },
+    {
+      "id": "c6-part-timers",
+      "template": "min_per_period",
+      "hardness": "soft",
+      "weight": 1,
+      "scope": {"resources": [{"attribute": "id", "op": "in", "value": ["A08", "A04", "A07"]}]},
+      "params": {"measure": "count", "period": "week", "limit": 2},
+      "rationale": "Part-timers named by id (same people as contract = part).",
+      "provenance": {"kind": "utterance", "quote": "at least two shifts"}
+    },
+    {
+      "id": "c7-jamal",
+      "template": "preference",
+      "hardness": "soft",
+      "weight": 5,
+      "scope": {
+        "resources": [{"attribute": "id", "op": "eq", "value": "A02"}],
+        "tasks": [{"attribute": "start_hour", "op": "eq", "value": 7}]
+      },
+      "params": {"kind": "prefer"},
+      "rationale": "Early shifts are the ones starting at 7.",
+      "provenance": {"kind": "utterance", "quote": "Jamal has asked for early shifts"}
+    },
+    {
+      "id": "c8-one-shift-a-day",
+      "template": "max_per_period",
+      "hardness": "hard",
+      "params": {"measure": "count", "period": "day", "limit": 1},
+      "rationale": "Extra rule on purpose: not asked for in the request.",
+      "provenance": {"kind": "assumption"}
+    }
+  ],
+  "assumptions": [
+    {"id": "a1", "text": "The Spanish speaker request cannot be expressed.", "status": "proposed"}
+  ]
+}

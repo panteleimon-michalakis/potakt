@@ -1,0 +1,111 @@
+{
+  "candidate_count": 0,
+  "categories": {
+    "missing": 12,
+    "wrong_hardness": 0,
+    "wrong_parameters": 0,
+    "wrong_scope": 0
+  },
+  "issues": [
+    {
+      "message": "invalid JSON at line 1, column 1: Expecting value",
+      "path": "/"
+    }
+  ],
+  "matched": [],
+  "matched_count": 0,
+  "merged_matched_count": 0,
+  "merged_recall": 0.0,
+  "merged_truth_count": 12,
+  "precision": null,
+  "recall": 0.0,
+  "truth_count": 12,
+  "unmatched_candidate": [],
+  "unmatched_truth": [
+    {
+      "category": "missing",
+      "closest_candidate_id": null,
+      "hardness": "hard",
+      "template": "unavailable",
+      "truth_id": "approved-time-off"
+    },
+    {
+      "category": "missing",
+      "closest_candidate_id": null,
+      "hardness": "hard",
+      "template": "apart",
+      "truth_id": "dan-and-marco-apart"
+    },
+    {
+      "category": "missing",
+      "closest_candidate_id": null,
+      "hardness": "soft",
+      "template": "balance",
+      "truth_id": "fair-weekends"
+    },
+    {
+      "category": "missing",
+      "closest_candidate_id": null,
+      "hardness": "hard",
+      "template": "requires_attribute",
+      "truth_id": "kitchen-and-floor-skills"
+    },
+    {
+      "category": "missing",
+      "closest_candidate_id": null,
+      "hardness": "soft",
+      "template": "preference",
+      "truth_id": "marco-not-sunday"
+    },
+    {
+      "category": "missing",
+      "closest_candidate_id": null,
+      "hardness": "hard",
+      "template": "max_per_period",
+      "truth_id": "max-40h-week"
+    },
+    {
+      "category": "missing",
+      "closest_candidate_id": null,
+      "hardness": "soft",
+      "template": "max_consecutive_days",
+      "truth_id": "max-four-days-running"
+    },
+    {
+      "category": "missing",
+      "closest_candidate_id": null,
+      "hardness": "hard",
+      "template": "no_overlap",
+      "truth_id": "no-double-booking"
+    },
+    {
+      "category": "missing",
+      "closest_candidate_id": null,
+      "hardness": "soft",
+      "template": "together",
+      "truth_id": "ollie-with-grace"
+    },
+    {
+      "category": "missing",
+      "closest_candidate_id": null,
+      "hardness": "hard",
+      "template": "min_rest",
+      "truth_id": "rest-11h"
+    },
+    {
+      "category": "missing",
+      "closest_candidate_id": null,
+      "hardness": "soft",
+      "template": "preference",
+      "truth_id": "sophie-likes-lunches"
+    },
+    {
+      "category": "missing",
+      "closest_candidate_id": null,
+      "hardness": "soft",
+      "template": "min_per_period",
+      "truth_id": "two-shifts-each"
+    }
+  ],
+  "valid": false
+}
