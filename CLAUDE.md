@@ -99,6 +99,9 @@ Every task; the evidence goes in the report.
 - Temporary mutations for red evidence: copies **inside the scratchpad** (never `$TEMP`), restore, then
   prove nothing is left with `git diff --stat`.
 - Scratch files never go into the repository.
+- A PreToolUse hook on the owner's machine blocks in-place `sed`/`perl`/`awk`, shell redirection into
+  repository source files and Python reading a script from stdin. If a command is blocked, use the
+  Edit/Write tools or a scratchpad file instead; never work around the hook.
 
 ## Environment
 - Windows 10, PowerShell. Python via **uv** only (`uv add`, `uv run`, `uv sync`); never `pip install`

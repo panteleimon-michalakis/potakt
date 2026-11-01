@@ -61,7 +61,8 @@ Identical for Test A and Test B: the text of `request.md`, plus **every** CSV fi
 full, decoded with its declared dialect (the delimiter, decimal separator and encoding of the truth's
 binding of that file) and shown with its file name **and its encoding** (for example
 `ypodoxi_prosopiko.csv (encoding: windows-1253)`), because decoded text cannot show the encoding; the
-delimiter and the decimal separator are visible in the text and are not stated. Test A additionally
+delimiter and the decimal separator are visible in the text and are not stated (stating the encoding:
+confirmed by the reviewer on 2026-11-01). Test A additionally
 receives the DM JSON Schema (`potakt schema`). Nothing else: no truth, no solution, no
 `scenario.json`, no catalog hints beyond the schema.
 
@@ -119,10 +120,11 @@ weights are ignored.
 | `together`, `apart` | the unordered pair of resource ids and the set of in-scope task ids; the resource scope only decides whether both members are in scope, and if one is not the rule is **inert** (the pair alone, no task set), so it matches only another inert rule with the same pair | `[a, b]`, `[b, a]`; a redundant resource scope; two inert rules with the same pair |
 | `stability` | the set of baseline `(task_id, resource_id)` pairs whose task and resource are in scope | baseline order |
 
-For `requires_attribute`, `unavailable`, `together` and `apart` the scope is part of the
-parameters, as described above. For every other template the scope extension is compared as is, so a
-rewrite of a scope with other conditions but the same extension matches, while a scope that changes
-one resource or task does not.
+The period normalization of per-period rules (the periods they check on the DM's horizon, clipped to
+it) was confirmed by the reviewer on 2026-11-01. For `requires_attribute`, `unavailable`, `together`
+and `apart` the scope is part of the parameters, as described above. For every other template the
+scope extension is compared as is, so a rewrite of a scope with other conditions but the same
+extension matches, while a scope that changes one resource or task does not.
 Ids, weights, rationale, provenance, status and assumptions are never compared. The DM-level fields
 are not compared on their own: the horizon enters through the periods of per-period rules (one more
 day is one more period for `min_per_period`), and the timezone can change behaviour only across a DST
@@ -183,7 +185,9 @@ which are written as a solution (schema 0.1). A plan that names unknown ids or r
 **Gate 1, Test B:** a measurable gap exists if at least one holds: (V) in at least **2** of the 10
 scenarios the first or the updated plan is invalid or has a hard violation; (E) the rubric gives
 "no" in at least **5** scenarios; (S) in at least **5** scenarios the updated plan changes at least
-**3 more** assignments than the minimal count for its own first plan.
+**3 more** assignments than the minimal count for its own first plan. These thresholds were
+confirmed by the reviewer on 2026-11-01. Any one of the three gaps counts as "a measurable gap",
+because DESIGN §16.2 names "violations, no explanations **or** unstable re-planning".
 
 ## Consequences
 - Results can be compared across models and over time, because every rule of the measurement is fixed
