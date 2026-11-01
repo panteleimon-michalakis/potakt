@@ -103,6 +103,11 @@ receives the DM JSON Schema (`potakt schema`). Nothing else: no truth, no soluti
   carries no such requirement. Reason: Test B counts the baseline's hard violations under the truth,
   so a jointly infeasible set of mandatory requests would force a faithful baseline into a counted
   violation.
+- **Whole-day absences** (added on 2026-11-01 by the TASK-005b review, before any LLM run): an
+  absence stated in whole days covers those calendar days from 00:00 to 00:00 of the following day,
+  in the scenario timezone. Every task that overlaps the window is blocked, including a night shift
+  that starts the evening before (checker semantics, half-open intervals). This literal reading is
+  fixed before the first LLM run; scenarios 06, 08 and 09 follow it, and their assumptions say so.
 - **No vacuous rule** (added on 2026-11-01 by TASK-005b): no truth constraint is one that no plan on
   the scenario data could violate, because such a rule would match any other rule without effect. The
   test is `potakt.evaluation.is_vacuous`: among others, an empty scope extension, an
@@ -220,10 +225,13 @@ which are written as a solution (schema 0.1). A plan that names unknown ids or r
   work from <start> to <end>; please update the plan", in the scenario language). Changed assignments
   = the pairs of the first plan missing from the updated plan (the amount of a `stability` rule with
   the first plan as baseline). It is compared with the **minimal count for the baseline's own first
-  plan**: the same number for a minimal-disruption re-plan of that first plan (truth plus the
-  disruption as a hard `unavailable` rule plus that `stability` rule, best found, method reported),
-  because how many changes are unavoidable depends on the plan being changed. The same number for a
-  minimal-disruption re-plan of `solution.json` is reported as context. The updated plan's hard
+  plan**: the same number for a minimal-disruption re-plan of that first plan (the exact minimum
+  number of changed assignments over plans that satisfy the truth's hard rules, the disruption as a
+  hard `unavailable` window and the scenario's mandatory unsupported predicates (§4); soft rules take
+  no part; computed exactly, method reported in TASK-005d), because how many changes are unavoidable
+  depends on the plan being changed. The same number, with the same definition, for a
+  minimal-disruption re-plan of `solution.json` is reported as context. (This definition was
+  added on 2026-11-01 by the TASK-005b review, before any LLM run.) The updated plan's hard
   violations are counted under the truth plus the disruption.
 
 **Gate 1, Test B:** a measurable gap exists if at least one holds: (V) in at least **2** of the 10
