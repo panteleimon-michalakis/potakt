@@ -4,6 +4,7 @@ Library code only: no LLM, no network. Depends on ``potakt.model``, ``potakt.che
 and the standard library; neither of those core packages imports this one.
 """
 
+from potakt.evaluation.bundle import Bundle, BundleFile, build_bundle, render_bundle
 from potakt.evaluation.compare import (
     CATEGORIES,
     Category,
@@ -35,6 +36,8 @@ from potakt.evaluation.vacuity import is_vacuous
 __all__ = [
     "CATEGORIES",
     "SCENARIO_TAGS",
+    "Bundle",
+    "BundleFile",
     "Category",
     "Comparison",
     "Denotation",
@@ -51,9 +54,11 @@ __all__ = [
     "UnmatchedCandidate",
     "UnmatchedTruth",
     "UnsupportedRequest",
+    "build_bundle",
     "compare_models",
     "denote",
     "is_vacuous",
     "load_model",
     "load_scenario",
+    "render_bundle",
 ]
