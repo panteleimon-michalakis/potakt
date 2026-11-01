@@ -78,6 +78,19 @@ def test_the_leak_pattern_finds_catalog_words_as_whole_words(text: str, found: l
     assert LEAK.findall(text) == found
 
 
+def test_scenarios_01_to_04_cover_at_least_8_of_the_12_scored_templates() -> None:
+    first_four = [name for name in SCENARIOS if name[:2] in {"01", "02", "03", "04"}]
+    covered = {
+        rule.template
+        for name in first_four
+        for rule in loaded(name).truth.constraints
+        if rule.template != "coverage"
+    }
+
+    assert len(first_four) == 4
+    assert len(covered) >= 8, sorted(set(SCORED) - covered)
+
+
 def test_greek_letters_are_counted_among_all_letters() -> None:
     assert greek_letters("Καλημέρα, Anna! ἀρχή 42") == (12, 16)
 

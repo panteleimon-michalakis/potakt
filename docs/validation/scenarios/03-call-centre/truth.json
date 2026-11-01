@@ -1,0 +1,138 @@
+{
+  "schema_version": "0.2",
+  "id": "call-centre-2026-w50",
+  "version": 1,
+  "status": "confirmed",
+  "title": "Phone line agent schedule, week of 7 December 2026",
+  "language": "en",
+  "archetype": "assignment",
+  "vocabulary": {"resource": "agent", "task": "shift"},
+  "timezone": "America/New_York",
+  "horizon": {"start": "2026-12-07", "end": "2026-12-13"},
+  "data": {
+    "resources": {
+      "source": "agents.csv",
+      "id": "agent_id",
+      "attributes": {
+        "name": {"column": "name", "type": "str"},
+        "skills": {"column": "skills", "type": "list", "separator": ";"},
+        "contract": {"column": "contract", "type": "str"},
+        "max_hours": {"column": "max_hours", "type": "int"}
+      }
+    },
+    "tasks": {
+      "source": "shifts.csv",
+      "id": "shift_id",
+      "start": "start",
+      "end": "end",
+      "demand": "agents_needed",
+      "attributes": {
+        "shift_type": {"column": "shift_type", "type": "str"},
+        "skill_required": {"column": "skill_required", "type": "str"}
+      }
+    }
+  },
+  "constraints": [
+    {
+      "id": "coverage",
+      "template": "coverage",
+      "hardness": "hard",
+      "rationale": "Each shift gets exactly the number of agents in its agents_needed column.",
+      "provenance": {"kind": "utterance", "quote": "the shifts for the week are in shifts.csv, with the number of agents each shift needs"},
+      "status": "confirmed"
+    },
+    {
+      "id": "no-parallel-shifts",
+      "template": "no_overlap",
+      "hardness": "hard",
+      "rationale": "An agent cannot work two shifts that overlap in time (the weekday shifts are staggered and overlap).",
+      "provenance": {"kind": "utterance", "quote": "Nobody can work two shifts that run at the same time."},
+      "status": "confirmed"
+    },
+    {
+      "id": "late-needs-billing",
+      "template": "requires_attribute",
+      "hardness": "hard",
+      "params": {"task_attribute": "skill_required", "resource_attribute": "skills", "match": "contains"},
+      "rationale": "Late shifts require the billing skill; the other shifts have no requirement.",
+      "provenance": {"kind": "utterance", "quote": "Only agents trained on billing can take a late shift"},
+      "status": "confirmed"
+    },
+    {
+      "id": "max-five-days-in-a-row",
+      "template": "max_consecutive_days",
+      "hardness": "hard",
+      "params": {"days": 5},
+      "rationale": "At most five consecutive working days.",
+      "provenance": {"kind": "utterance", "quote": "Under no circumstances should anyone work more than five days in a row."},
+      "status": "confirmed"
+    },
+    {
+      "id": "weekly-max-hours",
+      "template": "max_per_period",
+      "hardness": "hard",
+      "params": {"measure": "hours", "period": "week", "limit": {"attribute": "max_hours"}},
+      "rationale": "Each agent works at most their own weekly maximum from the max_hours column.",
+      "provenance": {"kind": "utterance", "quote": "Every agent has a weekly maximum in the max_hours column of agents.csv, and we can never go over it."},
+      "status": "confirmed"
+    },
+    {
+      "id": "rest-12h",
+      "template": "min_rest",
+      "hardness": "soft",
+      "weight": 3,
+      "params": {"hours": 12},
+      "rationale": "Preferably at least 12 hours between the end of one shift and the start of the next.",
+      "provenance": {"kind": "utterance", "quote": "If possible, leave at least 12 hours between the end of one shift and the start of the next."},
+      "status": "confirmed"
+    },
+    {
+      "id": "part-timers-two-shifts",
+      "template": "min_per_period",
+      "hardness": "soft",
+      "weight": 4,
+      "scope": {"resources": [{"attribute": "contract", "op": "eq", "value": "part"}]},
+      "params": {"measure": "count", "period": "week", "limit": 2},
+      "rationale": "Each part-time agent should get at least two shifts this week.",
+      "provenance": {"kind": "utterance", "quote": "Please also try to give each part-timer at least two shifts."},
+      "status": "confirmed"
+    },
+    {
+      "id": "jamal-early",
+      "template": "preference",
+      "hardness": "soft",
+      "weight": 2,
+      "scope": {
+        "resources": [{"attribute": "id", "op": "eq", "value": "A02"}],
+        "tasks": [{"attribute": "shift_type", "op": "eq", "value": "early"}]
+      },
+      "params": {"kind": "prefer"},
+      "rationale": "Jamal prefers early shifts.",
+      "provenance": {"kind": "utterance", "quote": "Jamal has asked for early shifts where possible"},
+      "status": "confirmed"
+    },
+    {
+      "id": "leo-shadows-priya",
+      "template": "together",
+      "hardness": "soft",
+      "weight": 2,
+      "params": {"resource_ids": ["A03", "A04"]},
+      "rationale": "Leo, who is new, should work the same shifts as Priya so she can coach him.",
+      "provenance": {"kind": "utterance", "quote": "Leo is new, so it would really help if he could be on the same shifts as Priya so she can coach him"},
+      "status": "confirmed"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "spanish-not-encoded",
+      "text": "The request for at least one Spanish speaker on every weekday shift cannot be expressed in the catalog and is not enforced; it needs a human check.",
+      "status": "proposed"
+    },
+    {
+      "id": "hours-from-shift-times",
+      "text": "Weekly hours are counted from the scheduled shift start and end times; breaks are not deducted.",
+      "status": "proposed"
+    }
+  ],
+  "objective": "lexicographic_hard_then_soft"
+}

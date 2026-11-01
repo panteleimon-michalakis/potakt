@@ -1,0 +1,10 @@
+agent_id,name,team,skills,contract,max_hours,desk
+A01,Maya Johnson,billing,billing;spanish,full,40,12
+A02,Jamal Carter,general,billing,full,40,7
+A03,Priya Shah,billing,billing,full,40,3
+A04,Leo Martinez,general,spanish,part,24,4
+A05,Hannah Kim,general,,full,40,9
+A06,Carlos Rivera,billing,billing;spanish,full,32,15
+A07,Emily Brooks,general,,part,24,2
+A08,Owen Walsh,general,billing,part,20,11
+A09,Sofia Rossi,general,spanish,full,40,5

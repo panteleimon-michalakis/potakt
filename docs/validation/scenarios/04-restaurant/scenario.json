@@ -1,0 +1,18 @@
+{
+  "id": "04-restaurant",
+  "title": "Restaurant kitchen and floor rota with time off",
+  "language": "en",
+  "domain": "restaurant",
+  "difficulty": "hard",
+  "style": "notes",
+  "csv_files": ["shifts.csv", "staff.csv", "time_off.csv"],
+  "reference_score": {"hard": 0, "soft": -3},
+  "disruption": {"resource_id": "F4", "start": "2026-12-04T00:00", "end": "2026-12-05T00:00"},
+  "unsupported": [
+    {
+      "quote": "every evening we need at least one personal licence holder on the floor for the bar",
+      "reason": "The catalog has no 'at least one of the assigned resources has an attribute' rule: requires_attribute applies to every assignment, so it would demand that everyone on the evening floor holds a personal licence."
+    }
+  ],
+  "notes": "Time off comes from a CSV window source (time_off.csv); Nina's window ends exactly when the Friday floor lunch ends (half-open intervals, no overlap). The 11-hour rest rule also rules out lunch-and-dinner doubles and blocks Friday and Saturday closers from the next lunch. The reference score -3 is optimal: Sophie can only get the three lunches outside her time off (-6), and 15 weekend slots over 12 people give a spread of at least 1 (+3). Disruption: Ben is ill on Friday 4 December; a feasible re-plan exists (hard 0)."
+}

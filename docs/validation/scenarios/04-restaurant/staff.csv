@@ -1,0 +1,13 @@
+staff_id,name,can_work,contract,personal_licence,start_year
+K1,Marco Bellini,kitchen,full,no,2019
+K2,Dan Hughes,kitchen,full,no,2021
+K3,Aisha Okafor,kitchen,full,no,2022
+K4,Tom Fletcher,kitchen,part,no,2024
+K5,Sam Patel,kitchen;floor,full,yes,2020
+K6,Leah Novak,kitchen,part,no,2025
+F1,Grace Turner,floor,full,yes,2018
+F2,Ollie Brennan,floor,part,no,2026
+F3,Sophie Laurent,floor,full,yes,2021
+F4,Ben Adeyemi,floor,full,no,2023
+F5,Nina Kowalski,floor,part,yes,2024
+F6,Raj Mehta,floor,part,no,2025

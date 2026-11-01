@@ -1,0 +1,171 @@
+{
+  "schema_version": "0.2",
+  "id": "restaurant-2026-w49",
+  "version": 1,
+  "status": "confirmed",
+  "title": "The Copper Kettle rota, week commencing 30 November 2026",
+  "language": "en",
+  "archetype": "assignment",
+  "vocabulary": {"resource": "staff member", "task": "shift"},
+  "timezone": "Europe/London",
+  "horizon": {"start": "2026-11-30", "end": "2026-12-06"},
+  "data": {
+    "resources": {
+      "source": "staff.csv",
+      "id": "staff_id",
+      "attributes": {
+        "name": {"column": "name", "type": "str"},
+        "can_work": {"column": "can_work", "type": "list", "separator": ";"},
+        "contract": {"column": "contract", "type": "str"}
+      }
+    },
+    "tasks": {
+      "source": "shifts.csv",
+      "id": "id",
+      "start": "start",
+      "end": "end",
+      "demand": "staff_needed",
+      "attributes": {
+        "area": {"column": "area", "type": "str"},
+        "service": {"column": "service", "type": "str"}
+      }
+    }
+  },
+  "constraints": [
+    {
+      "id": "coverage",
+      "template": "coverage",
+      "hardness": "hard",
+      "rationale": "Each shift gets exactly the number of people in its staff_needed column.",
+      "provenance": {"kind": "utterance", "quote": "shifts + how many people each one needs = shifts.csv"},
+      "status": "confirmed"
+    },
+    {
+      "id": "kitchen-and-floor-skills",
+      "template": "requires_attribute",
+      "hardness": "hard",
+      "params": {"task_attribute": "area", "resource_attribute": "can_work", "match": "contains"},
+      "rationale": "A kitchen shift needs someone who can work in the kitchen and a floor shift someone who can work on the floor (can_work column; Sam can do both).",
+      "provenance": {"kind": "utterance", "quote": "kitchen shifts only for kitchen people, floor shifts only for floor people (staff.csv says who can do what, Sam does both)"},
+      "status": "confirmed"
+    },
+    {
+      "id": "rest-11h",
+      "template": "min_rest",
+      "hardness": "hard",
+      "params": {"hours": 11},
+      "rationale": "Legal minimum of 11 hours off between any two shifts of the same person (so no lunch-and-dinner doubles).",
+      "provenance": {"kind": "utterance", "quote": "at least eleven hours off between any two shifts, no exceptions - legal thing"},
+      "status": "confirmed"
+    },
+    {
+      "id": "approved-time-off",
+      "template": "unavailable",
+      "hardness": "hard",
+      "params": {"source": {"source": "time_off.csv", "resource_id": "staff_id", "start": "from", "end": "to"}},
+      "rationale": "Nobody works during their approved time off listed in time_off.csv.",
+      "provenance": {"kind": "utterance", "quote": "time off is in time_off.csv - all approved, so nobody works during their time off"},
+      "status": "confirmed"
+    },
+    {
+      "id": "max-40h-week",
+      "template": "max_per_period",
+      "hardness": "hard",
+      "params": {"measure": "hours", "period": "week", "limit": 40},
+      "rationale": "At most 40 working hours this week for everyone.",
+      "provenance": {"kind": "utterance", "quote": "nobody over forty hours this week"},
+      "status": "confirmed"
+    },
+    {
+      "id": "dan-and-marco-apart",
+      "template": "apart",
+      "hardness": "hard",
+      "params": {"resource_ids": ["K1", "K2"]},
+      "rationale": "Dan and Marco never work the same shift.",
+      "provenance": {"kind": "utterance", "quote": "never put Dan and Marco on the same shift!!"},
+      "status": "confirmed"
+    },
+    {
+      "id": "ollie-with-grace",
+      "template": "together",
+      "hardness": "soft",
+      "weight": 2,
+      "params": {"resource_ids": ["F1", "F2"]},
+      "rationale": "Ollie, who is new on the floor, should work the same shifts as Grace.",
+      "provenance": {"kind": "utterance", "quote": "Ollie is new on the floor - if poss put him on the same shifts as Grace so she can show him the ropes"},
+      "status": "confirmed"
+    },
+    {
+      "id": "fair-weekends",
+      "template": "balance",
+      "hardness": "soft",
+      "weight": 3,
+      "scope": {"tasks": [{"attribute": "weekday", "op": "in", "value": ["sat", "sun"]}]},
+      "params": {"measure": "count"},
+      "rationale": "Saturday and Sunday shifts are shared evenly across the whole team.",
+      "provenance": {"kind": "utterance", "quote": "share the weekend shifts (Sat + Sun) out evenly across everyone"},
+      "status": "confirmed"
+    },
+    {
+      "id": "max-four-days-running",
+      "template": "max_consecutive_days",
+      "hardness": "soft",
+      "weight": 4,
+      "params": {"days": 4},
+      "rationale": "Preferably no more than four consecutive working days.",
+      "provenance": {"kind": "utterance", "quote": "ideally no one works more than four days running"},
+      "status": "confirmed"
+    },
+    {
+      "id": "two-shifts-each",
+      "template": "min_per_period",
+      "hardness": "soft",
+      "weight": 3,
+      "params": {"measure": "count", "period": "week", "limit": 2},
+      "rationale": "Everyone should get at least two shifts this week.",
+      "provenance": {"kind": "utterance", "quote": "everyone should get at least two shifts this week if at all possible"},
+      "status": "confirmed"
+    },
+    {
+      "id": "sophie-likes-lunches",
+      "template": "preference",
+      "hardness": "soft",
+      "weight": 2,
+      "scope": {
+        "resources": [{"attribute": "id", "op": "eq", "value": "F3"}],
+        "tasks": [{"attribute": "service", "op": "eq", "value": "lunch"}]
+      },
+      "params": {"kind": "prefer"},
+      "rationale": "Sophie prefers lunch shifts.",
+      "provenance": {"kind": "utterance", "quote": "Sophie likes lunches, give her those when you can"},
+      "status": "confirmed"
+    },
+    {
+      "id": "marco-not-sunday",
+      "template": "preference",
+      "hardness": "soft",
+      "weight": 3,
+      "scope": {
+        "resources": [{"attribute": "id", "op": "eq", "value": "K1"}],
+        "tasks": [{"attribute": "weekday", "op": "eq", "value": "sun"}]
+      },
+      "params": {"kind": "avoid"},
+      "rationale": "Marco would rather not work on Sunday.",
+      "provenance": {"kind": "utterance", "quote": "Marco would rather not work Sunday"},
+      "status": "confirmed"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "licence-not-encoded",
+      "text": "The request for at least one personal licence holder on the floor every evening cannot be expressed in the catalog and is not enforced; it needs a human check.",
+      "status": "proposed"
+    },
+    {
+      "id": "late-close-counts-on-start-day",
+      "text": "Friday and Saturday dinners end at 00:30 the next day and count on the day they start.",
+      "status": "proposed"
+    }
+  ],
+  "objective": "lexicographic_hard_then_soft"
+}

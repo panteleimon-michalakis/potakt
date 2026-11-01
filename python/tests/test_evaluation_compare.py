@@ -18,6 +18,7 @@ from potakt.evaluation import (
     compare_models,
     denote,
     load_model,
+    load_scenario,
 )
 
 RESOURCES = """id,name,contract,max_hours,skills,level,badge
@@ -733,3 +734,35 @@ def test_removing_one_scored_constraint_costs_exactly_one_match(
     assert result.matched_count == n - 1
     assert result.recall == (n - 1) / n
     assert result.precision == 1.0
+
+
+# --- golden: a hand-made imperfect candidate for scenario 03 ------------------------------------
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "compare"
+SCENARIO_03 = Path(__file__).resolve().parents[2] / "docs/validation/scenarios/03-call-centre"
+
+
+def test_imperfect_candidate_for_scenario_03_matches_the_golden_byte_for_byte() -> None:
+    # One missing rule, one wrong hardness, one wrong parameter and one extra rule; renamed ids and
+    # attributes, a list binding, a float limit column and rewritten scopes must still match.
+    scenario = load_scenario(SCENARIO_03)
+    truth = LoadedModel(scenario.truth, scenario.instance)
+    text = (FIXTURES / "03-imperfect.json").read_text(encoding="utf-8")
+
+    result = compare_models(truth, load_model(text, SCENARIO_03))
+
+    assert result.valid
+    assert (result.truth_count, result.candidate_count, result.matched_count) == (8, 8, 5)
+    assert (result.recall, result.precision) == (0.625, 0.625)
+    assert [(u.truth_id, u.category, u.closest_candidate_id) for u in result.unmatched_truth] == [
+        ("leo-shadows-priya", "missing", None),
+        ("max-five-days-in-a-row", "wrong_parameters", "c3-days-in-a-row"),
+        ("rest-12h", "wrong_hardness", "c5-rest"),
+    ]
+    assert [u.candidate_id for u in result.unmatched_candidate] == [
+        "c3-days-in-a-row",
+        "c5-rest",
+        "c8-one-shift-a-day",
+    ]
+    golden = (FIXTURES / "03-imperfect.comparison.json").read_bytes()
+    assert result.to_json().encode("utf-8") == golden
