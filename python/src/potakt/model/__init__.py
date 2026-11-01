@@ -34,6 +34,10 @@ from potakt.model.data import (
 )
 from potakt.model.decision_model import Assumption, DecisionModel, Horizon, Vocabulary
 from potakt.model.loader import (
+    JSON_NUMBER_TOO_LARGE,
+    JSON_TOO_DEEP,
+    MAX_NESTING,
+    json_nesting_exceeds,
     load_decision_model,
     load_instance,
     load_solution,
@@ -55,6 +59,9 @@ from potakt.model.validation import (
 )
 
 __all__ = [
+    "JSON_NUMBER_TOO_LARGE",
+    "JSON_TOO_DEEP",
+    "MAX_NESTING",
     "Apart",
     "Assignment",
     "Assumption",
@@ -93,6 +100,7 @@ __all__ = [
     "Vocabulary",
     "WindowsBinding",
     "decision_model_json_schema",
+    "json_nesting_exceeds",
     "load_decision_model",
     "load_instance",
     "load_solution",

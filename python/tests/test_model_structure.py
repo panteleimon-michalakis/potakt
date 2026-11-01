@@ -602,7 +602,7 @@ def nested(depth: int) -> str:
     [
         (nested(65), TOO_DEEP),
         (nested(300), TOO_DEEP),  # previously Pydantic's own recursion message
-        (nested(100_000), TOO_DEEP),  # json.loads RecursionError
+        (nested(100_000), TOO_DEEP),  # caught on the raw text; the decoder is never reached
         ('{"vocabulary": ' + nested(70) + "}", TOO_DEEP),
         (HUGE_INTEGER, "JSON number too large"),
     ],

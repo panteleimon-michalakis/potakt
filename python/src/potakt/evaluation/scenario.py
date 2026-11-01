@@ -15,11 +15,14 @@ from typing import Annotated, Literal, Self
 from pydantic import Field, ValidationError, model_validator
 
 from potakt.model import (
+    JSON_NUMBER_TOO_LARGE,
+    JSON_TOO_DEEP,
     DecisionModel,
     DecisionModelError,
     ProblemInstance,
     Solution,
     ValidationIssue,
+    json_nesting_exceeds,
     load_decision_model,
     load_instance,
     load_solution,
@@ -166,13 +169,17 @@ def _model_issues(name: str, found: Sequence[ValidationIssue]) -> list[ScenarioI
 
 
 def _parse_metadata(text: str) -> Scenario | list[ValidationIssue]:
+    if json_nesting_exceeds(text):  # on the raw text, before decoding (ADR-0006 §4)
+        return [ValidationIssue(ROOT, JSON_TOO_DEEP)]
     try:
         document: object = json.loads(text)
     except json.JSONDecodeError as error:
         message = f"invalid JSON at line {error.lineno}, column {error.colno}: {error.msg}"
         return [ValidationIssue(ROOT, message)]
-    except (RecursionError, ValueError):
-        return [ValidationIssue(ROOT, "invalid JSON: nested too deeply or a number too large")]
+    except RecursionError:  # defence in depth: the raw-text check above already caught it
+        return [ValidationIssue(ROOT, JSON_TOO_DEEP)]
+    except ValueError:  # the decoder's only other ValueError: an integer too long for int()
+        return [ValidationIssue(ROOT, JSON_NUMBER_TOO_LARGE)]
     try:
         return Scenario.model_validate_json(text)
     except ValidationError as error:

@@ -99,14 +99,20 @@ def test_invalid_json_is_an_issue_at_the_root(tmp_path: Path) -> None:
     assert issue.startswith("scenario.json#/: invalid JSON at line 1, column 2")
 
 
-@pytest.mark.parametrize("text", ["[" * 100_000, "1" * 5_000])
-def test_pathological_json_is_an_issue_not_a_crash(tmp_path: Path, text: str) -> None:
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ("[" * 100_000, "JSON nested more than 64 levels deep"),
+        ("[" * 100_000 + "]" * 100_000, "JSON nested more than 64 levels deep"),
+        ("1" * 5_000, "JSON number too large"),
+    ],
+    ids=["unbalanced", "balanced", "huge-integer"],
+)
+def test_pathological_json_is_an_issue_not_a_crash(tmp_path: Path, text: str, message: str) -> None:
     directory = write_scenario_dir(tmp_path)
     (directory / "scenario.json").write_text(text, encoding="utf-8")
 
-    assert issues_of(directory) == [
-        "scenario.json#/: invalid JSON: nested too deeply or a number too large"
-    ]
+    assert issues_of(directory) == [f"scenario.json#/: {message}"]
 
 
 def test_metadata_with_a_utf8_byte_order_mark_loads(tmp_path: Path) -> None:

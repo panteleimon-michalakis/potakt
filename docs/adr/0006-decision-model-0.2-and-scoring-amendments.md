@@ -66,7 +66,9 @@ Amends ADR-0004 "Time model" and "Validation":
   Pydantic. Deeper input gives one issue at `/` with the same message for every depth,
   `JSON nested more than 64 levels deep`, including input so deep that the JSON decoder itself
   overflows. Reason: the decoder's and Pydantic's recursion thresholds differ by platform and Python
-  version, and a real DM is fewer than 10 levels deep.
+  version, and a real DM is fewer than 10 levels deep. Clarified on 2026-11-01: the depth is counted
+  on the raw text before decoding, so the result never depends on the decoder's recursion behaviour,
+  which differs between machines and Python patch versions; the limit and the message are unchanged.
 
 ### 5. Decision Model 0.2 (C1–C3)
 

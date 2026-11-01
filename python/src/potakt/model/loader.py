@@ -77,7 +77,41 @@ def is_reserved_device_name(source: str) -> bool:
 # One nesting limit decided by our code (ADR-0006 §4): the decoder's and Pydantic's recursion
 # thresholds differ by platform and Python version; a real DM is fewer than 10 levels deep.
 MAX_NESTING = 64
-_TOO_DEEP = f"JSON nested more than {MAX_NESTING} levels deep"
+JSON_TOO_DEEP = f"JSON nested more than {MAX_NESTING} levels deep"
+JSON_NUMBER_TOO_LARGE = "JSON number too large"
+_JSON_STRUCTURE = re.compile(r'["\\\[\]{}]')
+
+
+def json_nesting_exceeds(text: str, limit: int = MAX_NESTING) -> bool:
+    """Whether the raw JSON ``text`` nests arrays/objects more than ``limit`` levels deep.
+
+    One iterative pass before any decoding (ADR-0006 §4), so the answer never depends on the
+    decoder's recursion behaviour, which differs between machines and Python patch versions.
+    Brackets inside strings (with ``\\"`` and ``\\\\`` escapes) do not count. It never raises:
+    unterminated strings or brackets are left to the decoder, which reports them with a position.
+    """
+    depth = 0
+    in_string = False
+    escaped = -1  # the position of a character consumed by a backslash escape
+    for match in _JSON_STRUCTURE.finditer(text):
+        position, char = match.start(), match.group()
+        if position == escaped:
+            continue
+        if in_string:
+            if char == "\\":
+                escaped = position + 1
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char in "[{":
+            depth += 1
+            if depth > limit:
+                return True
+        elif char in "]}":
+            depth -= 1
+        # A backslash outside a string is invalid JSON: left to the decoder.
+    return False
 
 
 def _nesting_depth(document: object) -> int:
@@ -98,18 +132,20 @@ def _nesting_depth(document: object) -> int:
 
 
 def _parse_json[M: StrictModel](text: str, model: type[M]) -> M:
+    if json_nesting_exceeds(text):
+        raise DecisionModelError([ValidationIssue(ROOT, JSON_TOO_DEEP)])
     try:
         document: object = json.loads(text)
     except json.JSONDecodeError as error:
         message = f"invalid JSON at line {error.lineno}, column {error.colno}: {error.msg}"
         raise DecisionModelError([ValidationIssue(ROOT, message)]) from None
-    except RecursionError:
-        raise DecisionModelError([ValidationIssue(ROOT, _TOO_DEEP)]) from None
+    except RecursionError:  # defence in depth: the raw-text check above already caught it
+        raise DecisionModelError([ValidationIssue(ROOT, JSON_TOO_DEEP)]) from None
     except ValueError:
         # The decoder's only other ValueError: an integer longer than int() accepts.
-        raise DecisionModelError([ValidationIssue(ROOT, "JSON number too large")]) from None
-    if _nesting_depth(document) > MAX_NESTING:
-        raise DecisionModelError([ValidationIssue(ROOT, _TOO_DEEP)])
+        raise DecisionModelError([ValidationIssue(ROOT, JSON_NUMBER_TOO_LARGE)]) from None
+    if _nesting_depth(document) > MAX_NESTING:  # defence in depth, on the decoded document
+        raise DecisionModelError([ValidationIssue(ROOT, JSON_TOO_DEEP)])
     try:
         return model.model_validate_json(text)
     except ValidationError as error:
