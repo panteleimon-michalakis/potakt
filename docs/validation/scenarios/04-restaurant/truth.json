@@ -50,11 +50,19 @@
       "status": "confirmed"
     },
     {
+      "id": "no-double-booking",
+      "template": "no_overlap",
+      "hardness": "hard",
+      "rationale": "Nobody works two overlapping shifts; only Sam, who can work both areas, could otherwise be double-booked.",
+      "provenance": {"kind": "utterance", "quote": "nobody can do two shifts at the same time"},
+      "status": "confirmed"
+    },
+    {
       "id": "rest-11h",
       "template": "min_rest",
       "hardness": "hard",
       "params": {"hours": 11},
-      "rationale": "Legal minimum of 11 hours off between any two shifts of the same person (so no lunch-and-dinner doubles).",
+      "rationale": "Legal minimum of 11 hours off between any two consecutive shifts of the same person (so no lunch-and-dinner doubles).",
       "provenance": {"kind": "utterance", "quote": "at least eleven hours off between any two shifts, no exceptions - legal thing"},
       "status": "confirmed"
     },

@@ -58,9 +58,12 @@ constraints (§5.1) in `truth.json`: **easy 4–6, medium 7–9, hard 10–14**.
 
 ### 3. Input bundle
 Identical for Test A and Test B: the text of `request.md`, plus **every** CSV file of the scenario in
-full, decoded with its declared dialect (delimiter, decimal separator, encoding) and shown with its
-file name. Test A additionally receives the DM JSON Schema (`potakt schema`). Nothing else: no truth,
-no solution, no `scenario.json`, no catalog hints beyond the schema.
+full, decoded with its declared dialect (the delimiter, decimal separator and encoding of the truth's
+binding of that file) and shown with its file name **and its encoding** (for example
+`ypodoxi_prosopiko.csv (encoding: windows-1253)`), because decoded text cannot show the encoding; the
+delimiter and the decimal separator are visible in the text and are not stated. Test A additionally
+receives the DM JSON Schema (`potakt schema`). Nothing else: no truth, no solution, no
+`scenario.json`, no catalog hints beyond the schema.
 
 ### 4. Truth rules
 - `truth.json` is the DM a careful expert would write from the bundle alone.
@@ -96,9 +99,10 @@ resource ids, set of in-scope task ids), computed with the condition semantics o
 ADR-0006 §3 on the data each DM loads from the scenario directory (data attributes, derived task
 attributes and `id`). The normalization follows these principles: attribute references are resolved to
 their bound CSV column; hours become minutes; lists become sets; per-period limits become the map
-*resource → effective limit* over the in-scope resources; `unavailable` windows become per-resource
-merged interval sets; preference kind is part of the parameters; `together`/`apart` pairs are
-unordered; a `stability` baseline is a set; weights are ignored.
+*resource → effective limit* over the in-scope resources, and their `period` becomes the periods they
+check on the DM's horizon; `unavailable` windows become per-resource merged interval sets; preference
+kind is part of the parameters; `together`/`apart` pairs are unordered; a `stability` baseline is a
+set; weights are ignored.
 
 | Template | Normalized parameters | So these match |
 |---|---|---|
@@ -106,7 +110,7 @@ unordered; a `stability` baseline is a set; weights are ignored.
 | `requires_attribute` | the task column and the resource column, each as (CSV column name, the item set every in-scope task / resource reads from it: a scalar is a one-item set, an absent value the empty set, items compared with the ADR-0006 §3 equality); `match`, where `equals` becomes `contains` when no in-scope resource reads more than one item (then both are the same test) | renamed attributes; `str` vs `list` binding of a single-valued column; `equals` vs `contains` on single values |
 | `no_overlap` | none | — |
 | `min_rest` | `hours` as whole minutes | `11`, `11.0` |
-| `max_per_period`, `min_per_period` | `measure`, `period`, and the map in-scope resource → effective limit (tasks for `count`, minutes for `hours`) | a literal limit and an `{"attribute": …}` limit with equal values; `16` and `16.0` |
+| `max_per_period`, `min_per_period` | `measure`; the periods the rule checks on the DM's horizon (ADR-0005 §3), each as its first and last date clipped to the horizon; and the map in-scope resource → effective limit (tasks for `count`, minutes for `hours`) | a literal limit and an `{"attribute": …}` limit with equal values; `16` and `16.0`; `week` and `horizon` on a horizon of exactly one ISO week |
 | `max_consecutive_days` | `days` | — |
 | `unavailable` | the map in-scope resource → its windows (inline and from the CSV `source`) as a set of local `[start, end)` intervals in which overlapping and touching windows are merged; resources without windows are left out | inline vs CSV windows; split vs merged windows; window order |
 | `preference` | `kind` (`prefer` \| `avoid`) | — |
@@ -116,7 +120,10 @@ unordered; a `stability` baseline is a set; weights are ignored.
 
 The scope extension is compared literally for every template, so a rewrite of a scope with other
 conditions but the same extension matches, while a scope that changes one resource or task does not.
-Ids, weights, rationale, provenance, status and assumptions are never compared.
+Ids, weights, rationale, provenance, status and assumptions are never compared. The DM-level fields
+are not compared on their own: the horizon enters through the periods of per-period rules (one more
+day is one more period for `min_per_period`), and the timezone can change behaviour only across a DST
+change, which no corpus week contains.
 
 #### 5.3 Matching and scores
 - **One-to-one (multiset):** a candidate constraint matches at most one truth constraint and vice
@@ -136,8 +143,9 @@ are reported but do not decide the gate.
 Each unmatched truth constraint is classified against the closest **unmatched** candidate constraint
 with the same template. A pair differs in up to three components: `scope` (either extension),
 `parameters`, `hardness`. Pairs are formed one-to-one, closest first: fewest differing components,
-then the least significant difference (hardness before parameters before scope), then DM order of the
-truth and of the candidate constraint. The category of a paired truth constraint names its most
+then the most significant differing component in ascending order (a pair whose worst difference is
+`hardness` before one whose worst is `parameters`, before one whose worst is `scope`), then DM order
+of the truth and of the candidate constraint. The category of a paired truth constraint names its most
 significant difference: `wrong_scope` if the scopes differ, else `wrong_parameters` if the parameters
 differ, else `wrong_hardness`. A truth constraint without such a candidate is `missing`. (A changed
 scope also changes the scope-restricted parameters of limits, windows and baselines; ranking scope
@@ -161,15 +169,17 @@ which are written as a solution (schema 0.1). A plan that names unknown ids or r
 - **Re-planning stability:** a second message states the scenario's `disruption` ("<resource> cannot
   work from <start> to <end>; please update the plan", in the scenario language). Changed assignments
   = the pairs of the first plan missing from the updated plan (the amount of a `stability` rule with
-  the first plan as baseline). It is reported next to the **reference count**: the same number for a
-  minimal-disruption re-plan of `solution.json` (truth plus the disruption as a hard `unavailable`
-  rule plus that `stability` rule, best found, method reported). The updated plan's hard violations
-  are counted under the truth plus the disruption.
+  the first plan as baseline). It is compared with the **minimal count for the baseline's own first
+  plan**: the same number for a minimal-disruption re-plan of that first plan (truth plus the
+  disruption as a hard `unavailable` rule plus that `stability` rule, best found, method reported),
+  because how many changes are unavoidable depends on the plan being changed. The same number for a
+  minimal-disruption re-plan of `solution.json` is reported as context. The updated plan's hard
+  violations are counted under the truth plus the disruption.
 
 **Gate 1, Test B:** a measurable gap exists if at least one holds: (V) in at least **2** of the 10
 scenarios the first or the updated plan is invalid or has a hard violation; (E) the rubric gives
 "no" in at least **5** scenarios; (S) in at least **5** scenarios the updated plan changes at least
-**3 more** assignments than the reference count.
+**3 more** assignments than the minimal count for its own first plan.
 
 ## Consequences
 - Results can be compared across models and over time, because every rule of the measurement is fixed
@@ -177,6 +187,12 @@ scenarios the first or the updated plan is invalid or has a hard violation; (E) 
 - The denotation compares behaviour on the scenario data, not text: equivalent rewrites match, but a
   rule that is only equivalent on other data (or a redundant scope) does not, and a column bound with
   another type reads other item sets and does not match.
+- Known literal cases that cost a match although the behaviour on the data is the same: a window
+  written `…T23:59` instead of the next day's `T00:00` (different interval sets); a redundant scope on
+  a template that already ignores those entities (an `unavailable` rule scoped to the one person its
+  windows name, a `requires_attribute` rule scoped to the tasks that carry the requirement, an
+  `apart` rule scoped to its two people). They follow from the interval-set and literal-scope
+  principles above and are reported through the diagnostics (`wrong_parameters`, `wrong_scope`).
 - A candidate that groups the same requests into a different number of rules than the truth (e.g. one
   `unavailable` rule for two absences stated separately) loses those matches; the diagnostics show them
   as `wrong_parameters` or `wrong_scope`, so TASK-005c can report how often this happens.

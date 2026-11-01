@@ -7,8 +7,10 @@ disruption really disrupts the reference solution.
 
 import json
 import re
+from collections import defaultdict
 from datetime import date, datetime, time, timedelta
 from functools import cache
+from itertools import combinations
 from pathlib import Path
 
 import pytest
@@ -18,6 +20,7 @@ from potakt.checker import EVALUATORS, check
 from potakt.cli import app
 from potakt.evaluation import LoadedModel, LoadedScenario, compare_models, load_scenario
 from potakt.model import load_instance, parse_decision_model, validate_data
+from potakt.model.data import to_utc
 
 CORPUS = Path(__file__).resolve().parents[2] / "docs" / "validation" / "scenarios"
 SCENARIOS = sorted(path.name for path in CORPUS.iterdir() if path.is_dir())
@@ -141,6 +144,29 @@ def test_reference_solution_is_feasible_and_scores_the_reference_score(name: str
     assert score.hard == 0
     reference = scenario.scenario.reference_score
     assert (score.hard, score.soft) == (reference.hard, reference.soft)
+
+
+@pytest.mark.parametrize("name", SCENARIOS)
+def test_the_reference_solution_never_puts_anyone_on_two_overlapping_tasks(name: str) -> None:
+    # Physically possible whatever the truth says (TASK-005a review: min_rest ignores overlaps).
+    scenario = loaded(name)
+    zone = scenario.truth.zone
+    span = {
+        task.id: (to_utc(task.start, zone), to_utc(task.end, zone))
+        for task in scenario.instance.tasks
+    }
+    worked: dict[str, list[str]] = defaultdict(list)
+    for assignment in scenario.solution.assignments:
+        worked[assignment.resource_id].append(assignment.task_id)
+
+    double_booked = [
+        (resource_id, a, b)
+        for resource_id, task_ids in sorted(worked.items())
+        for a, b in combinations(sorted(task_ids), 2)
+        if span[a][0] < span[b][1] and span[b][0] < span[a][1]
+    ]
+
+    assert double_booked == []
 
 
 @pytest.mark.parametrize("name", SCENARIOS)

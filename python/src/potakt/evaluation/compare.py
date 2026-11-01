@@ -10,11 +10,11 @@ import json
 from collections import defaultdict, deque
 from collections.abc import Hashable, Iterable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from potakt.checker.context import to_minutes
+from potakt.checker.context import period_spans, to_minutes
 from potakt.model import (
     Apart,
     AttributeRef,
@@ -136,7 +136,7 @@ def _params(
                 for resource in instance.resources
                 if resource.id in resources
             )
-            return (("limits", limits), ("measure", p.measure), ("period", p.period))
+            return (("limits", limits), ("measure", p.measure), ("periods", _periods(rule, dm)))
         case MaxConsecutiveDays():
             return (("days", rule.params.days),)
         case Unavailable():
@@ -217,6 +217,20 @@ def _limit(rule: MaxPerPeriod | MinPerPeriod, attributes: dict[str, AttributeVal
             raise ValueError(f"no numeric {limit.attribute!r}; run validate_data first")
         limit = value
     return int(limit) if rule.params.measure == "count" else to_minutes(limit)
+
+
+def _periods(rule: MaxPerPeriod | MinPerPeriod, dm: DecisionModel) -> tuple[tuple[date, date], ...]:
+    """The periods the rule checks on the DM's horizon, as (first, last) dates clipped to it.
+
+    Tasks start inside the horizon, so equal clipped periods mean the same grouping and the same
+    number of periods (``min_per_period`` checks empty ones too): ``week`` and ``horizon`` match on
+    a horizon of exactly one ISO week, while a longer horizon does not match a shorter one.
+    """
+    horizon = dm.horizon
+    return tuple(
+        (max(span.first, horizon.start), min(span.last, horizon.end))
+        for span in period_spans(rule.params.period, horizon)
+    )
 
 
 def _windows(

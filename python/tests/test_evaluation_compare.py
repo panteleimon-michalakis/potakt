@@ -2,6 +2,7 @@
 
 import copy
 import json
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -160,6 +161,10 @@ EQUIVALENT: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {
         one(
             "min_per_period", "soft", params={"measure": "count", "period": "horizon", "limit": 2.0}
         ),
+    ),
+    "week vs horizon on a horizon of exactly one ISO week": (
+        one("max_per_period", params={"measure": "hours", "period": "week", "limit": 40}),
+        one("max_per_period", params={"measure": "hours", "period": "horizon", "limit": 40}),
     ),
     "11 vs 11.0 hours": (
         one("min_rest", params={"hours": 11}),
@@ -364,7 +369,7 @@ MUTATIONS: dict[str, tuple[dict[str, Any], dict[str, Any], str]] = {
     ),
     "limit period": (
         one("max_per_period", params=LIMIT_40),
-        one("max_per_period", params={**LIMIT_40, "period": "horizon"}),
+        one("max_per_period", params={**LIMIT_40, "period": "day"}),
         "wrong_parameters",
     ),
     "attribute limit with values unequal to the literal": (
@@ -492,6 +497,29 @@ def test_mutations_do_not_match_and_are_classified(
     assert (result.recall, result.precision) == (0.0, 0.0)
 
 
+def test_a_per_period_rule_on_a_longer_horizon_does_not_match(data: Path) -> None:
+    # One more (empty) day is one more period that min_per_period checks: different behaviour.
+    daily = one("min_per_period", "soft", params={"measure": "count", "period": "day", "limit": 1})
+    longer = model_doc({**daily, "id": "candidate"})
+    longer["horizon"] = {"start": "2026-11-02", "end": "2026-11-09"}
+
+    result = compare(model_doc(daily), longer, data)
+
+    assert result.matched == ()
+    assert [(u.category, u.closest_candidate_id) for u in result.unmatched_truth] == [
+        ("wrong_parameters", "candidate")
+    ]
+
+
+def test_a_longer_horizon_does_not_change_rules_without_periods(data: Path) -> None:
+    longer = model_doc(one("min_rest", params={"hours": 11}))
+    longer["horizon"] = {"start": "2026-11-01", "end": "2026-11-09"}
+
+    result = compare(model_doc(one("min_rest", params={"hours": 11})), longer, data)
+
+    assert result.matched_count == 1
+
+
 # --- matching ------------------------------------------------------------------------------------
 
 
@@ -608,7 +636,7 @@ def test_denote_reads_the_scope_extension_and_normalized_parameters(data: Path) 
     assert dict(denotation.params) == {
         "limits": frozenset({("a1", 2400), ("a2", 2400), ("a3", 1440), ("a4", 1440)}),
         "measure": "hours",
-        "period": "week",
+        "periods": ((date(2026, 11, 2), date(2026, 11, 8)),),
     }
     assert hash(denotation) == hash(denote(rule_, truth.dm, truth.instance))
 

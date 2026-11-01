@@ -4,6 +4,7 @@ ROTA NOTES - w/c Mon 30 Nov (The Copper Kettle)
 - staff list = staff.csv, shifts + how many people each one needs = shifts.csv
 - time off is in time_off.csv - all approved, so nobody works during their time off
 - kitchen shifts only for kitchen people, floor shifts only for floor people (staff.csv says who can do what, Sam does both)
+- nobody can do two shifts at the same time (careful with Sam, he can't be in the kitchen and on the floor at once)
 - at least eleven hours off between any two shifts, no exceptions - legal thing
 - nobody over forty hours this week
 - never put Dan and Marco on the same shift!!
