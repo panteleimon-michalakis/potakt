@@ -32,9 +32,10 @@ before the first LLM run. Any later change needs a new ADR and is reported in
   `chat` | `notes` | `voice-transcript` | `memo`), `csv_files` (the names of the scenario's CSV files),
   `reference_score` (`hard`, `soft`: the checker score of `solution.json`, a plan that also honours
   every mandatory unsupported request (§4); best found among such plans, not necessarily optimal;
-  amended on 2026-11-01 by the TASK-005b review, before any LLM run), `disruption` (`resource_id`, `start`, `end`: a one-person absence as local datetimes inside
-  the horizon, which the reference solution violates), `unsupported` (a list of `quote` and `reason`),
-  optional `notes` and optional `tags` (below).
+  amended on 2026-11-01 by the TASK-005b review, before any LLM run), `disruption` (`resource_id`,
+  `start`, `end`: a one-person absence as local datetimes inside the horizon, which the reference
+  solution violates), `unsupported` (a list of `quote` and `reason`), optional `notes` and optional
+  `tags` (below).
 
 **Tags** (added on 2026-11-01 by TASK-005b, before any LLM run). `tags` lists, each at most once and
 from a closed set, what the scenario is built to exercise: `numbers-in-words`,
@@ -80,7 +81,8 @@ confirmed by the reviewer on 2026-11-01). A CSV file that the truth does not bin
 roster that the truth only copies into a `stability` baseline) has no declared dialect: it is decoded
 with the defaults (UTF-8, `,`, `.`) and shown as `encoding: utf-8` (added on 2026-11-01 by
 TASK-005b). Test A additionally
-receives the DM JSON Schema (`potakt schema`). Nothing else: no truth, no solution, no
+receives the DM JSON Schema (`potakt schema`). The exact rendering and the instruction text are
+fixed in §7. Nothing else: no truth, no solution, no
 `scenario.json`, no catalog hints beyond the schema.
 
 ### 4. Truth rules
@@ -240,6 +242,45 @@ scenarios the first or the updated plan is invalid or has a hard violation; (E) 
 **3 more** assignments than the minimal count for its own first plan. These thresholds were
 confirmed by the reviewer on 2026-11-01. Any one of the three gaps counts as "a measurable gap",
 because DESIGN §16.2 names "violations, no explanations **or** unstable re-planning".
+
+### 7. Test A harness (pre-registered on 2026-11-02 by TASK-005c1, before any LLM run)
+- **Models.** The strong model of §5.4 is `claude-opus-5-5` with effort `high`. Informational runs,
+  which never decide the gate: `claude-haiku-5-5`, and `gemini-3.8-flash` (Google's free-tier Flash
+  model on 2026-11-02) for a second model family. The corpus became public on 2026-11-01: a model
+  whose training data may include that date or later gives no valid result.
+- **Settings.** One request per scenario and model, no tools, no web access, no conversation
+  history. Anthropic Messages API: `max_tokens` 64000 for Opus and 32000 for Haiku (thinking and
+  text share it); `output_config.effort` as above, sent to Haiku only if Anthropic documents effort
+  for it; no sampling parameters; thinking left to the API default. Gemini `generateContent`:
+  `maxOutputTokens` 32000, every other setting left to the API default.
+- **Prompt.** The instruction text is `docs/validation/prompts/test-a.md` (SHA256
+  `65c4ce708a56ae1c44a804aa78e7666d00a36e76422f60756dfb98aef39bf990`), sent as the system
+  instruction. The user message is the bundle of §3, rendered by
+  `potakt.evaluation.render_test_a` in this order:
+  1. a heading `## Request` and the text of `request.md`;
+  2. a heading `## Data files`, then for each CSV file, in byte order of file name, a heading
+     `### <file name> (encoding: <encoding>)` and its decoded text in a fenced block (a leading byte
+     order mark removed, line endings LF);
+  3. a heading `## Decision Model JSON Schema` and the output of `potakt schema` (SHA256
+     `dc4479f854866d2ce783c37cc8d698ce3a5b2096cafba15e6164446fb9f7120d`).
+- **Answer.** The candidate is the text of the answer's text blocks, joined. If the whole text is
+  one Markdown code fence (` ```json ` or ` ``` `), the fence lines are removed; nothing else is
+  changed. A refusal, a truncated answer (output limit reached) or any stop other than a normal end
+  makes the candidate invalid (§5.1, first attempt).
+- **Validation.** The candidate is validated against a copy of the scenario's CSV files only (no
+  `truth.json`, `solution.json`, `scenario.json` or `request.md`), then compared with
+  `compare_models` (§5).
+- **Failures before an answer.** Connection errors, timeouts and HTTP 429, 500, 502, 503, 504 and
+  529 are repeated, up to 4 attempts with backoff. Any other HTTP error stops the run and records no
+  candidate. A scenario that already has a recorded answer for a model is never run again for it.
+- **Records.** Each run writes `docs/validation/runs/test-a/<model dir>/<scenario id>/` with
+  `request.json` (the exact payload, without credentials), `response.json` (the raw response),
+  `candidate.txt` and `comparison.json`. `<model dir>` is the model id with every character outside
+  `A-Z a-z 0-9 . _ -` replaced by `-`. `potakt eval summary` gives, per model: micro-averaged
+  recall, merged recall and precision; validity; recall per language, template and hardness;
+  diagnostic counts; usage; and cost at the prices pinned in the harness on 2026-11-02.
+- **Who runs it.** The owner runs every paid command. Credentials come only from the environment
+  variables `POTAKT_ANTHROPIC_API_KEY` and `POTAKT_GEMINI_API_KEY` and are never written anywhere.
 
 ## Consequences
 - Results can be compared across models and over time, because every rule of the measurement is fixed

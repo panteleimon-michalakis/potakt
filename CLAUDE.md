@@ -14,7 +14,10 @@ truth; if a task seems to contradict it, **stop and ask** instead of improvising
 2. **Never push.** Never run `git push`, never create or modify remotes, never rewrite history
    (`--amend` only on your own unpushed commit and only if the task allows it).
 3. **Never read or write secrets.** No `.env` contents in output, code, tests or logs. Secrets come
-   only from environment variables.
+   only from environment variables. API keys for the experiments live only in the owner's own shell
+   as `POTAKT_ANTHROPIC_API_KEY` and `POTAKT_GEMINI_API_KEY` (never `ANTHROPIC_API_KEY`, which would
+   switch Claude Code to API billing). You never set, read or print them, and you never run a
+   command that makes a paid model call: the owner runs those.
 4. **Commits:** Conventional Commits (`feat:`, `fix:`, `test:`, `docs:`, `chore:`, `ci:`, `refactor:`),
    English, imperative mood, small and logical. **Do not add `Co-Authored-By` or any AI/tool attribution
    trailers or footers.** Stage files explicitly by path (no `git add -A` / `git add .`).
@@ -43,7 +46,7 @@ truth; if a task seems to contradict it, **stop and ask** instead of improvising
    tests) to make it pass — if you think a rule is wrong, say so in the report.
    The one accepted per-line exception is `# noqa: RUF001` or `# noqa: RUF003` on a line that
    quotes Greek text verbatim, because ruff confuses some Greek letters with Latin ones; a comment
-   on the same or the previous line says so.
+   on the same line or directly above the quoted block says so.
 4. Commit in logical steps (see rule 4).
 5. **Stop and report** using this template:
    ```
@@ -107,8 +110,10 @@ Every task; the evidence goes in the report.
   prove nothing is left with `git diff --stat`.
 - Scratch files never go into the repository.
 - A PreToolUse hook on the owner's machine blocks in-place `sed`/`perl`/`awk`, shell redirection into
-  repository source files and Python reading a script from stdin. If a command is blocked, use the
-  Edit/Write tools or a scratchpad file instead; never work around the hook.
+  repository source files, Python reading a script from stdin and any command that could print a
+  secret (environment dumps, secret-like variable names, `.env` files); reading `.env` files is
+  denied. If a command is blocked, use the Edit/Write tools, a scratchpad file or the Grep tool
+  instead; never work around the hook.
 
 ## Environment
 - Windows 10, PowerShell. Python via **uv** only (`uv add`, `uv run`, `uv sync`); never `pip install`
