@@ -1,22 +1,25 @@
 """The Test A metric (ADR-0007 §5): constraint denotations and the comparison of two models.
 
 Two constraints match iff their denotations are equal: the same template, hardness, scope
-extension on the scenario data and normalized parameters (the table in ADR-0007 §5.2). Matching is
-one-to-one; recall and precision leave ``coverage`` out. This module is the reference
-implementation of the metric; it needs no LLM, no network and no solver.
+extension on the scenario data and normalized parameters (the table in ADR-0007 §5.2); for the
+templates in ``FOLDED_SCOPE_TEMPLATES`` the scope is folded into the parameters, which describe the
+rule's effect. Matching is one-to-one; recall and precision leave ``coverage`` out. This module is
+the reference implementation of the metric; it needs no LLM, no network and no solver.
 """
 
 import json
 from collections import defaultdict, deque
-from collections.abc import Hashable, Iterable, Sequence
+from collections.abc import Hashable, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 from typing import Any, Literal
 
-from potakt.checker.context import period_spans, to_minutes
+from potakt.checker import evaluators
+from potakt.checker.context import Facts, period_spans, to_minutes
 from potakt.model import (
     Apart,
+    Assignment,
     AttributeRef,
     Balance,
     Constraint,
@@ -29,6 +32,7 @@ from potakt.model import (
     Preference,
     ProblemInstance,
     RequiresAttribute,
+    Solution,
     Stability,
     Together,
     Unavailable,
@@ -37,20 +41,26 @@ from potakt.model import (
     parse_decision_model,
     validate_data,
 )
-from potakt.model.common import AttributeValue, Hardness, Scalar
-from potakt.model.data import TimeWindow
-from potakt.model.scope import as_items, in_scope
+from potakt.model.common import AttributeValue, Hardness
+from potakt.model.scope import in_scope
 
 Category = Literal["missing", "wrong_hardness", "wrong_parameters", "wrong_scope"]
 CATEGORIES: tuple[Category, ...] = ("missing", "wrong_hardness", "wrong_parameters", "wrong_scope")
 UNSCORED_TEMPLATES = frozenset({"coverage"})  # mandatory and structural (ADR-0007 §5.1)
+# Templates denoted by their effect, with the scope folded into the parameters (ADR-0007 §5.2):
+# what assignments they forbid, or which pair they bind on which tasks.
+FOLDED_SCOPE_TEMPLATES = frozenset({"requires_attribute", "unavailable", "together", "apart"})
 
 Params = tuple[tuple[str, Hashable], ...]
 
 
 @dataclass(frozen=True, slots=True)
 class Denotation:
-    """What a constraint means on the scenario data (ADR-0007 §5.2); equal denotations match."""
+    """What a constraint means on the scenario data (ADR-0007 §5.2); equal denotations match.
+
+    ``resources`` and ``tasks`` are empty for ``FOLDED_SCOPE_TEMPLATES``: their scope is part of
+    ``params``, so a different scope is a parameter difference there.
+    """
 
     template: str
     hardness: Hardness
@@ -113,6 +123,8 @@ def denote(constraint: Constraint, dm: DecisionModel, instance: ProblemInstance)
         )
     )
     params = _params(constraint, dm, instance, resources, tasks)
+    if constraint.template in FOLDED_SCOPE_TEMPLATES:
+        resources = tasks = frozenset[str]()
     return Denotation(constraint.template, constraint.hardness, resources, tasks, params)
 
 
@@ -125,8 +137,8 @@ def _params(
 ) -> Params:
     """The normalized parameters of one rule (ADR-0007 §5.2), sorted by name."""
     match rule:
-        case RequiresAttribute():
-            return _requirement(rule, dm, instance, resources, tasks)
+        case RequiresAttribute() | Unavailable():
+            return (("forbidden", _forbidden(rule, dm, instance)),)
         case MinRest():
             return (("minutes", to_minutes(rule.params.hours)),)
         case MaxPerPeriod() | MinPerPeriod():
@@ -139,14 +151,14 @@ def _params(
             return (("limits", limits), ("measure", p.measure), ("periods", _periods(rule, dm)))
         case MaxConsecutiveDays():
             return (("days", rule.params.days),)
-        case Unavailable():
-            return (("windows", _windows(instance.windows.get(rule.id, ()), resources)),)
         case Preference():
             return (("kind", rule.params.kind),)
         case Balance():
             return (("measure", rule.params.measure),)
         case Together() | Apart():
-            return (("resource_ids", frozenset(rule.params.resource_ids)),)
+            # Inert (no task) unless both members are in scope (the checker's together / apart).
+            pair = frozenset(rule.params.resource_ids)
+            return (("resource_ids", pair), ("tasks", tasks if pair <= resources else None))
         case Stability():
             baseline = frozenset(
                 (entry.task_id, entry.resource_id)
@@ -158,53 +170,32 @@ def _params(
             return ()
 
 
-Item = tuple[str, Scalar]
+def _forbidden(
+    rule: RequiresAttribute | Unavailable, dm: DecisionModel, instance: ProblemInstance
+) -> frozenset[tuple[str | None, str]]:
+    """The ``(resource, task)`` pairs the rule forbids among its in-scope resources and tasks.
 
-
-def _item(value: Scalar) -> Item:
-    """One item, tagged so that the ADR-0006 §3 equality holds: a boolean only equals a boolean
-    and numbers compare numerically (``2`` = ``2.0``)."""
-    if isinstance(value, bool):
-        return ("bool", value)
-    if isinstance(value, int | float):
-        return ("number", value)
-    return ("str", value)
-
-
-def _items(value: AttributeValue | None) -> frozenset[Item]:
-    """The item set an entity reads: a scalar is one item, an absent value none."""
-    return frozenset() if value is None else frozenset(_item(item) for item in as_items(value))
-
-
-def _requirement(
-    rule: RequiresAttribute,
-    dm: DecisionModel,
-    instance: ProblemInstance,
-    resources: frozenset[str],
-    tasks: frozenset[str],
-) -> Params:
-    """Each side as (CSV column, the item set of every in-scope entity); ``equals`` becomes
-    ``contains`` when no in-scope resource reads more than one item (the same test then)."""
-    p = rule.params
-    offered = frozenset(
-        (resource.id, _items(resource.attributes.get(p.resource_attribute)))
-        for resource in instance.resources
-        if resource.id in resources
+    The checker itself decides, on a plan in which every resource works every task: each such
+    rule has one violation per forbidden assignment, so the semantics cannot drift.
+    """
+    everything = Solution(
+        schema_version="0.1",
+        model_id=dm.id,
+        model_version=dm.version,
+        assignments=tuple(
+            Assignment(task_id=task.id, resource_id=resource.id)
+            for task in instance.tasks
+            for resource in instance.resources
+        ),
     )
-    required = frozenset(
-        (task.id, _items(task.attributes.get(p.task_attribute)))
-        for task in instance.tasks
-        if task.id in tasks
+    context = Facts(dm, instance, everything).view(rule.scope)
+    found = (
+        evaluators.requires_attribute(rule, context)
+        if isinstance(rule, RequiresAttribute)
+        else evaluators.unavailable(rule, context)
     )
-    match = p.match
-    if match == "equals" and all(len(items) <= 1 for _, items in offered):
-        match = "contains"
-    resource_column = dm.data.resources.attributes[p.resource_attribute].column
-    task_column = dm.data.tasks.attributes[p.task_attribute].column
-    return (
-        ("match", match),
-        ("resource_column", (resource_column, offered)),
-        ("task_column", (task_column, required)),
+    return frozenset(
+        (violation.resource_id, task_id) for violation in found for task_id in violation.task_ids
     )
 
 
@@ -231,30 +222,6 @@ def _periods(rule: MaxPerPeriod | MinPerPeriod, dm: DecisionModel) -> tuple[tupl
         (max(span.first, horizon.start), min(span.last, horizon.end))
         for span in period_spans(rule.params.period, horizon)
     )
-
-
-def _windows(
-    windows: Iterable[TimeWindow], resources: frozenset[str]
-) -> frozenset[tuple[str, tuple[tuple[datetime, datetime], ...]]]:
-    """Per in-scope resource, its windows as merged local ``[start, end)`` intervals."""
-    by_resource: dict[str, list[tuple[datetime, datetime]]] = defaultdict(list)
-    for window in windows:
-        if window.resource_id in resources:
-            by_resource[window.resource_id].append((window.start, window.end))
-    return frozenset(
-        (resource_id, _merged(intervals)) for resource_id, intervals in by_resource.items()
-    )
-
-
-def _merged(intervals: list[tuple[datetime, datetime]]) -> tuple[tuple[datetime, datetime], ...]:
-    """Overlapping and touching half-open intervals merged (their union is the same set)."""
-    merged: list[tuple[datetime, datetime]] = []
-    for start, end in sorted(intervals):
-        if merged and start <= merged[-1][1]:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
-        else:
-            merged.append((start, end))
-    return tuple(merged)
 
 
 # --- comparison ------------------------------------------------------------------------------

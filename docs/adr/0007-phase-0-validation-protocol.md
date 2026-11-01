@@ -97,29 +97,32 @@ Two constraints **match** iff they have the same template, the same hardness, th
 extension** and the same **normalized parameters**. The scope extension is the pair (set of in-scope
 resource ids, set of in-scope task ids), computed with the condition semantics of ADR-0005 §2 /
 ADR-0006 §3 on the data each DM loads from the scenario directory (data attributes, derived task
-attributes and `id`). The normalization follows these principles: attribute references are resolved to
-their bound CSV column; hours become minutes; lists become sets; per-period limits become the map
-*resource → effective limit* over the in-scope resources, and their `period` becomes the periods they
-check on the DM's horizon; `unavailable` windows become per-resource merged interval sets; preference
-kind is part of the parameters; `together`/`apart` pairs are unordered; a `stability` baseline is a
-set; weights are ignored.
+attributes and `id`). The normalization follows these principles: hours become minutes; lists become
+sets; per-period limits become the map *resource → effective limit* over the in-scope resources, and
+their `period` becomes the periods they check on the DM's horizon; the assignment-blocking templates
+`requires_attribute` and `unavailable` become the set of `(resource id, task id)` pairs they forbid on
+the scenario data, with the checker's semantics; `together`/`apart` become their unordered pair and
+the tasks they apply to; preference kind is part of the parameters; a `stability` baseline is a set;
+weights are ignored.
 
 | Template | Normalized parameters | So these match |
 |---|---|---|
 | `coverage` | not scored | — |
-| `requires_attribute` | the task column and the resource column, each as (CSV column name, the item set every in-scope task / resource reads from it: a scalar is a one-item set, an absent value the empty set, items compared with the ADR-0006 §3 equality); `match`, where `equals` becomes `contains` when no in-scope resource reads more than one item (then both are the same test) | renamed attributes; `str` vs `list` binding of a single-valued column; `equals` vs `contains` on single values |
+| `requires_attribute` | the set of forbidden `(resource id, task id)` pairs among the in-scope resources and tasks, by the ADR-0006 §3 rules (an absent or empty requirement restricts nobody; the one equality); the scope is folded into this set and not compared separately | renamed attributes; another column or condition with the same forbidden pairs; `str` vs `list` binding of a single-valued column; `equals` vs `contains` on single values; a redundant scope |
 | `no_overlap` | none | — |
 | `min_rest` | `hours` as whole minutes | `11`, `11.0` |
 | `max_per_period`, `min_per_period` | `measure`; the periods the rule checks on the DM's horizon (ADR-0005 §3), each as its first and last date clipped to the horizon; and the map in-scope resource → effective limit (tasks for `count`, minutes for `hours`) | a literal limit and an `{"attribute": …}` limit with equal values; `16` and `16.0`; `week` and `horizon` on a horizon of exactly one ISO week |
 | `max_consecutive_days` | `days` | — |
-| `unavailable` | the map in-scope resource → its windows (inline and from the CSV `source`) as a set of local `[start, end)` intervals in which overlapping and touching windows are merged; resources without windows are left out | inline vs CSV windows; split vs merged windows; window order |
+| `unavailable` | the set of forbidden `(resource id, task id)` pairs among the in-scope resources and tasks: one of the resource's windows (inline or from the CSV `source`) overlaps the task, half-open `[start, end)`; the scope is folded into this set and not compared separately | inline vs CSV windows; split, merged or reordered windows; `…T23:59` vs the next day's `T00:00`; a redundant scope |
 | `preference` | `kind` (`prefer` \| `avoid`) | — |
 | `balance` | `measure` | — |
-| `together`, `apart` | the unordered pair of resource ids | `[a, b]`, `[b, a]` |
+| `together`, `apart` | the unordered pair of resource ids and the set of in-scope task ids; the resource scope only decides whether both members are in scope, and if one is not the rule is **inert** (the pair alone, no task set), so it matches only another inert rule with the same pair | `[a, b]`, `[b, a]`; a redundant resource scope; two inert rules with the same pair |
 | `stability` | the set of baseline `(task_id, resource_id)` pairs whose task and resource are in scope | baseline order |
 
-The scope extension is compared literally for every template, so a rewrite of a scope with other
-conditions but the same extension matches, while a scope that changes one resource or task does not.
+For `requires_attribute`, `unavailable`, `together` and `apart` the scope is part of the
+parameters, as described above. For every other template the scope extension is compared as is, so a
+rewrite of a scope with other conditions but the same extension matches, while a scope that changes
+one resource or task does not.
 Ids, weights, rationale, provenance, status and assumptions are never compared. The DM-level fields
 are not compared on their own: the horizon enters through the periods of per-period rules (one more
 day is one more period for `min_per_period`), and the timezone can change behaviour only across a DST
@@ -148,8 +151,9 @@ then the most significant differing component in ascending order (a pair whose w
 of the truth and of the candidate constraint. The category of a paired truth constraint names its most
 significant difference: `wrong_scope` if the scopes differ, else `wrong_parameters` if the parameters
 differ, else `wrong_hardness`. A truth constraint without such a candidate is `missing`. (A changed
-scope also changes the scope-restricted parameters of limits, windows and baselines; ranking scope
-first keeps it `wrong_scope`.)
+scope also changes the scope-restricted parameters of limits and baselines; ranking scope first keeps
+it `wrong_scope`. For `requires_attribute`, `unavailable`, `together` and `apart` the scope is part of
+the parameters, so a different set is `wrong_parameters`, never `wrong_scope`.)
 
 #### 5.6 Unsupported requests
 They are not part of recall. A candidate constraint that encodes one is a false positive by
@@ -185,14 +189,11 @@ scenarios the first or the updated plan is invalid or has a hard violation; (E) 
 - Results can be compared across models and over time, because every rule of the measurement is fixed
   in advance and implemented once, in tested code.
 - The denotation compares behaviour on the scenario data, not text: equivalent rewrites match, but a
-  rule that is only equivalent on other data (or a redundant scope) does not, and a column bound with
-  another type reads other item sets and does not match.
-- Known literal cases that cost a match although the behaviour on the data is the same: a window
-  written `…T23:59` instead of the next day's `T00:00` (different interval sets); a redundant scope on
-  a template that already ignores those entities (an `unavailable` rule scoped to the one person its
-  windows name, a `requires_attribute` rule scoped to the tasks that carry the requirement, an
-  `apart` rule scoped to its two people). They follow from the interval-set and literal-scope
-  principles above and are reported through the diagnostics (`wrong_parameters`, `wrong_scope`).
+  rule that is only equivalent on other data does not, and a redundant scope matches only on the
+  templates whose scope is part of the parameters (`requires_attribute`, `unavailable`, `together`,
+  `apart`).
+- Accepted leniency: windows or requirements that differ only where no task is affected match. The
+  definition is the effect on the scenario data, the same principle as the scope extension.
 - A candidate that groups the same requests into a different number of rules than the truth (e.g. one
   `unavailable` rule for two absences stated separately) loses those matches; the diagnostics show them
   as `wrong_parameters` or `wrong_scope`, so TASK-005c can report how often this happens.

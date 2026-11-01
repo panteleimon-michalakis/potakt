@@ -29,13 +29,14 @@ a3,Cleo,part,24,closing,senior,1
 a4,Dev,part,24,,junior,0
 """
 
-TASKS = """id,start,end,demand,kind,needs,min_level,badge_needed
-mon-am,2026-11-02T07:00,2026-11-02T15:00,1,am,opening,senior,1
-mon-pm,2026-11-02T15:00,2026-11-02T23:00,1,pm,closing,,
-tue-am,2026-11-03T07:00,2026-11-03T15:00,1,am,opening,,
-tue-pm,2026-11-03T15:00,2026-11-03T23:00,1,pm,closing,senior,
-sat-am,2026-11-07T09:00,2026-11-07T17:00,2,am,,,1
-sun-am,2026-11-08T09:00,2026-11-08T17:00,2,am,,,
+# `duty` equals `needs` on weekdays and also asks for an opener at the weekend.
+TASKS = """id,start,end,demand,kind,needs,min_level,badge_needed,duty
+mon-am,2026-11-02T07:00,2026-11-02T15:00,1,am,opening,senior,1,opening
+mon-pm,2026-11-02T15:00,2026-11-02T23:00,1,pm,closing,,,closing
+tue-am,2026-11-03T07:00,2026-11-03T15:00,1,am,opening,,,opening
+tue-pm,2026-11-03T15:00,2026-11-03T23:00,1,pm,closing,senior,,closing
+sat-am,2026-11-07T09:00,2026-11-07T17:00,2,am,,,1,opening
+sun-am,2026-11-08T09:00,2026-11-08T17:00,2,am,,,,opening
 """
 
 WINDOWS = """person,from,to
@@ -52,6 +53,7 @@ TASK_ATTRIBUTES: dict[str, Any] = {
     "kind": {"column": "kind", "type": "str"},
     "needs": {"column": "needs", "type": "str"},
     "min_level": {"column": "min_level", "type": "str"},
+    "duty": {"column": "duty", "type": "str"},
 }
 
 FULL_TIME = {"resources": [{"attribute": "contract", "op": "eq", "value": "full"}]}
@@ -218,6 +220,76 @@ EQUIVALENT: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {
                 ]
             },
             scope=FULL_TIME,
+        ),
+    ),
+    "window ending T23:59 vs the next day T00:00": (
+        one("unavailable", params={"windows": [TUESDAY]}),
+        one("unavailable", params={"windows": [{**TUESDAY, "end": "2026-11-03T23:59"}]}),
+    ),
+    "windows that differ only where no task is affected": (
+        one("unavailable", params={"windows": [TUESDAY]}),
+        one(
+            "unavailable",
+            params={
+                "windows": [{**TUESDAY, "start": "2026-11-02T23:00", "end": "2026-11-04T07:00"}]
+            },
+        ),
+    ),
+    "redundant resource scope on unavailable": (
+        one("unavailable", params={"windows": [TUESDAY]}),
+        one(
+            "unavailable",
+            params={"windows": [TUESDAY]},
+            scope={"resources": [{"attribute": "id", "op": "eq", "value": "a1"}]},
+        ),
+    ),
+    "redundant task scope on requires_attribute": (
+        one("requires_attribute", params=SKILLS),
+        one(
+            "requires_attribute",
+            params=SKILLS,
+            scope={"tasks": [{"attribute": "weekday", "op": "in", "value": ["mon", "tue"]}]},
+        ),
+    ),
+    "redundant resource scope on requires_attribute": (
+        one("requires_attribute", params=LEVEL),
+        one(
+            "requires_attribute",
+            params=LEVEL,
+            scope={"resources": [{"attribute": "level", "op": "eq", "value": "junior"}]},
+        ),
+    ),
+    "requirement through another column and a condition, same forbidden pairs": (
+        one("requires_attribute", params=SKILLS),
+        one(
+            "requires_attribute",
+            params={**SKILLS, "task_attribute": "duty"},
+            scope={"tasks": [{"attribute": "weekday", "op": "not_in", "value": ["sat", "sun"]}]},
+        ),
+    ),
+    "redundant resource scope on apart": (
+        one("apart", params={"resource_ids": ["a3", "a4"]}),
+        one(
+            "apart",
+            params={"resource_ids": ["a3", "a4"]},
+            scope={"resources": [{"attribute": "contract", "op": "eq", "value": "part"}]},
+        ),
+    ),
+    "inert apart rules with the same pair": (
+        one("apart", params={"resource_ids": ["a3", "a4"]}, scope=FULL_TIME),
+        one(
+            "apart",
+            params={"resource_ids": ["a4", "a3"]},
+            scope={"resources": [{"attribute": "id", "op": "eq", "value": "a3"}], **WEEKEND},
+        ),
+    ),
+    "redundant resource scope on together": (
+        one("together", "soft", params={"resource_ids": ["a1", "a2"]}, scope=WEEKEND),
+        one(
+            "together",
+            "soft",
+            params={"resource_ids": ["a2", "a1"]},
+            scope={**FULL_TIME, **WEEKEND},
         ),
     ),
     "pair order in together": (
@@ -387,9 +459,56 @@ MUTATIONS: dict[str, tuple[dict[str, Any], dict[str, Any], str]] = {
         one("max_consecutive_days", params={"days": 6}),
         "wrong_parameters",
     ),
-    "window shifted by an hour": (
+    "window one hour earlier: one extra forbidden pair": (
         one("unavailable", params={"windows": [TUESDAY]}),
-        one("unavailable", params={"windows": [{**TUESDAY, "end": "2026-11-04T01:00"}]}),
+        one("unavailable", params={"windows": [{**TUESDAY, "start": "2026-11-02T22:00"}]}),
+        "wrong_parameters",
+    ),
+    "window ending as a task starts: one forbidden pair missing": (
+        one("unavailable", params={"windows": [TUESDAY]}),
+        one("unavailable", params={"windows": [{**TUESDAY, "end": "2026-11-03T15:00"}]}),
+        "wrong_parameters",
+    ),
+    "unavailable scoped away from its person": (
+        one("unavailable", params={"windows": [TUESDAY]}),
+        one(
+            "unavailable",
+            params={"windows": [TUESDAY]},
+            scope={"resources": [{"attribute": "id", "op": "ne", "value": "a1"}]},
+        ),
+        "wrong_parameters",
+    ),
+    "requirement on one task fewer": (
+        one("requires_attribute", params=SKILLS),
+        one(
+            "requires_attribute",
+            params=SKILLS,
+            scope={"tasks": [{"attribute": "id", "op": "ne", "value": "mon-am"}]},
+        ),
+        "wrong_parameters",
+    ),
+    "requirement for one resource fewer": (
+        one("requires_attribute", params=SKILLS),
+        one(
+            "requires_attribute",
+            params=SKILLS,
+            scope={"resources": [{"attribute": "id", "op": "ne", "value": "a4"}]},
+        ),
+        "wrong_parameters",
+    ),
+    "requirement through another column that also binds the weekend": (
+        one("requires_attribute", params=SKILLS),
+        one("requires_attribute", params={**SKILLS, "task_attribute": "duty"}),
+        "wrong_parameters",
+    ),
+    "apart on fewer tasks": (
+        one("apart", params={"resource_ids": ["a3", "a4"]}),
+        one("apart", params={"resource_ids": ["a3", "a4"]}, scope=WEEKEND),
+        "wrong_parameters",
+    ),
+    "inert vs active apart with the same pair": (
+        one("apart", params={"resource_ids": ["a3", "a4"]}),
+        one("apart", params={"resource_ids": ["a3", "a4"]}, scope=FULL_TIME),
         "wrong_parameters",
     ),
     "window for another person": (
@@ -599,8 +718,15 @@ def test_requirement_items_compare_numbers_numerically(data: Path) -> None:
     assert result.matched_count == 1
 
 
-def test_requirement_items_never_equate_a_boolean_with_a_number(data: Path) -> None:
+def test_a_boolean_binding_on_both_sides_forbids_the_same_pairs(data: Path) -> None:
     result = compare(_badge_rule("int", "int"), _badge_rule("bool", "bool"), data)
+
+    assert result.matched_count == 1
+
+
+def test_requirement_items_never_equate_a_boolean_with_a_number(data: Path) -> None:
+    # Holders read `true`, the tasks require `1`: nobody qualifies, so more pairs are forbidden.
+    result = compare(_badge_rule("int", "int"), _badge_rule("bool", "int"), data)
 
     assert result.matched_count == 0
     assert [u.category for u in result.unmatched_truth] == ["wrong_parameters"]
@@ -639,6 +765,46 @@ def test_denote_reads_the_scope_extension_and_normalized_parameters(data: Path) 
         "periods": ((date(2026, 11, 2), date(2026, 11, 8)),),
     }
     assert hash(denotation) == hash(denote(rule_, truth.dm, truth.instance))
+
+
+def _denoted(data: Path, rule_: dict[str, Any]) -> tuple[frozenset[str], frozenset[str], Any]:
+    truth = loaded(model_doc(rule_), data)
+    denotation = denote(truth.dm.constraints[1], truth.dm, truth.instance)
+    return denotation.resources, denotation.tasks, dict(denotation.params)
+
+
+def test_denote_folds_the_scope_into_the_forbidden_pairs(data: Path) -> None:
+    requirement = _denoted(data, one("requires_attribute", params=SKILLS, scope=FULL_TIME))
+    absence = _denoted(data, one("unavailable", params={"source": WINDOWS_SOURCE}))
+
+    assert requirement == (
+        frozenset(),
+        frozenset(),
+        {"forbidden": frozenset({("a2", "mon-pm"), ("a2", "tue-pm")})},
+    )
+    assert absence == (
+        frozenset(),
+        frozenset(),
+        {"forbidden": frozenset({("a1", "tue-am"), ("a1", "tue-pm")})},
+    )
+
+
+def test_denote_reads_a_pair_rule_as_its_pair_and_tasks_or_as_inert(data: Path) -> None:
+    active = _denoted(data, one("apart", params={"resource_ids": ["a4", "a3"]}, scope=WEEKEND))
+    inert = _denoted(
+        data, one("together", "soft", params={"resource_ids": ["a1", "a3"]}, scope=FULL_TIME)
+    )
+
+    assert active == (
+        frozenset(),
+        frozenset(),
+        {"resource_ids": frozenset({"a3", "a4"}), "tasks": frozenset({"sat-am", "sun-am"})},
+    )
+    assert inert == (
+        frozenset(),
+        frozenset(),
+        {"resource_ids": frozenset({"a1", "a3"}), "tasks": None},
+    )
 
 
 # --- invalid candidates ---------------------------------------------------------------------------
