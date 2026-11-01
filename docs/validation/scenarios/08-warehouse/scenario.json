@@ -1,0 +1,14 @@
+{
+  "id": "08-warehouse",
+  "title": "Warehouse peak week with FLT licences",
+  "language": "en",
+  "domain": "warehouse",
+  "difficulty": "easy",
+  "style": "email",
+  "csv_files": ["peak_week_shifts.csv", "warehouse_team.csv"],
+  "reference_score": {"hard": 0, "soft": 0},
+  "disruption": {"resource_id": "W07", "start": "2026-11-27T00:00", "end": "2026-11-28T00:00"},
+  "unsupported": [],
+  "tags": ["numbers-in-words", "irrelevant-information", "web-grounded"],
+  "notes": "Each shift has a picking row and an FLT row; the FLT row needs 'counterbalance' in the licences list (a reach licence alone does not count). The two rows of a shift overlap, so the email states that nobody is on both. Late (ends 22:00) into early (06:00) is an 8-hour gap, so the soft 12-hour rest binds. The agency and contract columns change no rule. The reference score 0 is optimal (no soft rule is violated). Disruption: Jordan is ill on Black Friday, 27 November (he works the late FLT line); a feasible re-plan exists (hard 0). Sources (facts only, changed where useful): 48-hour average weekly limit - https://www.gov.uk/maximum-weekly-working-hours ; 11 hours of rest between working days - https://www.gov.uk/rest-breaks-work ; seasonal warehouse shifts from 6am to 2pm - https://jobs.eu.lever.co/lovehoneygroup/e9eb54eb-8455-428e-bfc6-a81cd7e6ecd2 ; warehouse night shifts from 22:00 to 06:00 - https://findajob.dwp.gov.uk/details/17693733 ; accredited counterbalance lift-truck training and certificates - https://rtitb.com/courselocator/counterbalance-lift-truck"
+}

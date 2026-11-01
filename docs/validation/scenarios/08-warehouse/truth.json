@@ -1,0 +1,118 @@
+{
+  "schema_version": "0.2",
+  "id": "warehouse-peak-2026-w48",
+  "version": 1,
+  "status": "confirmed",
+  "title": "Warehouse peak week rota, w/c 23 November 2026",
+  "language": "en",
+  "archetype": "assignment",
+  "vocabulary": {"resource": "team member", "task": "shift line"},
+  "timezone": "Europe/London",
+  "horizon": {"start": "2026-11-23", "end": "2026-11-29"},
+  "data": {
+    "resources": {
+      "source": "warehouse_team.csv",
+      "id": "emp_no",
+      "attributes": {
+        "name": {"column": "name", "type": "str"},
+        "licences": {"column": "licences", "type": "list", "separator": ";"},
+        "contract": {"column": "contract", "type": "str"}
+      }
+    },
+    "tasks": {
+      "source": "peak_week_shifts.csv",
+      "id": "shift_id",
+      "start": "start",
+      "end": "end",
+      "demand": "headcount",
+      "attributes": {
+        "shift": {"column": "shift", "type": "str"},
+        "line": {"column": "line", "type": "str"},
+        "needs": {"column": "needs", "type": "str"}
+      }
+    }
+  },
+  "constraints": [
+    {
+      "id": "coverage",
+      "template": "coverage",
+      "hardness": "hard",
+      "rationale": "Each line of each shift gets exactly its headcount.",
+      "provenance": {"kind": "utterance", "quote": "shifts and headcount per line are in peak_week_shifts.csv"},
+      "status": "confirmed"
+    },
+    {
+      "id": "flt-needs-counterbalance",
+      "template": "requires_attribute",
+      "hardness": "hard",
+      "params": {"task_attribute": "needs", "resource_attribute": "licences", "match": "contains"},
+      "rationale": "FLT lines need a counterbalance licence in the licences column; a reach licence alone does not count, and picking lines have no requirement.",
+      "provenance": {"kind": "utterance", "quote": "Only people with a counterbalance licence (licences column) go on an FLT line."},
+      "status": "confirmed"
+    },
+    {
+      "id": "one-line-at-a-time",
+      "template": "no_overlap",
+      "hardness": "hard",
+      "rationale": "Nobody works the picking line and the FLT line of the same shift.",
+      "provenance": {"kind": "utterance", "quote": "Obviously nobody can be on both lines at once."},
+      "status": "confirmed"
+    },
+    {
+      "id": "ideally-40h",
+      "template": "max_per_period",
+      "hardness": "soft",
+      "weight": 3,
+      "params": {"measure": "hours", "period": "week", "limit": 40},
+      "rationale": "Preferably no more than forty hours this week for anyone.",
+      "provenance": {"kind": "utterance", "quote": "Ideally nobody goes over forty hours this week."},
+      "status": "confirmed"
+    },
+    {
+      "id": "rest-12h",
+      "template": "min_rest",
+      "hardness": "soft",
+      "weight": 2,
+      "params": {"hours": 12},
+      "rationale": "Preferably twelve hours between the end of one shift and the start of the next (no late into early).",
+      "provenance": {"kind": "utterance", "quote": "If you can, leave twelve hours between someone's shifts."},
+      "status": "confirmed"
+    },
+    {
+      "id": "kasia-holiday",
+      "template": "unavailable",
+      "hardness": "hard",
+      "params": {"windows": [{"resource_id": "W01", "start": "2026-11-26T00:00", "end": "2026-11-28T00:00"}]},
+      "rationale": "Kasia is on booked holiday on Thursday 26 and Friday 27 November.",
+      "provenance": {"kind": "utterance", "quote": "Kasia is on booked holiday Thursday and Friday. Can't be moved."},
+      "status": "confirmed"
+    },
+    {
+      "id": "dev-avoids-nights",
+      "template": "preference",
+      "hardness": "soft",
+      "weight": 2,
+      "scope": {
+        "resources": [{"attribute": "id", "op": "eq", "value": "W02"}],
+        "tasks": [{"attribute": "shift", "op": "eq", "value": "night"}]
+      },
+      "params": {"kind": "avoid"},
+      "rationale": "Dev would rather not work night shifts.",
+      "provenance": {"kind": "utterance", "quote": "Dev would rather not do nights"},
+      "status": "confirmed"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "holiday-whole-days",
+      "text": "Kasia's holiday covers the whole of Thursday and Friday (26 Nov 00:00 to 28 Nov 00:00), so the Wednesday night shift that runs into Thursday is excluded too.",
+      "status": "proposed"
+    },
+    {
+      "id": "hours-from-shift-times",
+      "text": "Weekly hours are counted from the scheduled start and end of each shift; breaks are not deducted.",
+      "status": "proposed"
+    }
+  ],
+  "objective": "lexicographic_hard_then_soft"
+}

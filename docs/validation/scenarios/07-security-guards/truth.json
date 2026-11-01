@@ -1,0 +1,106 @@
+{
+  "schema_version": "0.2",
+  "id": "security-guards-2026-w45",
+  "version": 1,
+  "status": "confirmed",
+  "title": "Πρόγραμμα φύλαξης Ασπρόπυργου, 2–8/11/2026",
+  "language": "el",
+  "archetype": "assignment",
+  "vocabulary": {"resource": "φύλακας", "task": "βάρδια"},
+  "timezone": "Europe/Athens",
+  "horizon": {"start": "2026-11-02", "end": "2026-11-08"},
+  "data": {
+    "resources": {
+      "source": "fylakes.csv",
+      "id": "Κωδικός",
+      "attributes": {
+        "name": {"column": "Ονοματεπώνυμο", "type": "str"}
+      }
+    },
+    "tasks": {
+      "source": "vardies_fylaxis.csv",
+      "id": "Κωδικός",
+      "start": "Έναρξη",
+      "end": "Λήξη",
+      "demand": "Άτομα",
+      "attributes": {
+        "shift": {"column": "Βάρδια", "type": "str"}
+      }
+    }
+  },
+  "constraints": [
+    {
+      "id": "coverage",
+      "template": "coverage",
+      "hardness": "hard",
+      "rationale": "Κάθε δωδεκάωρο καλύπτεται από τόσους φύλακες όσους γράφει η στήλη «Άτομα».",
+      "provenance": {"kind": "utterance", "quote": "Καθημερινές θέλουμε δύο άτομα τη μέρα (πύλη κ περιπολία), Σάββατο Κυριακή ένα, νύχτες πάντα δύο."},
+      "status": "confirmed"
+    },
+    {
+      "id": "max-four-shifts",
+      "template": "max_per_period",
+      "hardness": "hard",
+      "params": {"measure": "count", "period": "week", "limit": 4},
+      "rationale": "Το πολύ τέσσερα δωδεκάωρα την εβδομάδα για κάθε φύλακα.",
+      "provenance": {"kind": "utterance", "quote": "Πάνω από τέσσερα δωδεκάωρα τη βδομάδα δεν γράφουμε σε κανέναν, ούτε ένα παραπάνω"},
+      "status": "confirmed"
+    },
+    {
+      "id": "rest-11h",
+      "template": "min_rest",
+      "hardness": "hard",
+      "params": {"hours": 11},
+      "rationale": "Τουλάχιστον έντεκα ώρες ξεκούρασης ανάμεσα σε δύο βάρδιες του ίδιου φύλακα, άρα όχι νύχτα και αμέσως μετά μέρα.",
+      "provenance": {"kind": "utterance", "quote": "ανάμεσα σε δύο βάρδιες του ίδιου θέλει τουλάχιστον έντεκα ώρες ξεκούραση"},
+      "status": "confirmed"
+    },
+    {
+      "id": "michalis-court",
+      "template": "unavailable",
+      "hardness": "hard",
+      "params": {"windows": [{"resource_id": "Φ3", "start": "2026-11-03T09:00", "end": "2026-11-03T13:00"}]},
+      "rationale": "Ο Μιχάλης είναι στο δικαστήριο την Τρίτη 3/11, 09:00–13:00, άρα δεν μπορεί το ημερήσιο δωδεκάωρο της Τρίτης.",
+      "provenance": {"kind": "utterance", "quote": "Ο Μιχάλης έχει δικαστήριο την Τρίτη 3/11 στις 9 το πρωί, μέχρι τη 1 έχει τελειώσει λέει, οπότε εκείνο το πρωινό δεν μπορεί"},
+      "status": "confirmed"
+    },
+    {
+      "id": "giorgos-prefers-nights",
+      "template": "preference",
+      "hardness": "soft",
+      "weight": 2,
+      "scope": {
+        "resources": [{"attribute": "id", "op": "eq", "value": "Φ2"}],
+        "tasks": [{"attribute": "shift", "op": "eq", "value": "νύχτα"}]
+      },
+      "params": {"kind": "prefer"},
+      "rationale": "Ο Γιώργος προτιμά νυχτερινά δωδεκάωρα όταν γίνεται.",
+      "provenance": {"kind": "utterance", "quote": "Ο Γιώργος ρώτησε αν γίνεται να του βάζεις νύχτες"},
+      "status": "confirmed"
+    },
+    {
+      "id": "even-nights",
+      "template": "balance",
+      "hardness": "soft",
+      "weight": 2,
+      "scope": {"tasks": [{"attribute": "shift", "op": "eq", "value": "νύχτα"}]},
+      "params": {"measure": "count"},
+      "rationale": "Οι νυχτερινές βάρδιες μοιράζονται όσο πιο ίσα γίνεται σε όλους τους φύλακες.",
+      "provenance": {"kind": "utterance", "quote": "τις νύχτες μοίρασέ τις ισα, να μη βγαίνουν κάποιοι με όλες τις νύχτες κ άλλοι με καμία"},
+      "status": "confirmed"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "court-window",
+      "text": "Ο Μιχάλης λείπει από τις 09:00 έως τις 13:00 της Τρίτης 3/11· το νυχτερινό της Δευτέρας (λήξη 07:00) δεν επηρεάζεται.",
+      "status": "proposed"
+    },
+    {
+      "id": "night-counts-on-start-day",
+      "text": "Το νυχτερινό δωδεκάωρο μετράει στην ημέρα που ξεκινά· η νύχτα της Κυριακής 8/11 ανήκει σε αυτή την εβδομάδα.",
+      "status": "proposed"
+    }
+  ],
+  "objective": "lexicographic_hard_then_soft"
+}

@@ -1,0 +1,14 @@
+{
+  "id": "07-security-guards",
+  "title": "Φύλακες σε δωδεκάωρες βάρδιες ημέρας και νύχτας",
+  "language": "el",
+  "domain": "security services",
+  "difficulty": "easy",
+  "style": "chat",
+  "csv_files": ["fylakes.csv", "vardies_fylaxis.csv"],
+  "reference_score": {"hard": 0, "soft": -4},
+  "disruption": {"resource_id": "Φ5", "start": "2026-11-05T00:00", "end": "2026-11-06T00:00"},
+  "unsupported": [],
+  "tags": ["numbers-in-words", "irrelevant-information", "web-grounded"],
+  "notes": "One site, so each 12-hour shift is one row with its head count and no two tasks overlap (no double-booking rule is needed). Night to day without a break is a 0-hour rest, so the 11-hour rule binds; four 12-hour shifts are the 48-hour cap. Michalis's court window (09:00-13:00) only hits the Tuesday day shift. The licence columns are information that changes no rule. The reference score -4 is optimal: with g nights for Giorgos the others share 14 - g nights, so g = 2 keeps the night spread at 0 (-4), while g = 3 or 4 forces a spread of 2 or 3 (-2) and g <= 1 gives at most -2. Disruption: Soula is ill on Thursday 5/11 (she works the Thursday night); a feasible re-plan exists (hard 0). Sources (facts only, changed where useful): 11 consecutive hours of daily rest between shifts - https://www.kepea.gr/imerisia-anapafsi-1 ; 48-hour average week including overtime - https://employment-social-affairs.ec.europa.eu/policies-and-activities/rights-work/labour-law/working-conditions/working-time-directive_en ; 12-hour security shifts (06:00-18:00, 22:00-10:00) in Greek-language job ads, from Cyprus because no Greek source was found - https://ergodotisi.com/el-CY/jobs/security-guard-48046291 ; the sector agreement covers staff holding a security work licence - https://www.taxheaven.gr/labordoc/184"
+}
