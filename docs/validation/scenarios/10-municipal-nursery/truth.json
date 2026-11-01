@@ -1,0 +1,131 @@
+{
+  "schema_version": "0.2",
+  "id": "municipal-nursery-2026-w51",
+  "version": 1,
+  "status": "confirmed",
+  "title": "Πρόγραμμα προσωπικού 3ου Δημοτικού Παιδικού Σταθμού, 14–20/12/2026",
+  "language": "el",
+  "archetype": "assignment",
+  "vocabulary": {"resource": "εργαζόμενος", "task": "θέση"},
+  "timezone": "Europe/Athens",
+  "horizon": {"start": "2026-12-14", "end": "2026-12-20"},
+  "data": {
+    "resources": {
+      "source": "prosopiko_stathmou.csv",
+      "id": "Κωδικός",
+      "attributes": {
+        "name": {"column": "Ονοματεπώνυμο", "type": "str"},
+        "specialty": {"column": "Ειδικότητα", "type": "str"}
+      }
+    },
+    "tasks": {
+      "source": "vardies_stathmou.csv",
+      "id": "Κωδικός",
+      "start": "Έναρξη",
+      "end": "Λήξη",
+      "demand": "Άτομα",
+      "attributes": {
+        "section": {"column": "Τμήμα", "type": "str"},
+        "shift": {"column": "Βάρδια", "type": "str"},
+        "position": {"column": "Θέση", "type": "str"},
+        "required_specialty": {"column": "Απαιτούμενη ειδικότητα", "type": "str"}
+      }
+    }
+  },
+  "constraints": [
+    {
+      "id": "coverage",
+      "template": "coverage",
+      "hardness": "hard",
+      "rationale": "Κάθε θέση, και η γιορτή, καλύπτεται από τόσα άτομα όσα γράφει η στήλη «Άτομα».",
+      "provenance": {"kind": "utterance", "quote": "την έχω βάλει κι αυτή ως γραμμή στο αρχείο, με τον αριθμό των ατόμων όπως σε κάθε θέση"},
+      "status": "confirmed"
+    },
+    {
+      "id": "educator-position",
+      "template": "requires_attribute",
+      "hardness": "hard",
+      "params": {"task_attribute": "required_specialty", "resource_attribute": "specialty", "match": "equals"},
+      "rationale": "Η θέση της παιδαγωγού καλύπτεται μόνο από βρεφονηπιοκόμο· οι θέσεις βοηθού και η γιορτή δεν έχουν απαίτηση.",
+      "provenance": {"kind": "utterance", "quote": "Στη θέση της παιδαγωγού μπαίνει οπωσδήποτε βρεφονηπιοκόμος"},
+      "status": "confirmed"
+    },
+    {
+      "id": "one-position-at-a-time",
+      "template": "no_overlap",
+      "hardness": "hard",
+      "rationale": "Κανείς δεν καλύπτει δύο θέσεις που επικαλύπτονται χρονικά (οι δύο βάρδιες της ημέρας επικαλύπτονται).",
+      "provenance": {"kind": "utterance", "quote": "Προφανώς κανείς δεν μπορεί να βρίσκεται σε δύο θέσεις την ίδια ώρα."},
+      "status": "confirmed"
+    },
+    {
+      "id": "max-40h-week",
+      "template": "max_per_period",
+      "hardness": "hard",
+      "params": {"measure": "hours", "period": "week", "limit": 40},
+      "rationale": "Το πολύ σαράντα ώρες την εβδομάδα για κάθε εργαζόμενο, μαζί με τη γιορτή.",
+      "provenance": {"kind": "utterance", "quote": "Κανείς δεν πρέπει να ξεπεράσει τις σαράντα ώρες την εβδομάδα"},
+      "status": "confirmed"
+    },
+    {
+      "id": "dimaki-training",
+      "template": "unavailable",
+      "hardness": "hard",
+      "params": {"windows": [{"resource_id": "Π2", "start": "2026-12-17T00:00", "end": "2026-12-18T00:00"}]},
+      "rationale": "Η Χρυσούλα Δημάκη είναι σε επιμόρφωση όλη την Πέμπτη 17/12.",
+      "provenance": {"kind": "utterance", "quote": "Η κ. Δημάκη θα είναι σε επιμόρφωση όλη την Πέμπτη 17/12."},
+      "status": "confirmed"
+    },
+    {
+      "id": "rest-12h",
+      "template": "min_rest",
+      "hardness": "soft",
+      "weight": 2,
+      "params": {"hours": 12},
+      "rationale": "Επιθυμητό: τουλάχιστον δώδεκα ώρες από το σχόλασμα μέχρι την επόμενη θέση του ίδιου ατόμου (κυρίως γύρω από τη γιορτή).",
+      "provenance": {"kind": "utterance", "quote": "θα ήθελα, αν γίνεται, κανείς να μην ξαναπιάνει δουλειά αν δεν έχουν περάσει δώδεκα ώρες από τη στιγμή που σχόλασε"},
+      "status": "confirmed"
+    },
+    {
+      "id": "two-openings-each",
+      "template": "min_per_period",
+      "hardness": "soft",
+      "weight": 3,
+      "scope": {
+        "resources": [{"attribute": "specialty", "op": "eq", "value": "βρεφονηπιοκόμος"}],
+        "tasks": [{"attribute": "shift", "op": "eq", "value": "πρωινή"}]
+      },
+      "params": {"measure": "count", "period": "week", "limit": 2},
+      "rationale": "Κάθε βρεφονηπιοκόμος να κάνει τουλάχιστον δύο πρωινές βάρδιες (άνοιγμα στις 7:00) μέσα στην εβδομάδα.",
+      "provenance": {"kind": "utterance", "quote": "ιδανικά, κάθε βρεφονηπιοκόμος να κάνει τουλάχιστον δύο πρωινές μέσα στην εβδομάδα"},
+      "status": "confirmed"
+    },
+    {
+      "id": "eleni-not-at-celebration",
+      "template": "preference",
+      "hardness": "soft",
+      "weight": 4,
+      "scope": {
+        "resources": [{"attribute": "id", "op": "eq", "value": "Π1"}],
+        "tasks": [{"attribute": "shift", "op": "eq", "value": "γιορτή"}]
+      },
+      "params": {"kind": "avoid"},
+      "rationale": "Η Ελένη, αν γίνεται, να μη μείνει στη γιορτή.",
+      "provenance": {"kind": "utterance", "quote": "Η Ελένη, αν μπορεί να αποφευχθεί, να μη μείνει στη γιορτή"},
+      "status": "confirmed"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "ratio-not-encoded",
+      "text": "Η αναλογία ενός ενήλικα ανά οκτώ παιδιά ανά τμήμα (9:00–14:00) δεν εκφράζεται με τους διαθέσιμους κανόνες και δεν ελέγχεται· με τις θέσεις του αρχείου κάθε τμήμα έχει τέσσερις ενήλικες σε εκείνες τις ώρες, αλλά χρειάζεται ανθρώπινο έλεγχο.",
+      "status": "proposed"
+    },
+    {
+      "id": "hours-include-celebration",
+      "text": "Οι ώρες της γιορτής (17:30–20:00) μετρούν στις εβδομαδιαίες ώρες.",
+      "status": "proposed"
+    }
+  ],
+  "objective": "lexicographic_hard_then_soft"
+}

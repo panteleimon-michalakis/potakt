@@ -1,0 +1,145 @@
+{
+  "schema_version": "0.2",
+  "id": "care-home-2026-w50",
+  "version": 1,
+  "status": "confirmed",
+  "title": "Ashgrove House rota, week commencing 7 December 2026",
+  "language": "en",
+  "archetype": "assignment",
+  "vocabulary": {"resource": "staff member", "task": "slot"},
+  "timezone": "Europe/London",
+  "horizon": {"start": "2026-12-07", "end": "2026-12-13"},
+  "data": {
+    "resources": {
+      "source": "rota_staff.csv",
+      "id": "staff_id",
+      "attributes": {
+        "name": {"column": "name", "type": "str"},
+        "role": {"column": "role", "type": "str"},
+        "competencies": {"column": "competencies", "type": "list", "separator": ";"},
+        "contract": {"column": "contract", "type": "str"}
+      }
+    },
+    "tasks": {
+      "source": "rota_shifts.csv",
+      "id": "slot_id",
+      "start": "start",
+      "end": "end",
+      "demand": "people",
+      "attributes": {
+        "shift": {"column": "shift", "type": "str"},
+        "role": {"column": "role", "type": "str"},
+        "needs": {"column": "needs", "type": "str"}
+      }
+    }
+  },
+  "constraints": [
+    {
+      "id": "coverage",
+      "template": "coverage",
+      "hardness": "hard",
+      "rationale": "Every slot gets exactly the number of people in its people column.",
+      "provenance": {"kind": "utterance", "quote": "rota_shifts.csv (every slot for the week and how many people each one needs)"},
+      "status": "confirmed"
+    },
+    {
+      "id": "seniors-need-meds",
+      "template": "requires_attribute",
+      "hardness": "hard",
+      "params": {"task_attribute": "needs", "resource_attribute": "competencies", "match": "contains"},
+      "rationale": "Senior slots (meds round) only for staff whose competencies include meds; carer slots have no requirement.",
+      "provenance": {"kind": "utterance", "quote": "senior slots only for staff signed off on meds (competencies column)"},
+      "status": "confirmed"
+    },
+    {
+      "id": "one-shift-at-a-time",
+      "template": "no_overlap",
+      "hardness": "hard",
+      "rationale": "Nobody works two overlapping slots (the twilight overlaps the day and the night).",
+      "provenance": {"kind": "utterance", "quote": "nobody on two shifts at once"},
+      "status": "confirmed"
+    },
+    {
+      "id": "rest-11h",
+      "template": "min_rest",
+      "hardness": "hard",
+      "params": {"hours": 11},
+      "rationale": "At least eleven hours off between the end of one shift and the start of the next.",
+      "provenance": {"kind": "utterance", "quote": "at least eleven hours off between any two shifts, no exceptions"},
+      "status": "confirmed"
+    },
+    {
+      "id": "precious-annual-leave",
+      "template": "unavailable",
+      "hardness": "hard",
+      "params": {"windows": [{"resource_id": "S05", "start": "2026-12-10T00:00", "end": "2026-12-13T00:00"}]},
+      "rationale": "Precious is on annual leave from Thursday 10 to Saturday 12 December.",
+      "provenance": {"kind": "utterance", "quote": "Precious is on annual leave Thu 10th to Sat 12th"},
+      "status": "confirmed"
+    },
+    {
+      "id": "gary-and-rhona-apart",
+      "template": "apart",
+      "hardness": "hard",
+      "params": {"resource_ids": ["S03", "S04"]},
+      "rationale": "Gary and Rhona never work the same shift while the investigation is open.",
+      "provenance": {"kind": "utterance", "quote": "under no circumstances put Gary and Rhona on the same shift while the investigation is open"},
+      "status": "confirmed"
+    },
+    {
+      "id": "max-three-days-running",
+      "template": "max_consecutive_days",
+      "hardness": "soft",
+      "weight": 3,
+      "params": {"days": 3},
+      "rationale": "Preferably no more than three consecutive working days.",
+      "provenance": {"kind": "utterance", "quote": "ideally nobody works more than three days in a row"},
+      "status": "confirmed"
+    },
+    {
+      "id": "contracted-three-shifts",
+      "template": "min_per_period",
+      "hardness": "soft",
+      "weight": 3,
+      "scope": {"resources": [{"attribute": "contract", "op": "eq", "value": "contract"}]},
+      "params": {"measure": "count", "period": "week", "limit": 3},
+      "rationale": "Everyone on a contract should get at least three shifts this week.",
+      "provenance": {"kind": "utterance", "quote": "try to give everyone on a contract at least three shifts"},
+      "status": "confirmed"
+    },
+    {
+      "id": "even-bank-hours",
+      "template": "balance",
+      "hardness": "soft",
+      "weight": 1,
+      "scope": {"resources": [{"attribute": "contract", "op": "eq", "value": "bank"}]},
+      "params": {"measure": "hours"},
+      "rationale": "Bank staff should get roughly the same number of hours.",
+      "provenance": {"kind": "utterance", "quote": "share the bank hours out evenly between the bank staff"},
+      "status": "confirmed"
+    },
+    {
+      "id": "kemi-with-bernadette",
+      "template": "together",
+      "hardness": "soft",
+      "weight": 2,
+      "params": {"resource_ids": ["S01", "S02"]},
+      "rationale": "Kemi, who is doing her Care Certificate, should work the same slots as Bernadette.",
+      "provenance": {"kind": "utterance", "quote": "Kemi is still doing her Care Certificate - pair her with Bernadette on as many shifts as you can"},
+      "status": "confirmed"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "leave-whole-days",
+      "text": "Precious's leave covers the whole of Thursday to Saturday (10 Dec 00:00 to 13 Dec 00:00), so the Wednesday night that runs into Thursday is excluded too.",
+      "status": "proposed"
+    },
+    {
+      "id": "night-counts-on-start-day",
+      "text": "A night counts on the day it starts, for days in a row and for the week.",
+      "status": "proposed"
+    }
+  ],
+  "objective": "lexicographic_hard_then_soft"
+}

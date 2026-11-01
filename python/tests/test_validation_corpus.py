@@ -1,13 +1,14 @@
-"""Integrity of the Phase 0 validation corpus (ADR-0007 §2-§4, TASK-005a D4).
+"""Integrity of the Phase 0 validation corpus (ADR-0007 §2-§4, TASK-005a D4, TASK-005b D1/D3).
 
 Parametrized over every directory in ``docs/validation/scenarios/``: each scenario loads, its
-truth and reference solution agree with its metadata, its request follows the writing rules and its
-disruption really disrupts the reference solution.
+truth and reference solution agree with its metadata, its request follows the writing rules, its
+disruption really disrupts the reference solution, no truth rule is vacuous and its verifiable tags
+agree with the truth. The composition tests check the corpus as a whole.
 """
 
 import json
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date, datetime, time, timedelta
 from functools import cache
 from itertools import combinations
@@ -107,6 +108,73 @@ def test_scenarios_01_to_04_cover_at_least_8_of_the_12_scored_templates() -> Non
 
     assert len(first_four) == 4
     assert len(covered) >= 8, sorted(set(SCORED) - covered)
+
+
+# --- corpus composition (ADR-0007 §2, TASK-005b D3) ----------------------------------------------
+
+
+def corpus() -> list[LoadedScenario]:
+    return [loaded(name) for name in SCENARIOS]
+
+
+def tagged(tag: str) -> list[str]:
+    return [s.scenario.id for s in corpus() if tag in s.scenario.tags]
+
+
+def test_the_corpus_has_ten_scenarios_at_least_five_in_greek_and_four_domains() -> None:
+    scenarios = [s.scenario for s in corpus()]
+
+    assert len(scenarios) == 10
+    assert sum(s.language == "el" for s in scenarios) >= 5
+    assert len({s.domain for s in scenarios}) >= 4
+
+
+def test_each_difficulty_appears_at_least_twice_within_its_band() -> None:
+    by_difficulty = Counter(s.scenario.difficulty for s in corpus())
+
+    assert {level: by_difficulty[level] >= 2 for level in BANDS} == dict.fromkeys(BANDS, True)
+    for scenario in corpus():
+        low, high = BANDS[scenario.scenario.difficulty]
+        assert low <= len(scored_rules(scenario)) <= high, scenario.scenario.id
+
+
+def test_every_scored_template_appears_in_enough_scenarios() -> None:
+    found: dict[str, set[str]] = defaultdict(set)
+    for scenario in corpus():
+        for rule in scenario.truth.constraints:
+            found[rule.template].add(scenario.scenario.id)
+
+    too_rare = {
+        template: sorted(found[template])
+        for template in SCORED
+        if len(found[template]) < (1 if template == "stability" else 2)
+    }
+
+    assert too_rare == {}
+
+
+@pytest.mark.parametrize("template", ["min_rest", "max_per_period", "max_consecutive_days"])
+def test_rest_and_limit_templates_appear_both_hard_and_soft(template: str) -> None:
+    hardnesses = {
+        rule.hardness
+        for scenario in corpus()
+        for rule in scenario.truth.constraints
+        if rule.template == template
+    }
+
+    assert hardnesses == {"hard", "soft"}
+
+
+def test_the_tagged_properties_reach_their_minimums() -> None:
+    with_unsupported = [s.scenario.id for s in corpus() if s.scenario.unsupported]
+
+    assert len(tagged("per-resource-limit")) >= 2
+    assert len(tagged("non-default-csv")) >= 2
+    assert len(tagged("windows-1253")) >= 1
+    assert len(tagged("stability-baseline")) >= 1
+    assert len(with_unsupported) >= 2
+    assert len(tagged("irrelevant-information")) >= 3
+    assert len(tagged("numbers-in-words")) >= 2
 
 
 def test_greek_letters_are_counted_among_all_letters() -> None:
