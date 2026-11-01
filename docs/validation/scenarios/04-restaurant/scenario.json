@@ -14,5 +14,6 @@
       "reason": "The catalog has no 'at least one of the assigned resources has an attribute' rule: requires_attribute applies to every assignment, so it would demand that everyone on the evening floor holds a personal licence."
     }
   ],
+  "tags": ["numbers-in-words", "irrelevant-information"],
   "notes": "Time off comes from a CSV window source (time_off.csv); Nina's window ends exactly when the Friday floor lunch ends (half-open intervals, no overlap). The 11-hour rest rule rules out lunch-and-dinner doubles and blocks Friday and Saturday closers from the next lunch, but it ignores overlapping shifts (ADR-0005), so the request also states that nobody works two shifts at once (only Sam could). The reference score -3 is optimal: Sophie can only get the three lunches outside her time off (-6), and 15 weekend slots over 12 people give a spread of at least 1 (+3). Disruption: Ben is ill on Friday 4 December; a feasible re-plan exists (hard 0)."
 }

@@ -18,9 +18,24 @@ from typer.testing import CliRunner
 
 from potakt.checker import EVALUATORS, check
 from potakt.cli import app
-from potakt.evaluation import LoadedModel, LoadedScenario, compare_models, load_scenario
-from potakt.model import load_instance, parse_decision_model, validate_data
-from potakt.model.data import to_utc
+from potakt.evaluation import (
+    LoadedModel,
+    LoadedScenario,
+    compare_models,
+    is_vacuous,
+    load_scenario,
+)
+from potakt.model import (
+    AttributeRef,
+    DecisionModel,
+    MaxPerPeriod,
+    MinPerPeriod,
+    Unavailable,
+    load_instance,
+    parse_decision_model,
+    validate_data,
+)
+from potakt.model.data import CsvDialect, to_utc
 
 CORPUS = Path(__file__).resolve().parents[2] / "docs" / "validation" / "scenarios"
 SCENARIOS = sorted(path.name for path in CORPUS.iterdir() if path.is_dir())
@@ -273,6 +288,57 @@ def test_the_disruption_makes_the_reference_solution_infeasible(name: str) -> No
     assert result.score.hard > 0
 
 
+def csv_dialects(truth: DecisionModel) -> list[CsvDialect]:
+    """The CSV dialect of every binding of the truth: resources, tasks and window sources."""
+    return [
+        truth.data.resources.csv,
+        truth.data.tasks.csv,
+        *(
+            rule.params.source.csv
+            for rule in truth.constraints
+            if isinstance(rule, Unavailable) and rule.params.source is not None
+        ),
+    ]
+
+
+def has_per_resource_limit(truth: DecisionModel) -> bool:
+    return any(
+        isinstance(rule, MaxPerPeriod | MinPerPeriod)
+        and isinstance(rule.params.limit, AttributeRef)
+        for rule in truth.constraints
+    )
+
+
+@pytest.mark.parametrize("name", SCENARIOS)
+def test_the_tags_that_the_data_can_show_agree_with_the_truth(name: str) -> None:
+    scenario = loaded(name)
+    truth, tags = scenario.truth, set(scenario.scenario.tags)
+    dialects = csv_dialects(truth)
+
+    assert ("per-resource-limit" in tags) == has_per_resource_limit(truth)
+    assert ("non-default-csv" in tags) == any(dialect != CsvDialect() for dialect in dialects)
+    assert ("windows-1253" in tags) == any(d.encoding == "windows-1253" for d in dialects)
+    assert ("stability-baseline" in tags) == any(
+        r.template == "stability" for r in truth.constraints
+    )
+    if "web-grounded" in tags:
+        assert "https://" in (scenario.scenario.notes or "")
+
+
+@pytest.mark.parametrize("name", SCENARIOS)
+def test_no_truth_constraint_is_vacuous(name: str) -> None:
+    # A rule no plan could violate would match any other rule without effect (TASK-005b D1).
+    scenario = loaded(name)
+
+    vacuous = {
+        rule.id: reason
+        for rule in scenario.truth.constraints
+        if (reason := is_vacuous(rule, scenario.truth, scenario.instance)) is not None
+    }
+
+    assert vacuous == {}
+
+
 @pytest.mark.parametrize("name", SCENARIOS)
 def test_the_truth_matches_itself(name: str) -> None:
     scenario = loaded(name)
@@ -281,4 +347,4 @@ def test_the_truth_matches_itself(name: str) -> None:
     result = compare_models(truth, truth)
 
     assert result.truth_count == len(scored_rules(scenario))
-    assert (result.recall, result.precision) == (1.0, 1.0)
+    assert (result.recall, result.precision, result.merged_recall) == (1.0, 1.0, 1.0)

@@ -14,5 +14,6 @@
       "reason": "The catalog has no 'at least one of the assigned resources has an attribute' rule: requires_attribute applies to every assignment, so it would demand that all agents on the shift speak Spanish."
     }
   ],
+  "tags": ["numbers-in-words", "irrelevant-information", "per-resource-limit"],
   "notes": "Early, mid and late weekday shifts overlap pairwise, so no_overlap is stated and binding. The reference score -10 is optimal: Jamal gets all five early shifts and no other soft rule is violated. Disruption: Sofia is ill on Wednesday 9 December; a feasible re-plan exists (hard 0)."
 }

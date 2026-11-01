@@ -10,7 +10,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from pathlib import Path
-from typing import Annotated, Literal, Self
+from typing import Annotated, Literal, Self, get_args
 
 from pydantic import Field, ValidationError, model_validator
 
@@ -39,6 +39,21 @@ TRUTH_FILE = "truth.json"
 SOLUTION_FILE = "solution.json"
 CSV_SUFFIX = ".csv"  # compared by our code, case-sensitively, on every platform
 ROOT = "/"
+
+# What a scenario is built to exercise (ADR-0007 §2); the corpus tests cross-check the tags that the
+# data can show and count all of them for the composition rules.
+ScenarioTag = Literal[
+    "numbers-in-words",  # a rule's number is written in words
+    "irrelevant-information",  # the request contains information that changes no rule
+    "per-resource-limit",  # the truth has an {"attribute": ...} limit
+    "non-default-csv",  # a binding declares a CSV dialect other than the defaults
+    "windows-1253",  # a binding declares the windows-1253 encoding
+    "stability-baseline",  # the truth has a stability rule (a draft roster to keep)
+    "owner-written",  # the request was written by the owner
+    "owner-edited",  # the request was rewritten by the owner
+    "web-grounded",  # the data and the request rest on public sources named in `notes`
+]
+SCENARIO_TAGS: tuple[ScenarioTag, ...] = get_args(ScenarioTag)
 
 ScenarioId = Annotated[str, Field(pattern=r"^\d{2}-[a-z0-9]+(-[a-z0-9]+)*$")]
 CsvFileName = Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*\.csv$")]
@@ -88,6 +103,7 @@ class Scenario(StrictModel):
     disruption: Disruption
     unsupported: list[UnsupportedRequest]
     notes: Text | None = None
+    tags: list[ScenarioTag] = Field(default_factory=list[ScenarioTag])
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,6 +277,7 @@ def _consistency_issues(
     if scenario.id != directory.name:
         report("/id", f"id {scenario.id!r} must equal the directory name {directory.name!r}")
     _csv_file_issues(scenario.csv_files, directory, report)
+    _repeated_issues(scenario.tags, "/tags", report)
     if truth is not None and scenario.language != truth.language:
         report(
             "/language",
@@ -271,12 +288,18 @@ def _consistency_issues(
     return found
 
 
-def _csv_file_issues(listed: list[str], directory: Path, report: _Report) -> None:
+def _repeated_issues(listed: Sequence[str], path: str, report: _Report) -> set[str]:
+    """Report every repeated entry of a list; return the distinct entries."""
     seen: set[str] = set()
     for index, name in enumerate(listed):
         if name in seen:
-            report(f"/csv_files/{index}", f"{name} is listed twice")
+            report(f"{path}/{index}", f"{name} is listed twice")
         seen.add(name)
+    return seen
+
+
+def _csv_file_issues(listed: list[str], directory: Path, report: _Report) -> None:
+    seen = _repeated_issues(listed, "/csv_files", report)
     present = {p.name for p in directory.iterdir() if p.is_file() and p.name.endswith(CSV_SUFFIX)}
     missing, unlisted = sorted(seen - present), sorted(present - seen)
     parts: list[str] = []

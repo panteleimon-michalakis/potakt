@@ -9,5 +9,12 @@
   "reference_score": {"hard": 0, "soft": -8},
   "disruption": {"resource_id": "Υ6", "start": "2026-11-24T00:00", "end": "2026-11-25T00:00"},
   "unsupported": [],
+  "tags": [
+    "numbers-in-words",
+    "irrelevant-information",
+    "per-resource-limit",
+    "non-default-csv",
+    "windows-1253"
+  ],
   "notes": "Both CSV files are a Greek-locale Excel export: Windows-1253, ';' delimiter, decimal comma (37,5), Greek headers, languages separated by ','; stored with LF line endings because .gitattributes normalizes text files. The reference score -8 is optimal: 7 nights over 8 people give a night spread of at least 1 (+2), and Giannis can get at most 5 mornings (-10). Disruption: Petros is ill on Tuesday 24/11; a feasible re-plan exists (hard 0)."
 }

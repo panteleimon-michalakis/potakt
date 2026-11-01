@@ -40,6 +40,9 @@
     }
   ],
   "matched_count": 5,
+  "merged_matched_count": 5,
+  "merged_recall": 0.625,
+  "merged_truth_count": 8,
   "precision": 0.625,
   "recall": 0.625,
   "truth_count": 8,

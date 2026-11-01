@@ -32,8 +32,18 @@ before the first LLM run. Any later change needs a new ADR and is reported in
   `chat` | `notes` | `voice-transcript` | `memo`), `csv_files` (the names of the scenario's CSV files),
   `reference_score` (`hard`, `soft`: the checker score of `solution.json`, best found, not necessarily
   optimal), `disruption` (`resource_id`, `start`, `end`: a one-person absence as local datetimes inside
-  the horizon, which the reference solution violates), `unsupported` (a list of `quote` and `reason`)
-  and optional `notes`.
+  the horizon, which the reference solution violates), `unsupported` (a list of `quote` and `reason`),
+  optional `notes` and optional `tags` (below).
+
+**Tags** (added on 2026-11-01 by TASK-005b, before any LLM run). `tags` lists, each at most once and
+from a closed set, what the scenario is built to exercise: `numbers-in-words`,
+`irrelevant-information`, `per-resource-limit`, `non-default-csv`, `windows-1253`,
+`stability-baseline`, `owner-written` (the owner wrote the request), `owner-edited` (the owner
+rewrote it) and `web-grounded` (the data and the request rest on public sources, one line per source
+with its URL in `notes`). The tags that the data can show are cross-checked against the truth by a
+test: `per-resource-limit` ⇔ the truth has an `{"attribute": …}` limit; `non-default-csv` ⇔ a binding
+declares a CSV dialect other than the defaults; `windows-1253` ⇔ a binding declares that encoding;
+`stability-baseline` ⇔ a `stability` rule; `web-grounded` ⇒ `notes` contains an `https://` URL.
 
 **Composition.** The corpus has **10** scenarios, at least **5 in Greek**, at least **4 domains** and a
 mix of difficulty (each level at least twice). Difficulty is defined by the number of scored
@@ -46,6 +56,9 @@ constraints (§5.1) in `truth.json`: **easy 4–6, medium 7–9, hard 10–14**.
   at least 2 write numbers in words;
 - the cues for hard and soft rules vary ("ideally", "if possible", "under no circumstances",
   «ιδανικά», «αν γίνεται», «οπωσδήποτε», «απαγορεύεται»).
+
+A corpus composition test asserts these rules (all but the varied cues), counting the tags for the
+properties the data cannot show (added on 2026-11-01 by TASK-005b).
 
 **Every scenario:**
 - 5–12 resources and 14–42 tasks; one week, Monday to Sunday, in November or December 2026; inside
@@ -78,6 +91,12 @@ receives the DM JSON Schema (`potakt schema`). Nothing else: no truth, no soluti
   needs two templates or two hardnesses ("ideally 5, never more than 6") gives one constraint each.
 - Requests the catalog cannot express are listed in `scenario.json` → `unsupported` (verbatim quote
   and reason) and are **not** encoded in the truth.
+- **No vacuous rule** (added on 2026-11-01 by TASK-005b): no truth constraint is one that no plan on
+  the scenario data could violate, because such a rule would match any other rule without effect. The
+  test is `potakt.evaluation.is_vacuous`: among others, an empty scope extension, an
+  assignment-blocking rule that forbids no pair, an inert pair rule, a `no_overlap` or `min_rest` rule
+  that no two in-scope tasks can break, a limit that no period reaches, a minimum of 0, a `balance`
+  over fewer than two resources and an empty in-scope baseline.
 
 ### 5. Metric (Test A)
 
@@ -162,6 +181,17 @@ They are not part of recall. A candidate constraint that encodes one is a false 
 construction. The report counts, by reading each candidate's `assumptions`, how many unsupported
 requests the candidate flags (informational).
 
+#### 5.7 Recall with absences merged (informational)
+Added on 2026-11-01 by TASK-005b, before any LLM run. How absences are grouped into rules is
+arbitrary for a reader (two absences in two sentences may be one rule or two, §4 granularity). A
+second recall is therefore computed like §5.3, after all `unavailable` constraints of the same
+hardness are merged into one, in **both** the truth and the candidate, forbidding the union of their
+`(resource id, task id)` pairs; an invalid candidate recovers nothing here either. It is
+micro-averaged like the primary recall and reported next to it, and it **never decides the gate**
+(§5.4): the primary metric stays strict, and the difference between the two shows how much of a gap
+comes from grouping alone. The reference implementation is `Comparison.merged_recall` in
+`compare.py`.
+
 ### 6. Test B measures (computed in TASK-005d)
 The baseline gets the input bundle of §3 and is asked for its plan as `(task id, resource id)` pairs,
 which are written as a solution (schema 0.1). A plan that names unknown ids or repeats a pair is
@@ -200,7 +230,8 @@ because DESIGN §16.2 names "violations, no explanations **or** unstable re-plan
   definition is the effect on the scenario data, the same principle as the scope extension.
 - A candidate that groups the same requests into a different number of rules than the truth (e.g. one
   `unavailable` rule for two absences stated separately) loses those matches; the diagnostics show them
-  as `wrong_parameters` or `wrong_scope`, so TASK-005c can report how often this happens.
+  as `wrong_parameters` or `wrong_scope`, so TASK-005c can report how often this happens; for
+  absences, the recall of §5.7 shows what the grouping costs.
 - A candidate that adds an unstated default rule (for example `no_overlap` when the request does not
   ask for it) lowers precision only.
 - Any change to the corpus format, the bundle, the metric or the thresholds after the first LLM run

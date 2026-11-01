@@ -7,7 +7,7 @@ import pytest
 from evaluation_helpers import REQUEST, scenario_metadata, write_json, write_scenario_dir
 from helpers import minimal_dm
 
-from potakt.evaluation import ScenarioError, ScenarioIssue, load_scenario
+from potakt.evaluation import SCENARIO_TAGS, ScenarioError, ScenarioIssue, load_scenario
 
 
 def issues_of(directory: Path) -> list[str]:
@@ -51,6 +51,52 @@ def test_optional_notes_and_unsupported_requests_are_kept(tmp_path: Path) -> Non
 
     assert scenario.notes == "built by hand"
     assert [(u.quote, u.reason) for u in scenario.unsupported] == [("the two shifts", "not a rule")]
+
+
+def test_tags_are_optional(tmp_path: Path) -> None:
+    assert load_scenario(write_scenario_dir(tmp_path)).scenario.tags == []
+
+
+def test_the_tags_are_a_closed_set() -> None:
+    assert SCENARIO_TAGS == (
+        "numbers-in-words",
+        "irrelevant-information",
+        "per-resource-limit",
+        "non-default-csv",
+        "windows-1253",
+        "stability-baseline",
+        "owner-written",
+        "owner-edited",
+        "web-grounded",
+    )
+
+
+def test_known_tags_are_kept_in_order(tmp_path: Path) -> None:
+    metadata = scenario_metadata()
+    metadata["tags"] = list(reversed(SCENARIO_TAGS))
+    directory = write_scenario_dir(tmp_path, metadata=metadata)
+
+    assert load_scenario(directory).scenario.tags == list(reversed(SCENARIO_TAGS))
+
+
+@pytest.mark.parametrize(
+    ("tags", "path"),
+    [(["web-grounded", "greek"], "/tags/1"), ("web-grounded", "/tags"), ([""], "/tags/0")],
+)
+def test_an_unknown_tag_is_an_issue(tmp_path: Path, tags: object, path: str) -> None:
+    metadata = scenario_metadata()
+    metadata["tags"] = tags
+    directory = write_scenario_dir(tmp_path, metadata=metadata)
+
+    assert any(issue.startswith(f"scenario.json#{path}: ") for issue in issues_of(directory))
+
+
+def test_a_tag_listed_twice_is_an_issue(tmp_path: Path) -> None:
+    metadata = scenario_metadata()
+    metadata["tags"] = ["web-grounded", "windows-1253", "web-grounded"]
+    directory = write_scenario_dir(tmp_path, metadata=metadata)
+
+    assert issues_of(directory) == ["scenario.json#/tags/2: web-grounded is listed twice"]
 
 
 @pytest.mark.parametrize(

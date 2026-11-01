@@ -3,12 +3,13 @@
 Two constraints match iff their denotations are equal: the same template, hardness, scope
 extension on the scenario data and normalized parameters (the table in ADR-0007 §5.2); for the
 templates in ``FOLDED_SCOPE_TEMPLATES`` the scope is folded into the parameters, which describe the
-rule's effect. Matching is one-to-one; recall and precision leave ``coverage`` out. This module is
-the reference implementation of the metric; it needs no LLM, no network and no solver.
+rule's effect. Matching is one-to-one; recall and precision leave ``coverage`` out; the
+informational recall with absences merged (§5.7) is reported next to them. This module is the
+reference implementation of the metric; it needs no LLM, no network and no solver.
 """
 
 import json
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from collections.abc import Hashable, Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -103,11 +104,10 @@ def load_model(text: str, directory: Path) -> LoadedModel | InvalidModel:
 # --- denotations -----------------------------------------------------------------------------
 
 
-def denote(constraint: Constraint, dm: DecisionModel, instance: ProblemInstance) -> Denotation:
-    """The denotation of ``constraint`` of ``dm`` on its loaded ``instance``.
-
-    The inputs must be valid (``validate_data`` reports no issues).
-    """
+def scope_extension(
+    constraint: Constraint, dm: DecisionModel, instance: ProblemInstance
+) -> tuple[frozenset[str], frozenset[str]]:
+    """The in-scope resource ids and task ids of ``constraint`` on the data (ADR-0007 §5.2)."""
     zone = dm.zone
     resources = frozenset(
         resource.id
@@ -122,6 +122,15 @@ def denote(constraint: Constraint, dm: DecisionModel, instance: ProblemInstance)
             {**task.attributes, **task.derived_attributes(zone), "id": task.id},
         )
     )
+    return resources, tasks
+
+
+def denote(constraint: Constraint, dm: DecisionModel, instance: ProblemInstance) -> Denotation:
+    """The denotation of ``constraint`` of ``dm`` on its loaded ``instance``.
+
+    The inputs must be valid (``validate_data`` reports no issues).
+    """
+    resources, tasks = scope_extension(constraint, dm, instance)
     params = _params(constraint, dm, instance, resources, tasks)
     if constraint.template in FOLDED_SCOPE_TEMPLATES:
         resources = tasks = frozenset[str]()
@@ -138,13 +147,13 @@ def _params(
     """The normalized parameters of one rule (ADR-0007 §5.2), sorted by name."""
     match rule:
         case RequiresAttribute() | Unavailable():
-            return (("forbidden", _forbidden(rule, dm, instance)),)
+            return (("forbidden", forbidden_pairs(rule, dm, instance)),)
         case MinRest():
             return (("minutes", to_minutes(rule.params.hours)),)
         case MaxPerPeriod() | MinPerPeriod():
             p = rule.params
             limits = frozenset(
-                (resource.id, _limit(rule, resource.attributes))
+                (resource.id, effective_limit(rule, resource.attributes))
                 for resource in instance.resources
                 if resource.id in resources
             )
@@ -170,7 +179,7 @@ def _params(
             return ()
 
 
-def _forbidden(
+def forbidden_pairs(
     rule: RequiresAttribute | Unavailable, dm: DecisionModel, instance: ProblemInstance
 ) -> frozenset[tuple[str | None, str]]:
     """The ``(resource, task)`` pairs the rule forbids among its in-scope resources and tasks.
@@ -199,7 +208,9 @@ def _forbidden(
     )
 
 
-def _limit(rule: MaxPerPeriod | MinPerPeriod, attributes: dict[str, AttributeValue]) -> int:
+def effective_limit(
+    rule: MaxPerPeriod | MinPerPeriod, attributes: dict[str, AttributeValue]
+) -> int:
     """The effective limit of one resource: tasks for ``count``, minutes for ``hours``."""
     limit = rule.params.limit
     if isinstance(limit, AttributeRef):
@@ -286,7 +297,8 @@ class Comparison:
     """The result of comparing a candidate DM with the truth on one scenario.
 
     Counts leave ``coverage`` out; an invalid candidate counts no constraints. The tuples are
-    sorted by id, so equal inputs always give byte-identical JSON.
+    sorted by id, so equal inputs always give byte-identical JSON. The ``merged_*`` counts are
+    the informational recall with absences merged (ADR-0007 §5.7), which never decides the gate.
     """
 
     valid: bool
@@ -296,6 +308,8 @@ class Comparison:
     matched: tuple[MatchedPair, ...]
     unmatched_truth: tuple[UnmatchedTruth, ...]
     unmatched_candidate: tuple[UnmatchedCandidate, ...]
+    merged_truth_count: int
+    merged_matched_count: int
 
     @property
     def matched_count(self) -> int:
@@ -305,6 +319,11 @@ class Comparison:
     def recall(self) -> float | None:
         """Matched / truth constraints; ``None`` if the truth has none."""
         return _ratio(self.matched_count, self.truth_count)
+
+    @property
+    def merged_recall(self) -> float | None:
+        """The recall with absences merged (ADR-0007 §5.7); ``None`` if the truth has none."""
+        return _ratio(self.merged_matched_count, self.merged_truth_count)
 
     @property
     def precision(self) -> float | None:
@@ -327,6 +346,9 @@ class Comparison:
             "matched_count": self.matched_count,
             "recall": self.recall,
             "precision": self.precision,
+            "merged_truth_count": self.merged_truth_count,
+            "merged_matched_count": self.merged_matched_count,
+            "merged_recall": self.merged_recall,
             "categories": self.categories(),
             "matched": [pair.to_dict() for pair in self.matched],
             "unmatched_truth": [missed.to_dict() for missed in self.unmatched_truth],
@@ -355,9 +377,20 @@ def _scored(model: LoadedModel) -> list[_Scored]:
 def compare_models(truth: LoadedModel, candidate: LoadedModel | InvalidModel) -> Comparison:
     """Compare a candidate with the truth of the same scenario (ADR-0007 §5)."""
     expected = _scored(truth)
+    merged_truth = _absences_merged(expected)
     if isinstance(candidate, InvalidModel):
         missed = [_unmatched(item, "missing", None) for item in expected]
-        return Comparison(False, candidate.issues, len(expected), 0, (), _by_id(missed), ())
+        return Comparison(
+            valid=False,
+            issues=candidate.issues,
+            truth_count=len(expected),
+            candidate_count=0,
+            matched=(),
+            unmatched_truth=_by_id(missed),
+            unmatched_candidate=(),
+            merged_truth_count=len(merged_truth),
+            merged_matched_count=0,
+        )
     found = _scored(candidate)
     pairs = _match(expected, found)
     used_truth = {i for i, _ in pairs}
@@ -392,7 +425,28 @@ def compare_models(truth: LoadedModel, candidate: LoadedModel | InvalidModel) ->
         matched=tuple(sorted(matched, key=lambda m: (m.truth_id, m.candidate_id))),
         unmatched_truth=_by_id(unmatched),
         unmatched_candidate=tuple(sorted(extra, key=lambda e: e.candidate_id)),
+        merged_truth_count=len(merged_truth),
+        merged_matched_count=(merged_truth & _absences_merged(found)).total(),
     )
+
+
+def _absences_merged(items: list[_Scored]) -> Counter[Denotation]:
+    """The scored denotations with every ``unavailable`` rule of one hardness merged into one
+    rule forbidding the union of their pairs (ADR-0007 §5.7), as a multiset."""
+    merged: Counter[Denotation] = Counter()
+    forbidden: dict[Hardness, set[Hashable]] = defaultdict(set)
+    for item in items:
+        denotation = item.denotation
+        if denotation.template == "unavailable":
+            pairs = dict(denotation.params)["forbidden"]
+            assert isinstance(pairs, frozenset)
+            forbidden[denotation.hardness] |= pairs
+        else:
+            merged[denotation] += 1
+    for hardness, pairs in forbidden.items():
+        params: Params = (("forbidden", frozenset(pairs)),)
+        merged[Denotation("unavailable", hardness, frozenset(), frozenset(), params)] += 1
+    return merged
 
 
 def _unmatched(item: _Scored, category: Category, closest_id: str | None) -> UnmatchedTruth:

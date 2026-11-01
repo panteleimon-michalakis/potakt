@@ -19,18 +19,22 @@ from potakt.evaluation.compare import (
     load_model,
 )
 from potakt.evaluation.scenario import (
+    SCENARIO_TAGS,
     Disruption,
     LoadedScenario,
     ReferenceScore,
     Scenario,
     ScenarioError,
     ScenarioIssue,
+    ScenarioTag,
     UnsupportedRequest,
     load_scenario,
 )
+from potakt.evaluation.vacuity import is_vacuous
 
 __all__ = [
     "CATEGORIES",
+    "SCENARIO_TAGS",
     "Category",
     "Comparison",
     "Denotation",
@@ -43,11 +47,13 @@ __all__ = [
     "Scenario",
     "ScenarioError",
     "ScenarioIssue",
+    "ScenarioTag",
     "UnmatchedCandidate",
     "UnmatchedTruth",
     "UnsupportedRequest",
     "compare_models",
     "denote",
+    "is_vacuous",
     "load_model",
     "load_scenario",
 ]

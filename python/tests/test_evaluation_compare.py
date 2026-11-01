@@ -807,6 +807,128 @@ def test_denote_reads_a_pair_rule_as_its_pair_and_tasks_or_as_inert(data: Path) 
     )
 
 
+# --- recall with absences merged (ADR-0007 §5.7) --------------------------------------------------
+
+BEN_MONDAY = {"resource_id": "a2", "start": "2026-11-02T00:00", "end": "2026-11-03T00:00"}
+
+
+def absence(rule_id: str, *windows: dict[str, str], hardness: str = "hard") -> dict[str, Any]:
+    return one("unavailable", hardness, id=rule_id, params={"windows": list(windows)})
+
+
+def recalls(result: Comparison) -> tuple[tuple[int, int], tuple[int, int]]:
+    """(matched, truth) of the primary recall and of the recall with absences merged."""
+    return (
+        (result.matched_count, result.truth_count),
+        (result.merged_matched_count, result.merged_truth_count),
+    )
+
+
+def test_one_rule_for_two_stated_absences_is_recovered_only_when_merged(data: Path) -> None:
+    truth = model_doc(absence("ana", TUESDAY), absence("ben", BEN_MONDAY))
+    candidate = model_doc(absence("both", TUESDAY, BEN_MONDAY))
+
+    result = compare(truth, candidate, data)
+
+    assert recalls(result) == ((0, 2), (1, 1))
+    assert (result.recall, result.merged_recall) == (0.0, 1.0)
+
+
+IDENTICAL_GROUPING = {
+    "two absence rules on both sides": (
+        [
+            absence("ana", TUESDAY),
+            absence("ben", BEN_MONDAY),
+            one("min_rest", params={"hours": 11}),
+        ],
+        [absence("x", TUESDAY), absence("y", BEN_MONDAY), one("min_rest", params={"hours": 11})],
+        ((3, 3), (2, 2)),
+    ),
+    "one absence rule on both sides": (
+        [absence("both", TUESDAY, BEN_MONDAY), one("min_rest", params={"hours": 11})],
+        [absence("x", BEN_MONDAY, TUESDAY), one("min_rest", params={"hours": 12})],
+        ((1, 2), (1, 2)),
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("truth_rules", "candidate_rules", "expected"),
+    IDENTICAL_GROUPING.values(),
+    ids=IDENTICAL_GROUPING,
+)
+def test_identical_grouping_gives_the_same_recall(
+    data: Path,
+    truth_rules: list[dict[str, Any]],
+    candidate_rules: list[dict[str, Any]],
+    expected: tuple[tuple[int, int], tuple[int, int]],
+) -> None:
+    result = compare(model_doc(*truth_rules), model_doc(*candidate_rules), data)
+
+    assert recalls(result) == expected
+    assert result.merged_recall == result.recall
+
+
+MISSING_ABSENCE = {
+    "one of two absences": (
+        [absence("ana", TUESDAY), absence("ben", BEN_MONDAY)],
+        [absence("x", TUESDAY)],
+        (1, 2),
+    ),
+    "the only absence": ([absence("ana", TUESDAY)], [], (0, 1)),
+}
+
+
+@pytest.mark.parametrize(
+    ("truth_rules", "candidate_rules", "primary"), MISSING_ABSENCE.values(), ids=MISSING_ABSENCE
+)
+def test_a_missing_absence_is_not_recovered_when_merged(
+    data: Path,
+    truth_rules: list[dict[str, Any]],
+    candidate_rules: list[dict[str, Any]],
+    primary: tuple[int, int],
+) -> None:
+    result = compare(model_doc(*truth_rules), model_doc(*candidate_rules), data)
+
+    assert recalls(result) == (primary, (0, 1))
+    assert result.merged_recall == 0.0
+
+
+def test_absences_are_merged_per_hardness(data: Path) -> None:
+    truth = model_doc(absence("ana", TUESDAY), absence("ben", BEN_MONDAY, hardness="soft"))
+    merged_hard = model_doc(absence("both", TUESDAY, BEN_MONDAY))
+    same = model_doc(absence("x", TUESDAY), absence("y", BEN_MONDAY, hardness="soft"))
+
+    assert recalls(compare(truth, merged_hard, data)) == ((0, 2), (0, 2))
+    assert recalls(compare(truth, same, data)) == ((2, 2), (2, 2))
+
+
+def test_an_invalid_candidate_recovers_nothing_when_merged_either(data: Path) -> None:
+    truth = loaded(model_doc(absence("ana", TUESDAY), absence("ben", BEN_MONDAY)), data)
+
+    result = compare_models(truth, load_model("{", data))
+
+    assert recalls(result) == ((0, 2), (0, 1))
+    assert (result.recall, result.merged_recall) == (0.0, 0.0)
+
+
+def test_the_merged_recall_is_in_the_json_next_to_the_primary_recall(data: Path) -> None:
+    truth = model_doc(absence("ana", TUESDAY), absence("ben", BEN_MONDAY))
+    candidate = model_doc(absence("both", TUESDAY, BEN_MONDAY))
+
+    document = json.loads(compare(truth, candidate, data).to_json())
+
+    assert (document["recall"], document["merged_recall"]) == (0.0, 1.0)
+    assert (document["merged_matched_count"], document["merged_truth_count"]) == (1, 1)
+
+
+def test_the_merged_recall_is_undefined_without_truth_constraints(data: Path) -> None:
+    result = compare(model_doc(), model_doc(absence("x", TUESDAY)), data)
+
+    assert recalls(result) == ((0, 0), (0, 0))
+    assert (result.recall, result.merged_recall) == (None, None)
+
+
 # --- invalid candidates ---------------------------------------------------------------------------
 
 INVALID = {
