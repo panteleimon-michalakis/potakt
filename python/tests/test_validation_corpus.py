@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
+from unsupported_checks import CHECKS
 
 from potakt.checker import EVALUATORS, check
 from potakt.cli import app
@@ -405,6 +406,24 @@ def test_no_truth_constraint_is_vacuous(name: str) -> None:
     }
 
     assert vacuous == {}
+
+
+MANDATORY_UNSUPPORTED = sorted(name for name, check in CHECKS.items() if check is not None)
+
+
+def test_every_scenario_with_unsupported_requests_has_an_entry() -> None:
+    with_unsupported = {s.scenario.id for s in corpus() if s.scenario.unsupported}
+
+    assert set(CHECKS) == with_unsupported
+
+
+@pytest.mark.parametrize("name", MANDATORY_UNSUPPORTED)
+def test_the_reference_honours_every_mandatory_unsupported_request(name: str) -> None:
+    # A faithful plan must be possible, because Test B counts hard violations (ADR-0007 §4).
+    check_request = CHECKS[name]
+    assert check_request is not None
+
+    assert check_request(loaded(name)) == []
 
 
 @pytest.mark.parametrize("name", SCENARIOS)

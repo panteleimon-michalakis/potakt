@@ -6,7 +6,7 @@
   "difficulty": "medium",
   "style": "email",
   "csv_files": ["agents.csv", "shifts.csv"],
-  "reference_score": {"hard": 0, "soft": -10},
+  "reference_score": {"hard": 0, "soft": -4},
   "disruption": {"resource_id": "A09", "start": "2026-12-09T00:00", "end": "2026-12-10T00:00"},
   "unsupported": [
     {
@@ -15,5 +15,5 @@
     }
   ],
   "tags": ["numbers-in-words", "irrelevant-information", "per-resource-limit"],
-  "notes": "Early, mid and late weekday shifts overlap pairwise, so no_overlap is stated and binding. The reference score -10 is optimal: Jamal gets all five early shifts and no other soft rule is violated. Disruption: Sofia is ill on Wednesday 9 December; a feasible re-plan exists (hard 0)."
+  "notes": "Early, mid and late weekday shifts overlap pairwise, so no_overlap is stated and binding. The reference solution also honours the Spanish-speaker request (ADR-0007 §4): every weekday shift has a Spanish speaker. The reference score -4 is best found, not proven optimal: every late shift needs one of the two Spanish-speaking billing agents, so Spanish speakers are scarce on the early shifts and Jamal gets two of the five; no other soft rule is violated. Disruption: Sofia is ill on Wednesday 9 December; a feasible re-plan exists (hard 0) that also honours the Spanish-speaker request."
 }

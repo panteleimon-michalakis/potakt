@@ -30,8 +30,9 @@ before the first LLM run. Any later change needs a new ADR and is reported in
 - `scenario.json`: the metadata, a strict JSON object with `id` (= the directory name), `title`,
   `language` (`el` | `en`), `domain`, `difficulty` (`easy` | `medium` | `hard`), `style` (`email` |
   `chat` | `notes` | `voice-transcript` | `memo`), `csv_files` (the names of the scenario's CSV files),
-  `reference_score` (`hard`, `soft`: the checker score of `solution.json`, best found, not necessarily
-  optimal), `disruption` (`resource_id`, `start`, `end`: a one-person absence as local datetimes inside
+  `reference_score` (`hard`, `soft`: the checker score of `solution.json`, a plan that also honours
+  every mandatory unsupported request (§4); best found among such plans, not necessarily optimal;
+  amended on 2026-11-01 by the TASK-005b review, before any LLM run), `disruption` (`resource_id`, `start`, `end`: a one-person absence as local datetimes inside
   the horizon, which the reference solution violates), `unsupported` (a list of `quote` and `reason`),
   optional `notes` and optional `tags` (below).
 
@@ -94,6 +95,14 @@ receives the DM JSON Schema (`potakt schema`). Nothing else: no truth, no soluti
   needs two templates or two hardnesses ("ideally 5, never more than 6") gives one constraint each.
 - Requests the catalog cannot express are listed in `scenario.json` → `unsupported` (verbatim quote
   and reason) and are **not** encoded in the truth.
+- **Mandatory unsupported requests are satisfiable** (added on 2026-11-01 by the TASK-005b review,
+  before any LLM run): a request that the catalog cannot express and that the text states as
+  **mandatory** must be satisfiable together with every hard truth rule, both for the first plan and
+  after the disruption, and `solution.json` honours it. A corpus test checks `solution.json` with one
+  predicate per such request (`python/tests/unsupported_checks.py`). A request stated as a **wish**
+  carries no such requirement. Reason: Test B counts the baseline's hard violations under the truth,
+  so a jointly infeasible set of mandatory requests would force a faithful baseline into a counted
+  violation.
 - **No vacuous rule** (added on 2026-11-01 by TASK-005b): no truth constraint is one that no plan on
   the scenario data could violate, because such a rule would match any other rule without effect. The
   test is `potakt.evaluation.is_vacuous`: among others, an empty scope extension, an
