@@ -33,5 +33,5 @@
     {"task_id": "sun-day", "resource_id": "A02"},
     {"task_id": "sun-day", "resource_id": "A07"}
   ],
-  "metadata": {"produced_by": "TASK-005b review reference search (checker as oracle)", "notes": "simulated annealing from a random start, 40000 iterations, seed 3, objective = potakt checker score (hard x 10000 + soft) with each weekday shift without a Spanish speaker counted as a hard violation; honours the unsupported request; best found, not proven optimal"}
+  "metadata": {"produced_by": "TASK-005b review reference search (checker as oracle)", "notes": "simulated annealing from a random start, 40000 iterations, seed 3, objective = potakt checker score (hard x 10000 + soft) with each weekday shift without a Spanish speaker counted as a hard violation; honours the unsupported request; optimal among such plans (exact search in the TASK-005b review)"}
 }

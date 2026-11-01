@@ -12,8 +12,8 @@
     {"task_id": "tue-day-senior", "resource_id": "S05"},
     {"task_id": "tue-day-carer", "resource_id": "S01"},
     {"task_id": "tue-day-carer", "resource_id": "S02"},
-    {"task_id": "tue-twilight", "resource_id": "S04"},
-    {"task_id": "tue-night-senior", "resource_id": "S11"},
+    {"task_id": "tue-twilight", "resource_id": "S11"},
+    {"task_id": "tue-night-senior", "resource_id": "S06"},
     {"task_id": "tue-night-carer", "resource_id": "S09"},
     {"task_id": "wed-day-senior", "resource_id": "S08"},
     {"task_id": "wed-day-carer", "resource_id": "S10"},
@@ -36,15 +36,15 @@
     {"task_id": "sat-day-senior", "resource_id": "S06"},
     {"task_id": "sat-day-carer", "resource_id": "S03"},
     {"task_id": "sat-day-carer", "resource_id": "S10"},
-    {"task_id": "sat-twilight", "resource_id": "S09"},
+    {"task_id": "sat-twilight", "resource_id": "S08"},
     {"task_id": "sat-night-senior", "resource_id": "S07"},
     {"task_id": "sat-night-carer", "resource_id": "S11"},
     {"task_id": "sun-day-senior", "resource_id": "S05"},
-    {"task_id": "sun-day-carer", "resource_id": "S08"},
+    {"task_id": "sun-day-carer", "resource_id": "S03"},
     {"task_id": "sun-day-carer", "resource_id": "S12"},
     {"task_id": "sun-twilight", "resource_id": "S10"},
     {"task_id": "sun-night-senior", "resource_id": "S06"},
     {"task_id": "sun-night-carer", "resource_id": "S04"}
   ],
-  "metadata": {"produced_by": "TASK-005b reference search (checker as oracle)", "notes": "simulated annealing, 30000 iterations, seed 4, objective = potakt checker score (hard x 10000 + soft); best found, not proven optimal"}
+  "metadata": {"produced_by": "TASK-005b review reference search (exact, checker as oracle)", "notes": "exact optimum: CP-SAT over the hard rules with the checker's soft objective, every solution re-scored by potakt check; among the optimal plans, the one closest to the previous reference in which S10 works during the disruption window"}
 }
