@@ -12,6 +12,7 @@ from potakt import __version__
 from potakt.checker import check, render_check_result
 from potakt.evaluation import (
     CORPUS_PATH,
+    INSTRUCTION_PATH,
     STRONG_MODEL,
     LoadedScenario,
     ScenarioError,
@@ -217,6 +218,9 @@ def eval_prompt(
     loaded = _scenario(scenario)
     try:
         prompt = render_test_a(loaded)
+    except OSError as error:  # outside a source checkout the prompt file is absent
+        path = error.filename or INSTRUCTION_PATH
+        _stop(1, f"cannot read the instruction file {path}: {error.strerror or error}")
     except ValueError as error:
         _stop(1, str(error))
     try:
@@ -255,10 +259,19 @@ def eval_compare(
 def eval_summary(
     runs: Annotated[
         Path,
-        typer.Argument(help="One model's runs directory (<model dir>).", show_default=False),
+        typer.Argument(
+            help="One model's runs directory (<model dir>).",
+            metavar="RUNS_DIR",
+            show_default=False,
+        ),
     ],
     corpus: Annotated[
-        Path, typer.Option("--corpus", help="Scenario corpus directory.")
+        Path,
+        typer.Option(
+            "--corpus",
+            help="Scenario corpus directory (default: the repository's docs/validation/scenarios).",
+            show_default=False,
+        ),
     ] = CORPUS_PATH,
     as_json: Annotated[bool, typer.Option("--json", help="Print the summary as JSON.")] = False,
 ) -> None:

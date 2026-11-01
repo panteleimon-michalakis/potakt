@@ -8,7 +8,9 @@ from evaluation_helpers import scenario_metadata, write_scenario_dir
 from helpers import constraint, minimal_dm
 from typer.testing import CliRunner
 
+import potakt.evaluation.test_a as test_a_module
 from potakt.cli import app
+from potakt.evaluation import CORPUS_PATH
 
 REPO = Path(__file__).resolve().parents[2]
 CORPUS = REPO / "docs" / "validation" / "scenarios"
@@ -21,9 +23,11 @@ runner = CliRunner()
 
 
 def help_text(*command: str) -> str:
+    """The help as one line: Rich panel borders removed, whitespace collapsed (Rich may wrap an
+    option's help over several rows of its panel)."""
     result = runner.invoke(app, [*command, "--help"], terminal_width=200)
     assert result.exit_code == 0
-    return " ".join(result.stdout.split())
+    return " ".join(result.stdout.replace("\N{BOX DRAWINGS LIGHT VERTICAL}", " ").split())
 
 
 # --- eval prompt -----------------------------------------------------------------------------
@@ -96,6 +100,20 @@ def test_prompt_reports_a_file_bound_with_two_dialects_and_exits_1(tmp_path: Pat
     assert result.exit_code == 1
     assert result.stdout == ""
     assert result.stderr == "absences.csv is bound with two different CSV dialects\n"
+
+
+def test_prompt_reports_a_missing_instruction_file_and_exits_1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Outside a source checkout the prompt file is absent: an error message, not a traceback.
+    missing = tmp_path / "test-a.md"
+    monkeypatch.setattr(test_a_module, "INSTRUCTION_PATH", missing)
+
+    result = runner.invoke(app, ["eval", "prompt", str(HOTEL)])
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert result.stderr.startswith(f"cannot read the instruction file {missing}: ")
 
 
 def test_prompt_help_states_the_exit_codes() -> None:
@@ -195,6 +213,14 @@ def test_summary_help_states_the_exit_codes() -> None:
     text = help_text("eval", "summary")
 
     assert "Exit code 0: summary printed; 1: missing directory; 2: usage error" in text
+
+
+def test_summary_help_names_the_default_corpus_without_a_machine_path() -> None:
+    text = help_text("eval", "summary")
+
+    assert "default: the repository's docs/validation/scenarios" in text
+    assert str(CORPUS_PATH) not in text
+    assert "RUNS_DIR" in text
 
 
 def test_eval_group_says_it_makes_no_model_calls() -> None:
