@@ -18,6 +18,10 @@ a human approves it. **The LLM understands, the solver guarantees, the human dec
 - the CLI commands **`potakt validate`**, **`potakt check`** (exit code 0 feasible, 1 invalid input,
   3 infeasible) and **`potakt schema`** (`--solution` for the solution schema).
 
+A pre-registered validation corpus for the Phase 0 experiment (10 scenarios, six of them in Greek) and
+its comparison metric exist under [`docs/validation/`](docs/validation/) and in
+[ADR-0007](docs/adr/0007-phase-0-validation-protocol.md); no LLM results exist yet.
+
 There is no LLM, solver, agent or server yet; the capabilities below are planned.
 
 ## Try it
