@@ -1,0 +1,108 @@
+{
+  "schema_version": "0.2",
+  "id": "pharmacy-larisa-2026-w47",
+  "version": 1,
+  "status": "confirmed",
+  "title": "Πρόγραμμα Φαρμακείου Λαμπροπούλου, 16–22/11/2026",
+  "language": "el",
+  "archetype": "assignment",
+  "vocabulary": {"resource": "εργαζόμενος", "task": "βάρδια"},
+  "timezone": "Europe/Athens",
+  "horizon": {"start": "2026-11-16", "end": "2026-11-22"},
+  "data": {
+    "resources": {
+      "source": "prosopiko.csv",
+      "id": "id",
+      "attributes": {
+        "name": {"column": "name", "type": "str"},
+        "role": {"column": "role", "type": "str"},
+        "contract": {"column": "contract", "type": "str"}
+      }
+    },
+    "tasks": {
+      "source": "vardies.csv",
+      "id": "id",
+      "start": "start",
+      "end": "end",
+      "demand": "demand",
+      "attributes": {
+        "shift": {"column": "shift", "type": "str"},
+        "required_role": {"column": "requires", "type": "str"}
+      }
+    }
+  },
+  "constraints": [
+    {
+      "id": "coverage",
+      "template": "coverage",
+      "hardness": "hard",
+      "rationale": "Κάθε γραμμή του vardies.csv (θέση φαρμακοποιού ή πάγκου) καλύπτεται από ακριβώς ένα άτομο.",
+      "provenance": {"kind": "data", "source": "vardies.csv, στήλη demand"},
+      "status": "confirmed"
+    },
+    {
+      "id": "pharmacist-slot",
+      "template": "requires_attribute",
+      "hardness": "hard",
+      "params": {"task_attribute": "required_role", "resource_attribute": "role", "match": "contains"},
+      "rationale": "Η θέση του φαρμακοποιού σε κάθε βάρδια καλύπτεται μόνο από φαρμακοποιό· ο πάγκος δεν έχει απαίτηση.",
+      "provenance": {"kind": "utterance", "quote": "Σε κάθε βάρδια το ένα άτομο πρέπει να είναι φαρμακοποιός."},
+      "status": "confirmed"
+    },
+    {
+      "id": "one-shift-per-day",
+      "template": "max_per_period",
+      "hardness": "hard",
+      "params": {"measure": "count", "period": "day", "limit": 1},
+      "rationale": "Το πολύ μία βάρδια την ημέρα για κάθε άτομο, άρα κανείς δεν κάνει και πρωί και απόγευμα.",
+      "provenance": {"kind": "utterance", "quote": "Κάθε άτομο κάνει το πολύ μία βάρδια την ημέρα, δεν θέλω σπαστά για κανέναν."},
+      "status": "confirmed"
+    },
+    {
+      "id": "assistants-max-25h",
+      "template": "max_per_period",
+      "hardness": "hard",
+      "scope": {"resources": [{"attribute": "role", "op": "eq", "value": "βοηθός"}]},
+      "params": {"measure": "hours", "period": "week", "limit": 25},
+      "rationale": "Οι βοηθοί μερικής απασχόλησης δουλεύουν το πολύ 25 ώρες την εβδομάδα.",
+      "provenance": {"kind": "utterance", "quote": "Οι βοηθοί είναι με μερική απασχόληση και δεν επιτρέπεται να ξεπεράσουν τις 25 ώρες την εβδομάδα."},
+      "status": "confirmed"
+    },
+    {
+      "id": "ioanna-leave",
+      "template": "unavailable",
+      "hardness": "hard",
+      "params": {"windows": [{"resource_id": "b3", "start": "2026-11-19T00:00", "end": "2026-11-22T00:00"}]},
+      "rationale": "Η Ιωάννα έχει άδεια από την Πέμπτη 19/11 έως και το Σάββατο 21/11.",
+      "provenance": {"kind": "utterance", "quote": "Η Ιωάννα παίρνει άδεια από την Πέμπτη 19 μέχρι και το Σάββατο 21 Νοεμβρίου"},
+      "status": "confirmed"
+    },
+    {
+      "id": "stelios-avoids-afternoons",
+      "template": "preference",
+      "hardness": "soft",
+      "weight": 3,
+      "scope": {
+        "resources": [{"attribute": "id", "op": "eq", "value": "b2"}],
+        "tasks": [{"attribute": "shift", "op": "eq", "value": "απόγευμα"}]
+      },
+      "params": {"kind": "avoid"},
+      "rationale": "Ο Στέλιος αποφεύγει τις απογευματινές βάρδιες όταν γίνεται.",
+      "provenance": {"kind": "utterance", "quote": "Ο Στέλιος, αν γίνεται, να μην πιάνει απογεύματα"},
+      "status": "confirmed"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "hours-from-shift-times",
+      "text": "Οι ώρες μετρώνται από την έναρξη έως τη λήξη κάθε βάρδιας, χωρίς αφαίρεση διαλειμμάτων.",
+      "status": "proposed"
+    },
+    {
+      "id": "leave-whole-days",
+      "text": "Η άδεια της Ιωάννας καλύπτει ολόκληρες τις ημέρες Πέμπτη, Παρασκευή και Σάββατο (19/11 00:00 έως 22/11 00:00).",
+      "status": "proposed"
+    }
+  ],
+  "objective": "lexicographic_hard_then_soft"
+}

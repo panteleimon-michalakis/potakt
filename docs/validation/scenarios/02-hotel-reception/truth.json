@@ -1,0 +1,140 @@
+{
+  "schema_version": "0.2",
+  "id": "hotel-reception-2026-w48",
+  "version": 1,
+  "status": "confirmed",
+  "title": "Πρόγραμμα υποδοχής ξενοδοχείου, 23–29/11/2026",
+  "language": "el",
+  "archetype": "assignment",
+  "vocabulary": {"resource": "υπάλληλος υποδοχής", "task": "βάρδια"},
+  "timezone": "Europe/Athens",
+  "horizon": {"start": "2026-11-23", "end": "2026-11-29"},
+  "data": {
+    "resources": {
+      "source": "ypodoxi_prosopiko.csv",
+      "id": "Κωδικός",
+      "attributes": {
+        "name": {"column": "Ονοματεπώνυμο", "type": "str"},
+        "languages": {"column": "Γλώσσες", "type": "list", "separator": ","},
+        "contract_hours": {"column": "Ώρες σύμβασης", "type": "float"}
+      },
+      "csv": {"delimiter": ";", "decimal": ",", "encoding": "windows-1253"}
+    },
+    "tasks": {
+      "source": "ypodoxi_vardies.csv",
+      "id": "Κωδικός",
+      "start": "Έναρξη",
+      "end": "Λήξη",
+      "demand": "Άτομα",
+      "attributes": {
+        "shift": {"column": "Βάρδια", "type": "str"},
+        "language": {"column": "Γλώσσα", "type": "str"}
+      },
+      "csv": {"delimiter": ";", "decimal": ",", "encoding": "windows-1253"}
+    }
+  },
+  "constraints": [
+    {
+      "id": "coverage",
+      "template": "coverage",
+      "hardness": "hard",
+      "rationale": "Κάθε βάρδια καλύπτεται από ακριβώς τόσα άτομα όσα γράφει η στήλη «Άτομα».",
+      "provenance": {"kind": "utterance", "quote": "Πόσα άτομα θέλει η καθεμία το γράφει το αρχείο"},
+      "status": "confirmed"
+    },
+    {
+      "id": "min-rest-11h",
+      "template": "min_rest",
+      "hardness": "hard",
+      "params": {"hours": 11},
+      "rationale": "Τουλάχιστον 11 ώρες ξεκούρασης ανάμεσα σε δύο βάρδιες του ίδιου ατόμου.",
+      "provenance": {"kind": "utterance", "quote": "Ανάμεσα σε δύο βάρδιες θέλω οπωσδήποτε έντεκα ώρες ξεκούραση"},
+      "status": "confirmed"
+    },
+    {
+      "id": "max-five-shifts-week",
+      "template": "max_per_period",
+      "hardness": "hard",
+      "params": {"measure": "count", "period": "week", "limit": 5},
+      "rationale": "Το πολύ πέντε βάρδιες την εβδομάδα, όπως ορίζει η σύμβαση.",
+      "provenance": {"kind": "utterance", "quote": "Πάνω από πέντε βάρδιες τη βδομάδα απαγορεύεται, το λέει και η σύμβαση"},
+      "status": "confirmed"
+    },
+    {
+      "id": "max-four-days-in-a-row",
+      "template": "max_consecutive_days",
+      "hardness": "soft",
+      "weight": 5,
+      "params": {"days": 4},
+      "rationale": "Επιθυμητό: το πολύ τέσσερις συνεχόμενες ημέρες εργασίας.",
+      "provenance": {"kind": "utterance", "quote": "Ιδανικά όχι πάνω από τέσσερις μέρες συνεχόμενες δουλειά για κανέναν"},
+      "status": "confirmed"
+    },
+    {
+      "id": "contract-hours",
+      "template": "min_per_period",
+      "hardness": "soft",
+      "weight": 3,
+      "params": {"measure": "hours", "period": "week", "limit": {"attribute": "contract_hours"}},
+      "rationale": "Ο καθένας να συμπληρώνει τουλάχιστον τις εβδομαδιαίες ώρες της σύμβασής του (στήλη «Ώρες σύμβασης»).",
+      "provenance": {"kind": "utterance", "quote": "Προσπάθησε επίσης ο καθένας να βγάλει τις ώρες της σύμβασής του"},
+      "status": "confirmed"
+    },
+    {
+      "id": "shift-language",
+      "template": "requires_attribute",
+      "hardness": "hard",
+      "params": {"task_attribute": "language", "resource_attribute": "languages", "match": "contains"},
+      "rationale": "Σε βάρδια με γλώσσα στη στήλη «Γλώσσα» μπαίνουν μόνο άτομα που μιλούν αυτή τη γλώσσα· οι υπόλοιπες βάρδιες δεν έχουν απαίτηση.",
+      "provenance": {"kind": "utterance", "quote": "Όπου γράφει γλώσσα στο αρχείο με τις βάρδιες, θέλω οπωσδήποτε όποιον βάλεις να τη μιλάει"},
+      "status": "confirmed"
+    },
+    {
+      "id": "balance-nights",
+      "template": "balance",
+      "hardness": "soft",
+      "weight": 2,
+      "scope": {"tasks": [{"attribute": "shift", "op": "eq", "value": "νύχτα"}]},
+      "params": {"measure": "count"},
+      "rationale": "Δίκαιη κατανομή των νυχτερινών βαρδιών σε όλο το προσωπικό.",
+      "provenance": {"kind": "utterance", "quote": "Τις νύχτες μοίρασέ τις όσο πιο δίκαια γίνεται σε όλους"},
+      "status": "confirmed"
+    },
+    {
+      "id": "katerina-exam-thursday",
+      "template": "unavailable",
+      "hardness": "hard",
+      "params": {"windows": [{"resource_id": "Υ5", "start": "2026-11-26T00:00", "end": "2026-11-27T00:00"}]},
+      "rationale": "Η Κατερίνα δεν μπορεί να δουλέψει καθόλου την Πέμπτη 26/11 (όλο το 24ωρο).",
+      "provenance": {"kind": "utterance", "quote": "Η Κατερίνα έχει εξεταστική και την Πέμπτη 26/11 δεν μπορεί καθόλου, όλο το 24ωρο"},
+      "status": "confirmed"
+    },
+    {
+      "id": "giannis-prefers-mornings",
+      "template": "preference",
+      "hardness": "soft",
+      "weight": 2,
+      "scope": {
+        "resources": [{"attribute": "id", "op": "eq", "value": "Υ2"}],
+        "tasks": [{"attribute": "shift", "op": "eq", "value": "πρωί"}]
+      },
+      "params": {"kind": "prefer"},
+      "rationale": "Ο Γιάννης προτιμά πρωινές βάρδιες όταν γίνεται.",
+      "provenance": {"kind": "utterance", "quote": "Ο Γιάννης θέλει πρωινά αν γίνεται"},
+      "status": "confirmed"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "night-counts-on-start-day",
+      "text": "Η νυχτερινή βάρδια μετράει στην ημέρα που ξεκινά· η νύχτα της Κυριακής 29/11 (έως Δευτέρα 07:00) ανήκει σε αυτή την εβδομάδα.",
+      "status": "proposed"
+    },
+    {
+      "id": "hours-from-shift-times",
+      "text": "Οι ώρες της σύμβασης συγκρίνονται με τις ώρες των βαρδιών από την έναρξη έως τη λήξη.",
+      "status": "proposed"
+    }
+  ],
+  "objective": "lexicographic_hard_then_soft"
+}

@@ -1,0 +1,13 @@
+{
+  "id": "01-pharmacy",
+  "title": "Φαρμακείο με σπαστό ωράριο και Σάββατο πρωί",
+  "language": "el",
+  "domain": "pharmacy",
+  "difficulty": "easy",
+  "style": "email",
+  "csv_files": ["prosopiko.csv", "vardies.csv"],
+  "reference_score": {"hard": 0, "soft": 0},
+  "disruption": {"resource_id": "b1", "start": "2026-11-17T00:00", "end": "2026-11-18T00:00"},
+  "unsupported": [],
+  "notes": "Each opening block has two task rows (pharmacist slot and counter slot), so 'one pharmacist per shift' is a per-assignment requirement. Disruption: Dimitra is ill on Tuesday 17/11; a feasible re-plan exists (hard 0)."
+}

@@ -1,0 +1,26 @@
+{
+  "schema_version": "0.1",
+  "model_id": "pharmacy-larisa-2026-w47",
+  "model_version": 1,
+  "assignments": [
+    {"task_id": "16-proi-farm", "resource_id": "f1"},
+    {"task_id": "16-proi-pagkos", "resource_id": "f2"},
+    {"task_id": "17-proi-farm", "resource_id": "f2"},
+    {"task_id": "17-proi-pagkos", "resource_id": "b1"},
+    {"task_id": "17-apog-farm", "resource_id": "f1"},
+    {"task_id": "17-apog-pagkos", "resource_id": "b3"},
+    {"task_id": "18-proi-farm", "resource_id": "f1"},
+    {"task_id": "18-proi-pagkos", "resource_id": "f2"},
+    {"task_id": "19-proi-farm", "resource_id": "f2"},
+    {"task_id": "19-proi-pagkos", "resource_id": "b2"},
+    {"task_id": "19-apog-farm", "resource_id": "f1"},
+    {"task_id": "19-apog-pagkos", "resource_id": "b1"},
+    {"task_id": "20-proi-farm", "resource_id": "f2"},
+    {"task_id": "20-proi-pagkos", "resource_id": "b2"},
+    {"task_id": "20-apog-farm", "resource_id": "f1"},
+    {"task_id": "20-apog-pagkos", "resource_id": "b1"},
+    {"task_id": "21-proi-farm", "resource_id": "f2"},
+    {"task_id": "21-proi-pagkos", "resource_id": "b2"}
+  ],
+  "metadata": {"produced_by": "TASK-005a reference search (checker as oracle)", "notes": "simulated annealing, 20000 iterations, seed 7, objective = potakt checker score (hard x 10000 + soft); best found, not proven optimal"}
+}
