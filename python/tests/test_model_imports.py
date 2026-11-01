@@ -2,6 +2,8 @@
 
 ``potakt.model`` stays framework-independent: Pydantic, stdlib and tzdata only.
 ``potakt.checker`` trusts nothing but the model: ``potakt.model`` and the standard library only.
+``potakt.evaluation`` (ADR-0007) builds on both, never the other way round, and stays free of
+LLM SDKs and the CLI: ``potakt.model``, ``potakt.checker``, Pydantic and the standard library.
 """
 
 import ast
@@ -9,10 +11,12 @@ import sys
 from pathlib import Path
 
 import potakt.checker
+import potakt.evaluation
 import potakt.model
 
 MODEL_DIR = Path(potakt.model.__file__).parent
 CHECKER_DIR = Path(potakt.checker.__file__).parent
+EVALUATION_DIR = Path(potakt.evaluation.__file__).parent
 ALLOWED_THIRD_PARTY = {"pydantic", "pydantic_core", "tzdata"}
 
 
@@ -85,3 +89,41 @@ def test_checker_package_imports_only_the_stdlib_and_potakt_model() -> None:
 
     assert third_party == set()
     assert other_potakt == set()
+
+
+def test_evaluation_package_imports_only_model_checker_pydantic_and_the_stdlib() -> None:
+    sources = sorted(EVALUATION_DIR.glob("*.py"))
+    assert sources, "no sources found"
+
+    third_party = {
+        f"{source.name}: {module}"
+        for source in sources
+        for module in _imported_top_level_modules(source)
+        if module not in sys.stdlib_module_names
+        and module not in {"pydantic", "pydantic_core"}
+        and module != "potakt"
+    }
+    other_potakt = {
+        f"{source.name}: {module}"
+        for source in sources
+        for module in _imported_potakt_modules(source)
+        if not any(
+            _within(module, package)
+            for package in ("potakt.model", "potakt.checker", "potakt.evaluation")
+        )
+    }
+
+    assert third_party == set()
+    assert other_potakt == set()
+
+
+def test_model_and_checker_never_import_the_evaluation_package() -> None:
+    importers = {
+        f"{source.parent.name}/{source.name}: {module}"
+        for directory in (MODEL_DIR, CHECKER_DIR)
+        for source in sorted(directory.glob("*.py"))
+        for module in _imported_potakt_modules(source)
+        if _within(module, "potakt.evaluation")
+    }
+
+    assert importers == set()
