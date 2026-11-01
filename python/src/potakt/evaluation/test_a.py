@@ -4,10 +4,12 @@ Library code only: no LLM, no network, no credentials. The HTTP calls and the ru
 elsewhere (TASK-005c2); this module fixes what they send and how an answer is scored.
 """
 
+import json
 import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from potakt.evaluation.bundle import build_bundle, render_bundle
 from potakt.evaluation.compare import Comparison, LoadedModel, compare_models, load_model
@@ -23,6 +25,17 @@ SCHEMA_HEADING = "## Decision Model JSON Schema"
 _FENCE = "```"
 _OPENERS = ("```json\n", "```\n")
 _CLOSER = "\n```"
+
+# The models and settings of ADR-0007 §7 «Models», «Settings».
+STRONG_MODEL = "claude-opus-5-5"
+EFFORT = "high"  # documented for both Claude models (sent to Haiku too, ADR §7)
+ANTHROPIC_MAX_TOKENS: dict[str, int] = {"claude-opus-5-5": 64000, "claude-haiku-5-5": 32000}
+GEMINI_MAX_OUTPUT_TOKENS = 32000
+_ANTHROPIC_PREFIX = "claude-"
+
+
+class UnknownModelError(ValueError):
+    """A Claude model for which ADR-0007 §7 fixes no settings."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +57,38 @@ def render_test_a(scenario: LoadedScenario) -> Prompt:
     bundle = render_bundle(build_bundle(scenario))
     user = f"{bundle}\n{SCHEMA_HEADING}\n\n{render_json_schema()}"
     return Prompt(system, user)
+
+
+def request_payload(prompt: Prompt, model: str) -> dict[str, Any]:
+    """The JSON body of the one Test A request for ``model`` (ADR-0007 §7), without credentials.
+
+    ``claude-*`` ids get the Anthropic Messages API body (only the pre-registered models; any
+    other Claude id raises ``UnknownModelError``); every other id gets the Gemini
+    ``generateContent`` body, whose model is part of the URL. No tools, no sampling parameters,
+    thinking left to the API default.
+    """
+    if model.startswith(_ANTHROPIC_PREFIX):
+        if model not in ANTHROPIC_MAX_TOKENS:
+            known = ", ".join(sorted(ANTHROPIC_MAX_TOKENS))
+            raise UnknownModelError(f"no pre-registered Test A settings for {model}; use {known}")
+        return {
+            "model": model,
+            "max_tokens": ANTHROPIC_MAX_TOKENS[model],
+            "system": prompt.system,
+            "messages": [{"role": "user", "content": prompt.user}],
+            "output_config": {"effort": EFFORT},
+        }
+    return {
+        "systemInstruction": {"parts": [{"text": prompt.system}]},
+        "contents": [{"role": "user", "parts": [{"text": prompt.user}]}],
+        "generationConfig": {"maxOutputTokens": GEMINI_MAX_OUTPUT_TOKENS},
+    }
+
+
+def render_payload(payload: dict[str, Any]) -> str:
+    """The payload as indented UTF-8 JSON with sorted keys and a trailing ``\\n``: the exact text
+    ``potakt eval prompt`` prints and a run records as ``request.json``."""
+    return json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
 
 
 def extract_candidate(text: str) -> str:

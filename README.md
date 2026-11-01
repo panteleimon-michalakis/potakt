@@ -22,6 +22,17 @@ A pre-registered validation corpus for the Phase 0 experiment (10 scenarios, six
 its comparison metric exist under [`docs/validation/`](docs/validation/) and in
 [ADR-0007](docs/adr/0007-phase-0-validation-protocol.md); no LLM results exist yet.
 
+**Phase 0 evaluation.** The Test A harness (ADR-0007 §7) is pre-registered, and its offline part
+exists; none of these commands calls a model or needs credentials:
+- `potakt eval prompt <scenario dir> [--model ID]` prints the exact JSON request payload for one
+  scenario (exit code 0 printed, 1 invalid scenario, 2 usage error, also for a Claude model without
+  pre-registered settings);
+- `potakt eval compare <scenario dir> <candidate file>` validates a candidate against the
+  scenario's CSV files only and prints its comparison with the truth (exit code 0 for valid and
+  invalid candidates alike, 1 invalid scenario or unreadable file);
+- `potakt eval summary <model runs dir> [--corpus DIR] [--json]` summarizes one model's recorded
+  runs (exit code 0 printed, 1 missing directory).
+
 There is no LLM, solver, agent or server yet; the capabilities below are planned.
 
 ## Try it

@@ -3,7 +3,8 @@
 Ten shift-scheduling scenarios (six in Greek) for the Phase 0 experiment (DESIGN §16.1). The
 corpus format, the input bundle and the metric are pre-registered in
 [ADR-0007](../adr/0007-phase-0-validation-protocol.md); the metric's reference implementation is
-`potakt.evaluation`.
+`potakt.evaluation`. The Test A harness is pre-registered in ADR-0007 §7; its instruction text is
+[`prompts/test-a.md`](prompts/test-a.md), and `potakt eval prompt` shows the exact request.
 
 Each scenario is one directory, `scenarios/<NN>-<slug>/`:
 - `request.md`: the manager's message, the only free text the LLM sees;

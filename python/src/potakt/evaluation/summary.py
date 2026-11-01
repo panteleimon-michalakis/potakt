@@ -19,6 +19,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from potakt.evaluation.compare import CATEGORIES, Category
 from potakt.evaluation.scenario import METADATA_FILE, Scenario
 
+# The corpus of ADR-0007 §2, resolved from the repository root (src layout, like INSTRUCTION_PATH).
+CORPUS_PATH = Path(__file__).resolve().parents[4] / "docs" / "validation" / "scenarios"
 COMPARISON_FILE = "comparison.json"
 RESPONSE_FILE = "response.json"
 # USD per million (input, output) tokens, from the providers' official pricing pages on

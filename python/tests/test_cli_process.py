@@ -195,3 +195,73 @@ def test_unknown_option_is_the_framework_usage_error_2() -> None:
     assert result.returncode == 2
     assert result.stdout == b""
     assert b"--bogus" in result.stderr
+
+
+# --- eval (TASK-005c1 D5) --------------------------------------------------------------------
+
+SCENARIOS = REPO / "docs" / "validation" / "scenarios"
+HOTEL = SCENARIOS / "02-hotel-reception"
+PHARMACY = SCENARIOS / "01-pharmacy"
+OPUS_RUNS = Path(__file__).resolve().parent / "fixtures" / "test_a_runs" / "claude-opus-5-5"
+
+
+def test_eval_prompt_matches_the_golden_byte_for_byte_even_when_colour_is_forced() -> None:
+    result = potakt("eval", "prompt", HOTEL, "--model", "claude-opus-5-5", extra_env=FORCED_COLOUR)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == b""
+    assert result.stdout == (GOLDEN / "eval-prompt-02-claude-opus-5-5.json").read_bytes()
+
+
+def test_eval_summary_matches_the_golden_byte_for_byte() -> None:
+    result = potakt("eval", "summary", OPUS_RUNS, "--corpus", SCENARIOS)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (GOLDEN / "test-a-summary.txt").read_bytes()
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    [
+        ("prompt-ok", 0),
+        ("prompt-gemini", 0),
+        ("prompt-invalid-scenario", 1),
+        ("prompt-unknown-claude-model", 2),
+        ("compare-valid", 0),
+        ("compare-invalid-candidate", 0),
+        ("compare-missing-candidate", 1),
+        ("compare-invalid-scenario", 1),
+        ("summary-ok", 0),
+        ("summary-json", 0),
+        ("summary-missing-directory", 1),
+    ],
+)
+def test_eval_exit_codes(case: str, expected: int, tmp_path: Path) -> None:
+    truth = tmp_path / "truth-candidate.txt"
+    truth.write_bytes((PHARMACY / "truth.json").read_bytes())
+    junk = tmp_path / "junk.txt"
+    junk.write_bytes(b"Sorry, no model today.\n")
+    args: dict[str, tuple[str | Path, ...]] = {
+        "prompt-ok": ("prompt", HOTEL),
+        "prompt-gemini": ("prompt", HOTEL, "--model", "gemini-3.8-flash"),
+        "prompt-invalid-scenario": ("prompt", tmp_path),
+        "prompt-unknown-claude-model": ("prompt", HOTEL, "--model", "claude-sonnet-5-5"),
+        "compare-valid": ("compare", PHARMACY, truth),
+        "compare-invalid-candidate": ("compare", PHARMACY, junk),
+        "compare-missing-candidate": ("compare", PHARMACY, tmp_path / "nope.txt"),
+        "compare-invalid-scenario": ("compare", tmp_path, truth),
+        "summary-ok": ("summary", OPUS_RUNS),
+        "summary-json": ("summary", OPUS_RUNS, "--json"),
+        "summary-missing-directory": ("summary", tmp_path / "nope"),
+    }
+
+    result = potakt("eval", *args[case])
+
+    assert result.returncode == expected, result.stderr
+    assert b"\r\n" not in result.stdout + result.stderr
+    if expected == 0:
+        assert result.stderr == b""
+        assert result.stdout
+    else:
+        assert result.stdout == b""
+        assert result.stderr

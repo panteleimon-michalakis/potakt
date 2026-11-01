@@ -32,6 +32,7 @@ from potakt.evaluation.scenario import (
     load_scenario,
 )
 from potakt.evaluation.summary import (
+    CORPUS_PATH,
     PRICES_USD_PER_MILLION,
     Summary,
     model_directory_name,
@@ -39,18 +40,24 @@ from potakt.evaluation.summary import (
 )
 from potakt.evaluation.test_a import (
     INSTRUCTION_PATH,
+    STRONG_MODEL,
     Prompt,
+    UnknownModelError,
     evaluate_candidate,
     extract_candidate,
+    render_payload,
     render_test_a,
+    request_payload,
 )
 from potakt.evaluation.vacuity import is_vacuous
 
 __all__ = [
     "CATEGORIES",
+    "CORPUS_PATH",
     "INSTRUCTION_PATH",
     "PRICES_USD_PER_MILLION",
     "SCENARIO_TAGS",
+    "STRONG_MODEL",
     "Bundle",
     "BundleFile",
     "Category",
@@ -68,6 +75,7 @@ __all__ = [
     "ScenarioIssue",
     "ScenarioTag",
     "Summary",
+    "UnknownModelError",
     "UnmatchedCandidate",
     "UnmatchedTruth",
     "UnsupportedRequest",
@@ -81,6 +89,8 @@ __all__ = [
     "load_scenario",
     "model_directory_name",
     "render_bundle",
+    "render_payload",
     "render_test_a",
+    "request_payload",
     "summarize",
 ]

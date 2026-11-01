@@ -10,6 +10,19 @@ import typer
 
 from potakt import __version__
 from potakt.checker import check, render_check_result
+from potakt.evaluation import (
+    CORPUS_PATH,
+    STRONG_MODEL,
+    LoadedScenario,
+    ScenarioError,
+    UnknownModelError,
+    evaluate_candidate,
+    load_scenario,
+    render_payload,
+    render_test_a,
+    request_payload,
+    summarize,
+)
 from potakt.model import (
     DecisionModel,
     DecisionModelError,
@@ -163,3 +176,101 @@ def _load_for_check(model: Path, solution: Path) -> tuple[DecisionModel, Problem
             typer.echo(line, err=True)
         raise typer.Exit(code=1)
     return dm, instance, parsed
+
+
+# --- eval: the Phase 0 experiment, offline (ADR-0007 §7) -------------------------------------
+
+eval_app = typer.Typer(no_args_is_help=True)
+app.add_typer(
+    eval_app,
+    name="eval",
+    help="Phase 0 evaluation (ADR-0007), offline: no model calls, no credentials.",
+)
+EXIT_USAGE = 2  # the framework's usage error code (Click/Typer)
+
+
+def _stop(code: int, *lines: str) -> NoReturn:
+    for line in lines:
+        typer.echo(line, err=True)
+    raise typer.Exit(code=code)
+
+
+def _scenario(directory: Path) -> LoadedScenario:
+    try:
+        return load_scenario(directory)
+    except ScenarioError as error:
+        _stop(1, *(str(issue) for issue in error.issues))
+
+
+@eval_app.command("prompt")
+def eval_prompt(
+    scenario: Annotated[Path, typer.Argument(help="Scenario directory.", show_default=False)],
+    model: Annotated[str, typer.Option("--model", help="Model id.")] = STRONG_MODEL,
+) -> None:
+    """Print the exact JSON request payload of the Test A request for one scenario (ADR-0007 §7),
+    with no credentials; nothing is sent.
+
+    Claude ids get the Anthropic Messages API body, every other id the Gemini generateContent
+    body. Exit code 0: payload printed; 1: invalid scenario; 2: usage error (also a Claude model
+    without pre-registered settings).
+    """
+    loaded = _scenario(scenario)
+    try:
+        prompt = render_test_a(loaded)
+    except ValueError as error:
+        _stop(1, str(error))
+    try:
+        payload = request_payload(prompt, model)
+    except UnknownModelError as error:
+        _stop(EXIT_USAGE, str(error))
+    typer.echo(render_payload(payload), nl=False)
+
+
+@eval_app.command("compare")
+def eval_compare(
+    scenario: Annotated[Path, typer.Argument(help="Scenario directory.", show_default=False)],
+    candidate: Annotated[
+        Path, typer.Argument(help="Candidate DM text file (UTF-8).", show_default=False)
+    ],
+) -> None:
+    """Validate a candidate against the scenario's CSV files only, compare it with the truth and
+    print the comparison JSON (ADR-0007 §5, §7).
+
+    Exit code 0: comparison printed, for valid and invalid candidates alike (both are results);
+    1: invalid scenario or unreadable candidate file; 2: usage error.
+    """
+    loaded = _scenario(scenario)
+    try:
+        raw = candidate.read_bytes()
+    except OSError as error:
+        _stop(1, f"{candidate}: cannot read: {error.strerror or error}")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        _stop(1, f"{candidate}: not valid UTF-8")
+    typer.echo(evaluate_candidate(loaded, text).to_json(), nl=False)
+
+
+@eval_app.command("summary")
+def eval_summary(
+    runs: Annotated[
+        Path,
+        typer.Argument(help="One model's runs directory (<model dir>).", show_default=False),
+    ],
+    corpus: Annotated[
+        Path, typer.Option("--corpus", help="Scenario corpus directory.")
+    ] = CORPUS_PATH,
+    as_json: Annotated[bool, typer.Option("--json", help="Print the summary as JSON.")] = False,
+) -> None:
+    """Summarize one model's recorded Test A runs: recall, merged recall, precision, validity,
+    breakdowns, diagnostics, usage and cost (ADR-0007 §7 «Records»).
+
+    Exit code 0: summary printed; 1: missing directory; 2: usage error.
+    """
+    if not corpus.is_dir():
+        _stop(1, f"{corpus} is not a directory")
+    try:
+        summary = summarize(runs, corpus)
+    except ValueError as error:
+        _stop(1, str(error))
+    typer.echo(summary.to_json() if as_json else summary.to_text(), nl=False)
