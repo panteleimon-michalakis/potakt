@@ -82,7 +82,11 @@ Every task; the evidence goes in the report.
    CI Windows and Linux). Our code decides; tests never rely on what an OS does with special names,
    encodings, line endings or locale. Tests never depend on environment variables (colour, terminal
    width, CI); tests/conftest.py resets them. Before reporting, run the suite once with
-   `GITHUB_ACTIONS=true FORCE_COLOR=1 COLUMNS=40 uv run pytest -q` (Git Bash).
+   `GITHUB_ACTIONS=true FORCE_COLOR=1 COLUMNS=40 uv run pytest -q` (Git Bash). Tests never depend
+   on interpreter limits (recursion depth, C stack size, hash seed) or on the Python patch version:
+   CI uses the latest 3.12.x and 3.14.x. Explicit limits are enforced by our code before calling a
+   library, and a test that needs another machine's behaviour reproduces it (for example with a
+   large-stack thread).
 7. **Docs consistency:** help text, README, ADRs and examples match the behaviour (exit codes,
    messages, schema versions).
 8. **Repository hygiene:** `git ls-files .tasks .claude` prints nothing; no secrets; `git ls-files --eol`
