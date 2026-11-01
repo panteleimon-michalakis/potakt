@@ -75,7 +75,10 @@ full, decoded with its declared dialect (the delimiter, decimal separator and en
 binding of that file) and shown with its file name **and its encoding** (for example
 `ypodoxi_prosopiko.csv (encoding: windows-1253)`), because decoded text cannot show the encoding; the
 delimiter and the decimal separator are visible in the text and are not stated (stating the encoding:
-confirmed by the reviewer on 2026-11-01). Test A additionally
+confirmed by the reviewer on 2026-11-01). A CSV file that the truth does not bind (for example a draft
+roster that the truth only copies into a `stability` baseline) has no declared dialect: it is decoded
+with the defaults (UTF-8, `,`, `.`) and shown as `encoding: utf-8` (added on 2026-11-01 by
+TASK-005b). Test A additionally
 receives the DM JSON Schema (`potakt schema`). Nothing else: no truth, no solution, no
 `scenario.json`, no catalog hints beyond the schema.
 
@@ -189,8 +192,10 @@ hardness are merged into one, in **both** the truth and the candidate, forbiddin
 `(resource id, task id)` pairs; an invalid candidate recovers nothing here either. It is
 micro-averaged like the primary recall and reported next to it, and it **never decides the gate**
 (§5.4): the primary metric stays strict, and the difference between the two shows how much of a gap
-comes from grouping alone. The reference implementation is `Comparison.merged_recall` in
-`compare.py`.
+comes from grouping. It is not a pure relaxation: one candidate absence that the truth lacks changes
+the union, so the merged recall can be lower than the primary one (truth A and B as two rules,
+candidate A, B and C: primary 2/2, merged 0/1). The reference implementation is
+`Comparison.merged_recall` in `compare.py`.
 
 ### 6. Test B measures (computed in TASK-005d)
 The baseline gets the input bundle of §3 and is asked for its plan as `(task id, resource id)` pairs,

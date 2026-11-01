@@ -388,7 +388,7 @@ def compare_models(truth: LoadedModel, candidate: LoadedModel | InvalidModel) ->
             matched=(),
             unmatched_truth=_by_id(missed),
             unmatched_candidate=(),
-            merged_truth_count=len(merged_truth),
+            merged_truth_count=merged_truth.total(),
             merged_matched_count=0,
         )
     found = _scored(candidate)
@@ -425,7 +425,7 @@ def compare_models(truth: LoadedModel, candidate: LoadedModel | InvalidModel) ->
         matched=tuple(sorted(matched, key=lambda m: (m.truth_id, m.candidate_id))),
         unmatched_truth=_by_id(unmatched),
         unmatched_candidate=tuple(sorted(extra, key=lambda e: e.candidate_id)),
-        merged_truth_count=len(merged_truth),
+        merged_truth_count=merged_truth.total(),
         merged_matched_count=(merged_truth & _absences_merged(found)).total(),
     )
 

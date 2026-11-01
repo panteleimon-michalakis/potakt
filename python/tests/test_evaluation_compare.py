@@ -929,6 +929,39 @@ def test_the_merged_recall_is_undefined_without_truth_constraints(data: Path) ->
     assert (result.recall, result.merged_recall) == (None, None)
 
 
+def test_an_extra_candidate_absence_can_lower_the_merged_recall(data: Path) -> None:
+    # ADR-0007 §5.7: the merged recall is not a pure relaxation of the primary recall.
+    cleo_saturday = {"resource_id": "a3", "start": "2026-11-07T00:00", "end": "2026-11-08T00:00"}
+    truth = model_doc(absence("ana", TUESDAY), absence("ben", BEN_MONDAY))
+    candidate = model_doc(
+        absence("x", TUESDAY), absence("y", BEN_MONDAY), absence("z", cleo_saturday)
+    )
+
+    result = compare(truth, candidate, data)
+
+    assert recalls(result) == ((2, 2), (0, 1))
+
+
+def test_equal_truth_rules_count_with_their_multiplicity_when_merged(data: Path) -> None:
+    # Review finding: the merged truth count must count repeated denotations like the matches do.
+    twice = model_doc(
+        one("min_rest", id="rest-a", params={"hours": 11}),
+        one("min_rest", id="rest-b", params={"hours": 11}),
+        absence("ana", TUESDAY),
+        absence("ana-again", TUESDAY),
+    )
+    once = model_doc(one("min_rest", id="rest", params={"hours": 11}), absence("x", TUESDAY))
+
+    itself = compare(twice, twice, data)
+    fewer = compare(twice, once, data)
+    invalid = compare_models(loaded(twice, data), load_model("{", data))
+
+    assert recalls(itself) == ((4, 4), (3, 3))
+    assert itself.merged_recall == 1.0
+    assert recalls(fewer) == ((2, 4), (2, 3))
+    assert recalls(invalid) == ((0, 4), (0, 3))
+
+
 # --- invalid candidates ---------------------------------------------------------------------------
 
 INVALID = {
