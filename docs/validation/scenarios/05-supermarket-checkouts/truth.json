@@ -1,0 +1,144 @@
+{
+  "schema_version": "0.2",
+  "id": "supermarket-checkouts-2026-w51",
+  "version": 1,
+  "status": "confirmed",
+  "title": "Πρόγραμμα ταμείων σούπερ μάρκετ Νέας Σμύρνης, 14–20/12/2026",
+  "language": "el",
+  "archetype": "assignment",
+  "vocabulary": {"resource": "ταμίας", "task": "βάρδια"},
+  "timezone": "Europe/Athens",
+  "horizon": {"start": "2026-12-14", "end": "2026-12-20"},
+  "data": {
+    "resources": {
+      "source": "tameia_prosopiko.csv",
+      "id": "Κωδικός",
+      "attributes": {
+        "name": {"column": "Ονοματεπώνυμο", "type": "str"},
+        "contract": {"column": "Σύμβαση", "type": "str"},
+        "contract_hours": {"column": "Ώρες εβδ.", "type": "float"}
+      },
+      "csv": {"delimiter": ";", "decimal": ",", "encoding": "utf-8"}
+    },
+    "tasks": {
+      "source": "tameia_vardies.csv",
+      "id": "Κωδικός",
+      "start": "Έναρξη",
+      "end": "Λήξη",
+      "demand": "Ταμίες",
+      "attributes": {
+        "day": {"column": "Ημέρα", "type": "str"},
+        "shift": {"column": "Βάρδια", "type": "str"}
+      },
+      "csv": {"delimiter": ";", "decimal": ",", "encoding": "utf-8"}
+    }
+  },
+  "constraints": [
+    {
+      "id": "coverage",
+      "template": "coverage",
+      "hardness": "hard",
+      "rationale": "Κάθε βάρδια καλύπτεται από ακριβώς τόσους ταμίες όσους γράφει η στήλη «Ταμίες».",
+      "provenance": {"kind": "utterance", "quote": "Πόσα άτομα θέλει η κάθε βάρδια το γράφει η στήλη «Ταμίες»"},
+      "status": "confirmed"
+    },
+    {
+      "id": "one-shift-a-day",
+      "template": "max_per_period",
+      "hardness": "hard",
+      "params": {"measure": "count", "period": "day", "limit": 1},
+      "rationale": "Κανείς δεν κάνει δύο βάρδιες την ίδια ημέρα (ούτε την ενδιάμεση μαζί με άλλη).",
+      "provenance": {"kind": "utterance", "quote": "Δύο βάρδιες την ίδια μέρα δεν κάνει κανένας, ούτε να το σκεφτείς."},
+      "status": "confirmed"
+    },
+    {
+      "id": "rest-11h",
+      "template": "min_rest",
+      "hardness": "hard",
+      "params": {"hours": 11},
+      "rationale": "Τουλάχιστον έντεκα ώρες ξεκούρασης ανάμεσα σε δύο βάρδιες του ίδιου ατόμου, άρα όποιος κλείνει δεν ανοίγει την επομένη.",
+      "provenance": {"kind": "utterance", "quote": "Ανάμεσα σε δύο βάρδιες του ίδιου ατόμου θέλω οπωσδήποτε έντεκα ώρες ξεκούραση"},
+      "status": "confirmed"
+    },
+    {
+      "id": "contract-hours",
+      "template": "min_per_period",
+      "hardness": "soft",
+      "weight": 3,
+      "params": {"measure": "hours", "period": "week", "limit": {"attribute": "contract_hours"}},
+      "rationale": "Ο καθένας να συμπληρώνει τουλάχιστον τις εβδομαδιαίες ώρες της σύμβασής του (στήλη «Ώρες εβδ.»).",
+      "provenance": {"kind": "utterance", "quote": "Τις ώρες της σύμβασης του καθενός τις έχει η στήλη «Ώρες εβδ.», κοίτα να τις βγάλουν όλοι"},
+      "status": "confirmed"
+    },
+    {
+      "id": "ideally-five-shifts",
+      "template": "max_per_period",
+      "hardness": "soft",
+      "weight": 4,
+      "params": {"measure": "count", "period": "week", "limit": 5},
+      "rationale": "Επιθυμητό: το πολύ πέντε βάρδιες την εβδομάδα για τον καθένα· μια έκτη επιτρέπεται αν δεν γίνεται αλλιώς.",
+      "provenance": {"kind": "utterance", "quote": "ιδανικά πέντε βάρδιες το πολύ τη βδομάδα για τον καθένα"},
+      "status": "confirmed"
+    },
+    {
+      "id": "fair-weekend",
+      "template": "balance",
+      "hardness": "soft",
+      "weight": 2,
+      "scope": {"tasks": [{"attribute": "weekday", "op": "in", "value": ["sat", "sun"]}]},
+      "params": {"measure": "count"},
+      "rationale": "Δίκαιη κατανομή των βαρδιών του Σαββάτου και της Κυριακής σε όλους τους ταμίες.",
+      "provenance": {"kind": "utterance", "quote": "Τις βάρδιες του Σαββατοκύριακου, μιας και ανοίγουμε και Κυριακή, θέλω να τις μοιράσεις δίκαια"},
+      "status": "confirmed"
+    },
+    {
+      "id": "rena-pavlos-apart",
+      "template": "apart",
+      "hardness": "soft",
+      "weight": 3,
+      "params": {"resource_ids": ["Τ1", "Τ2"]},
+      "rationale": "Η Ρένα και ο Παύλος, όσο γίνεται, να μη βρίσκονται στην ίδια βάρδια.",
+      "provenance": {"kind": "utterance", "quote": "Τη Ρένα με τον Παύλο, αν μπορείς, μην τους βάζεις στην ίδια βάρδια"},
+      "status": "confirmed"
+    },
+    {
+      "id": "elpida-wednesday",
+      "template": "unavailable",
+      "hardness": "hard",
+      "params": {"windows": [{"resource_id": "Τ3", "start": "2026-12-16T00:00", "end": "2026-12-17T00:00"}]},
+      "rationale": "Η Ελπίδα δεν μπορεί να δουλέψει καθόλου την Τετάρτη 16/12.",
+      "provenance": {"kind": "utterance", "quote": "Η Ελπίδα την Τετάρτη 16 δεν μπορεί καθόλου"},
+      "status": "confirmed"
+    },
+    {
+      "id": "marios-not-saturday-afternoon",
+      "template": "preference",
+      "hardness": "soft",
+      "weight": 2,
+      "scope": {
+        "resources": [{"attribute": "id", "op": "eq", "value": "Τ4"}],
+        "tasks": [
+          {"attribute": "weekday", "op": "eq", "value": "sat"},
+          {"attribute": "shift", "op": "eq", "value": "απόγευμα"}
+        ]
+      },
+      "params": {"kind": "avoid"},
+      "rationale": "Ο Μάριος αποφεύγει, όσο γίνεται, την απογευματινή βάρδια του Σαββάτου.",
+      "provenance": {"kind": "utterance", "quote": "ο Μάριος παίζει μπάλα Σάββατο απόγευμα, αν γίνεται να μην του πέσει Σάββατο απόγευμα"},
+      "status": "confirmed"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "hours-from-shift-times",
+      "text": "Οι ώρες μετρώνται από την έναρξη έως τη λήξη κάθε βάρδιας του αρχείου, μαζί με τη μισή ώρα ανοίγματος και κλεισίματος.",
+      "status": "proposed"
+    },
+    {
+      "id": "wednesday-whole-day",
+      "text": "Η Ελπίδα λείπει ολόκληρη την Τετάρτη 16/12 (00:00 έως 00:00 της Πέμπτης).",
+      "status": "proposed"
+    }
+  ],
+  "objective": "lexicographic_hard_then_soft"
+}

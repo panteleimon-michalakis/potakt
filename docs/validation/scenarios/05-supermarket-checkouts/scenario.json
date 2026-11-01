@@ -1,0 +1,20 @@
+{
+  "id": "05-supermarket-checkouts",
+  "title": "Ταμεία σούπερ μάρκετ με εορταστικό ωράριο και ανοιχτή Κυριακή",
+  "language": "el",
+  "domain": "supermarket",
+  "difficulty": "medium",
+  "style": "voice-transcript",
+  "csv_files": ["tameia_prosopiko.csv", "tameia_vardies.csv"],
+  "reference_score": {"hard": 0, "soft": 2},
+  "disruption": {"resource_id": "Τ5", "start": "2026-12-17T00:00", "end": "2026-12-18T00:00"},
+  "unsupported": [],
+  "tags": [
+    "numbers-in-words",
+    "irrelevant-information",
+    "per-resource-limit",
+    "non-default-csv",
+    "web-grounded"
+  ],
+  "notes": "Both CSV files are Excel's 'CSV UTF-8' export: UTF-8 with BOM, ';' delimiter, decimal comma (27,5), Greek headers; stored with LF line endings because .gitattributes normalizes text files. Shifts start half an hour before opening and end half an hour after closing, so a closer (21:30) and the next opener (07:30) are 10 h apart and the 11-hour rest rule binds; the Thursday-Saturday middle shift overlaps both others, so 'one shift a day' binds too. The weekend balance replaces a Sunday-only balance (TASK-005b D4 deviation): one week has one Sunday and at most one shift a day, so Sunday counts alone would score every plan alike. The reference score 2 is optimal: 10 weekend slots over 9 people with one shift a day give a spread of at least 1 (+2), and every other soft rule is 0. Disruption: Toula is ill on Thursday 17/12; a feasible re-plan exists (hard 0). Sources (facts only, changed where useful): festive December Sunday openings and shop hours (Mon-Sat 06:00-21:00 limits, Sunday 11:00-18:00/20:00) - https://www.protothema.gr/greece/article/1735643/eortastiko-orario-2025-treis-kuriakes-me-anoihta-katastimata/ ; 11 consecutive hours of daily rest between the end of one shift and the start of the next - https://www.kepea.gr/imerisia-anapafsi-1"
+}

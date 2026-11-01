@@ -1,0 +1,227 @@
+{
+  "schema_version": "0.2",
+  "id": "ambulance-crews-2026-w46",
+  "version": 1,
+  "status": "confirmed",
+  "title": "Πρόγραμμα βαρδιών πληρωμάτων Σταθμού ΕΚΑΒ Νέων Μουδανιών, 09–15/11/2026 (αναθεώρηση)",
+  "language": "el",
+  "archetype": "assignment",
+  "vocabulary": {"resource": "υπάλληλος", "task": "θέση βάρδιας"},
+  "timezone": "Europe/Athens",
+  "horizon": {"start": "2026-11-09", "end": "2026-11-15"},
+  "data": {
+    "resources": {
+      "source": "pliromata.csv",
+      "id": "Κωδικός",
+      "attributes": {
+        "name": {"column": "Ονοματεπώνυμο", "type": "str"},
+        "positions": {"column": "Θέσεις", "type": "list", "separator": ";"}
+      }
+    },
+    "tasks": {
+      "source": "vardies_pliromaton.csv",
+      "id": "Κωδικός",
+      "start": "Έναρξη",
+      "end": "Λήξη",
+      "demand": "Άτομα",
+      "attributes": {
+        "shift": {"column": "Βάρδια", "type": "str"},
+        "position": {"column": "Θέση", "type": "str"}
+      }
+    }
+  },
+  "constraints": [
+    {
+      "id": "coverage",
+      "template": "coverage",
+      "hardness": "hard",
+      "rationale": "Κάθε θέση κάθε βάρδιας καλύπτεται από τόσα άτομα όσα αναγράφει η στήλη «Άτομα».",
+      "provenance": {"kind": "utterance", "quote": "κάθε βάρδια εμφανίζεται στο αρχείο με χωριστή γραμμή για κάθε θέση, όπου αναγράφεται και ο αριθμός των ατόμων που απαιτούνται"},
+      "status": "confirmed"
+    },
+    {
+      "id": "driver-position",
+      "template": "requires_attribute",
+      "hardness": "hard",
+      "params": {"task_attribute": "position", "resource_attribute": "positions", "match": "contains"},
+      "rationale": "Στη θέση του οδηγού μπαίνει μόνο όποιος έχει τη θέση «οδηγός» στη στήλη «Θέσεις»· τη θέση του διασώστη την έχουν όλοι.",
+      "provenance": {"kind": "utterance", "quote": "Στη θέση του οδηγού τοποθετείται αποκλειστικά προσωπικό στο οποίο η στήλη «Θέσεις» του pliromata.csv περιλαμβάνει τη θέση αυτή."},
+      "status": "confirmed"
+    },
+    {
+      "id": "one-position-at-a-time",
+      "template": "no_overlap",
+      "hardness": "hard",
+      "rationale": "Κανείς δεν καλύπτει ταυτόχρονα δύο θέσεις (π.χ. οδηγού και διασώστη στην ίδια βάρδια).",
+      "provenance": {"kind": "utterance", "quote": "Κανένας υπάλληλος δεν τοποθετείται ταυτόχρονα σε δύο θέσεις."},
+      "status": "confirmed"
+    },
+    {
+      "id": "rest-11h",
+      "template": "min_rest",
+      "hardness": "hard",
+      "params": {"hours": 11},
+      "rationale": "Τουλάχιστον έντεκα ώρες ανάπαυσης μεταξύ δύο βαρδιών του ίδιου υπαλλήλου.",
+      "provenance": {"kind": "utterance", "quote": "Μεταξύ δύο βαρδιών του ίδιου υπαλλήλου μεσολαβεί ανάπαυση τουλάχιστον έντεκα (11) ωρών."},
+      "status": "confirmed"
+    },
+    {
+      "id": "max-48h-week",
+      "template": "max_per_period",
+      "hardness": "hard",
+      "params": {"measure": "hours", "period": "week", "limit": 48},
+      "rationale": "Το πολύ σαράντα οκτώ ώρες εργασίας την εβδομάδα για κάθε υπάλληλο.",
+      "provenance": {"kind": "utterance", "quote": "Το εβδομαδιαίο σύνολο ωρών εργασίας κάθε υπαλλήλου δεν υπερβαίνει τις σαράντα οκτώ (48)."},
+      "status": "confirmed"
+    },
+    {
+      "id": "max-five-days-in-a-row",
+      "template": "max_consecutive_days",
+      "hardness": "hard",
+      "params": {"days": 5},
+      "rationale": "Κανείς δεν εργάζεται περισσότερες από πέντε συνεχόμενες ημέρες.",
+      "provenance": {"kind": "utterance", "quote": "Κανείς δεν απασχολείται περισσότερες από πέντε συνεχόμενες ημέρες."},
+      "status": "confirmed"
+    },
+    {
+      "id": "karampetsos-sick-leave",
+      "template": "unavailable",
+      "hardness": "hard",
+      "params": {"windows": [{"resource_id": "Ε04", "start": "2026-11-11T00:00", "end": "2026-11-14T00:00"}]},
+      "rationale": "Ο Ιωάννης Καραμπέτσος είναι σε αναρρωτική άδεια από την Τετάρτη 11/11 έως και την Παρασκευή 13/11.",
+      "provenance": {"kind": "utterance", "quote": "Ο κ. Ιωάννης Καραμπέτσος τέθηκε σε αναρρωτική άδεια από την Τετάρτη 11/11 έως και την Παρασκευή 13/11."},
+      "status": "confirmed"
+    },
+    {
+      "id": "mouratidou-seminar",
+      "template": "unavailable",
+      "hardness": "hard",
+      "params": {"windows": [{"resource_id": "Ε11", "start": "2026-11-09T08:30", "end": "2026-11-09T15:30"}]},
+      "rationale": "Η Ευαγγελία Μουρατίδου είναι σε σεμινάριο τη Δευτέρα 9/11, 08:30–15:30, και δεν καλύπτει βάρδια που συμπίπτει με αυτό.",
+      "provenance": {"kind": "utterance", "quote": "Η κ. Ευαγγελία Μουρατίδου θα παρακολουθήσει τη Δευτέρα 9/11 επιμορφωτικό σεμινάριο στη Θεσσαλονίκη, από τις 08:30 έως τις 15:30, και δεν δύναται να απασχοληθεί σε βάρδια που συμπίπτει με αυτό."},
+      "status": "confirmed"
+    },
+    {
+      "id": "keep-the-circulated-draft",
+      "template": "stability",
+      "hardness": "soft",
+      "weight": 5,
+      "params": {
+        "baseline": [
+          {"task_id": "09-Π-Ο", "resource_id": "Ε02"},
+          {"task_id": "09-Π-Ο", "resource_id": "Ε06"},
+          {"task_id": "09-Π-Δ", "resource_id": "Ε05"},
+          {"task_id": "09-Π-Δ", "resource_id": "Ε11"},
+          {"task_id": "09-Α-Ο", "resource_id": "Ε01"},
+          {"task_id": "09-Α-Δ", "resource_id": "Ε12"},
+          {"task_id": "09-Ν-Ο", "resource_id": "Ε04"},
+          {"task_id": "09-Ν-Δ", "resource_id": "Ε10"},
+          {"task_id": "10-Π-Ο", "resource_id": "Ε02"},
+          {"task_id": "10-Π-Ο", "resource_id": "Ε05"},
+          {"task_id": "10-Π-Δ", "resource_id": "Ε03"},
+          {"task_id": "10-Π-Δ", "resource_id": "Ε06"},
+          {"task_id": "10-Α-Ο", "resource_id": "Ε01"},
+          {"task_id": "10-Α-Δ", "resource_id": "Ε12"},
+          {"task_id": "10-Ν-Ο", "resource_id": "Ε07"},
+          {"task_id": "10-Ν-Δ", "resource_id": "Ε08"},
+          {"task_id": "11-Π-Ο", "resource_id": "Ε03"},
+          {"task_id": "11-Π-Ο", "resource_id": "Ε04"},
+          {"task_id": "11-Π-Δ", "resource_id": "Ε06"},
+          {"task_id": "11-Π-Δ", "resource_id": "Ε09"},
+          {"task_id": "11-Α-Ο", "resource_id": "Ε01"},
+          {"task_id": "11-Α-Δ", "resource_id": "Ε05"},
+          {"task_id": "11-Ν-Ο", "resource_id": "Ε07"},
+          {"task_id": "11-Ν-Δ", "resource_id": "Ε11"},
+          {"task_id": "12-Π-Ο", "resource_id": "Ε02"},
+          {"task_id": "12-Π-Ο", "resource_id": "Ε04"},
+          {"task_id": "12-Π-Δ", "resource_id": "Ε09"},
+          {"task_id": "12-Π-Δ", "resource_id": "Ε12"},
+          {"task_id": "12-Α-Ο", "resource_id": "Ε05"},
+          {"task_id": "12-Α-Δ", "resource_id": "Ε08"},
+          {"task_id": "12-Ν-Ο", "resource_id": "Ε06"},
+          {"task_id": "12-Ν-Δ", "resource_id": "Ε11"},
+          {"task_id": "13-Π-Ο", "resource_id": "Ε03"},
+          {"task_id": "13-Π-Ο", "resource_id": "Ε07"},
+          {"task_id": "13-Π-Δ", "resource_id": "Ε01"},
+          {"task_id": "13-Π-Δ", "resource_id": "Ε10"},
+          {"task_id": "13-Α-Ο", "resource_id": "Ε04"},
+          {"task_id": "13-Α-Δ", "resource_id": "Ε08"},
+          {"task_id": "13-Ν-Ο", "resource_id": "Ε06"},
+          {"task_id": "13-Ν-Δ", "resource_id": "Ε09"},
+          {"task_id": "14-Π-Ο", "resource_id": "Ε01"},
+          {"task_id": "14-Π-Ο", "resource_id": "Ε05"},
+          {"task_id": "14-Π-Δ", "resource_id": "Ε07"},
+          {"task_id": "14-Π-Δ", "resource_id": "Ε10"},
+          {"task_id": "14-Α-Ο", "resource_id": "Ε03"},
+          {"task_id": "14-Α-Δ", "resource_id": "Ε02"},
+          {"task_id": "14-Ν-Ο", "resource_id": "Ε04"},
+          {"task_id": "14-Ν-Δ", "resource_id": "Ε12"},
+          {"task_id": "15-Π-Ο", "resource_id": "Ε01"},
+          {"task_id": "15-Π-Ο", "resource_id": "Ε07"},
+          {"task_id": "15-Π-Δ", "resource_id": "Ε05"},
+          {"task_id": "15-Π-Δ", "resource_id": "Ε11"},
+          {"task_id": "15-Α-Ο", "resource_id": "Ε06"},
+          {"task_id": "15-Α-Δ", "resource_id": "Ε08"},
+          {"task_id": "15-Ν-Ο", "resource_id": "Ε02"},
+          {"task_id": "15-Ν-Δ", "resource_id": "Ε09"}
+        ]
+      },
+      "rationale": "Το πρόγραμμα που έχει ήδη κοινοποιηθεί (proschedio.csv) αλλάζει όσο το δυνατόν λιγότερο: ποινή για κάθε τοποθέτηση του σχεδίου που δεν διατηρείται.",
+      "provenance": {"kind": "utterance", "quote": "το κοινοποιηθέν πρόγραμμα να τροποποιηθεί όσο το δυνατόν λιγότερο"},
+      "status": "confirmed"
+    },
+    {
+      "id": "even-nights",
+      "template": "balance",
+      "hardness": "soft",
+      "weight": 2,
+      "scope": {"tasks": [{"attribute": "shift", "op": "eq", "value": "νύχτα"}]},
+      "params": {"measure": "count"},
+      "rationale": "Ισομερής κατανομή των νυχτερινών θέσεων σε όλο το προσωπικό.",
+      "provenance": {"kind": "utterance", "quote": "Οι νυχτερινές βάρδιες κατανέμονται ισομερώς σε όλο το προσωπικό."},
+      "status": "confirmed"
+    },
+    {
+      "id": "roussou-avoids-nights",
+      "template": "preference",
+      "hardness": "soft",
+      "weight": 3,
+      "scope": {
+        "resources": [{"attribute": "id", "op": "eq", "value": "Ε05"}],
+        "tasks": [{"attribute": "shift", "op": "eq", "value": "νύχτα"}]
+      },
+      "params": {"kind": "avoid"},
+      "rationale": "Η Βασιλική Ρούσσου αποφεύγει, όσο είναι εφικτό, τις νυχτερινές βάρδιες.",
+      "provenance": {"kind": "utterance", "quote": "Η κ. Βασιλική Ρούσσου, λόγω οικογενειακών υποχρεώσεων, να αποφεύγει τις νυχτερινές βάρδιες."},
+      "status": "confirmed"
+    },
+    {
+      "id": "shared-car",
+      "template": "together",
+      "hardness": "soft",
+      "weight": 2,
+      "params": {"resource_ids": ["Ε08", "Ε09"]},
+      "rationale": "Η Φωτεινή Γάκη και η Δέσποινα Τσολάκη μετακινούνται μαζί· όπου γίνεται, ίδιες θέσεις βάρδιας (και οι δύο καλύπτουν μόνο θέσεις διασώστη).",
+      "provenance": {"kind": "utterance", "quote": "Οι κ.κ. Φωτεινή Γάκη και Δέσποινα Τσολάκη μετακινούνται από τον Άγιο Μάμα με κοινό όχημα· να τοποθετούνται, όπου είναι δυνατόν, στις ίδιες βάρδιες."},
+      "status": "confirmed"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "night-counts-on-start-day",
+      "text": "Η νυχτερινή βάρδια μετράει στην ημέρα που ξεκινά· η νύχτα της Κυριακής 15/11 (έως Δευτέρα 07:00) ανήκει σε αυτή την εβδομάδα.",
+      "status": "proposed"
+    },
+    {
+      "id": "sick-leave-whole-days",
+      "text": "Η αναρρωτική άδεια καλύπτει ολόκληρες τις ημέρες 11–13/11 (11/11 00:00 έως 14/11 00:00), άρα και τις νυχτερινές βάρδιες που αγγίζουν αυτές τις ημέρες.",
+      "status": "proposed"
+    },
+    {
+      "id": "two-days-off-after-night-not-encoded",
+      "text": "Ο κανόνας «μετά από νυχτερινή βάρδια ακολουθούν δύο ημέρες ελεύθερες» δεν εκφράζεται με τους διαθέσιμους κανόνες και δεν ελέγχεται· χρειάζεται ανθρώπινο έλεγχο.",
+      "status": "proposed"
+    }
+  ],
+  "objective": "lexicographic_hard_then_soft"
+}
