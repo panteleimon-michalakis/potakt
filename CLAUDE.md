@@ -41,6 +41,9 @@ truth; if a task seems to contradict it, **stop and ask** instead of improvising
    ```
    All must pass. Never weaken a gate (no blanket `# type: ignore`, no disabling rules, no skipping
    tests) to make it pass — if you think a rule is wrong, say so in the report.
+   The one accepted per-line exception is `# noqa: RUF001` or `# noqa: RUF003` on a line that
+   quotes Greek text verbatim, because ruff confuses some Greek letters with Latin ones; a comment
+   on the same or the previous line says so.
 4. Commit in logical steps (see rule 4).
 5. **Stop and report** using this template:
    ```
