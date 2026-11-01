@@ -446,6 +446,7 @@ the README. This builds a public track record independent of Potakt's own succes
 - **ADR-0004** Decision Model v0: assignment archetype, catalog, time model (Accepted)
 - **ADR-0005** Scoring semantics v0 (Accepted)
 - **ADR-0006** Decision Model 0.2 and scoring amendments (Accepted)
+- **ADR-0007** Phase 0 validation protocol, pre-registered (Accepted)
 
 ---
 
