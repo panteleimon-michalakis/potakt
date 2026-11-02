@@ -1,12 +1,13 @@
 """The offline ``potakt eval`` commands (TASK-005c1 D5): prompt, compare and summary."""
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
 from evaluation_helpers import scenario_metadata, write_scenario_dir
 from helpers import constraint, minimal_dm
-from typer.testing import CliRunner
+from typer.testing import CliRunner, Result
 
 import potakt.evaluation.test_a as test_a_module
 from potakt.cli import app
@@ -231,3 +232,126 @@ def test_summary_help_names_the_default_corpus_without_a_machine_path() -> None:
 
 def test_eval_group_says_it_makes_no_model_calls() -> None:
     assert "no model calls" in help_text("eval")
+
+
+# --- eval rescore (TASK-005c2 E5) ------------------------------------------------------------
+
+
+def runs_copy(tmp_path: Path, model: str = "claude-opus-5-5") -> Path:
+    """A writable copy of the fixture runs: rescoring never writes into the fixtures."""
+    target = tmp_path / model
+    shutil.copytree(OPUS_RUNS, target)
+    return target
+
+
+def rescore(runs: Path, *extra: str) -> Result:
+    return runner.invoke(app, ["eval", "rescore", str(runs), "--corpus", str(CORPUS), *extra])
+
+
+def test_rescore_output_after_one_deleted_file_matches_the_golden(tmp_path: Path) -> None:
+    runs = runs_copy(tmp_path)
+    (runs / "03-call-centre" / "comparison.json").unlink()
+
+    result = rescore(runs)
+
+    assert result.exit_code == 0, result.stderr
+    assert result.stderr == ""
+    assert result.stdout_bytes == (GOLDEN / "eval-rescore.txt").read_bytes()
+    restored = (runs / "03-call-centre" / "comparison.json").read_bytes()
+    assert restored == (OPUS_RUNS / "03-call-centre" / "comparison.json").read_bytes()
+
+
+def test_rescore_of_unchanged_runs_and_a_run_without_a_response(tmp_path: Path) -> None:
+    runs = runs_copy(tmp_path)
+    (runs / "02-hotel-reception").mkdir()  # a run that never got an answer
+
+    result = rescore(runs)
+
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout == (
+        "01-pharmacy: unchanged\n"
+        "02-hotel-reception: skipped (no response.json)\n"
+        "03-call-centre: unchanged\n"
+        "04-restaurant: unchanged\n"
+    )
+
+
+def test_rescore_reports_both_derived_files_when_both_changed(tmp_path: Path) -> None:
+    runs = runs_copy(tmp_path)
+    (runs / "04-restaurant" / "candidate.txt").write_bytes(b"{}")
+    (runs / "04-restaurant" / "comparison.json").unlink()
+
+    result = rescore(runs)
+
+    assert result.exit_code == 0
+    assert "04-restaurant: updated (candidate.txt, comparison.json)\n" in result.stdout
+
+
+def test_rescore_uses_the_default_corpus(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["eval", "rescore", str(runs_copy(tmp_path))])
+
+    assert result.exit_code == 0
+    assert result.stdout.count(": unchanged\n") == 3
+
+
+def test_rescore_prints_a_scenario_outside_the_corpus_continues_and_exits_1(
+    tmp_path: Path,
+) -> None:
+    runs = runs_copy(tmp_path)
+    shutil.copytree(runs / "01-pharmacy", runs / "00-unknown")
+
+    result = rescore(runs)
+
+    assert result.exit_code == 1
+    assert result.stdout == (
+        "00-unknown: not a scenario of the corpus\n"
+        "01-pharmacy: unchanged\n"
+        "03-call-centre: unchanged\n"
+        "04-restaurant: unchanged\n"
+    )
+    assert result.stderr == ""
+
+
+@pytest.mark.parametrize("which", ["runs", "corpus"])
+def test_rescore_reports_a_missing_directory_and_exits_1(tmp_path: Path, which: str) -> None:
+    missing = tmp_path / "nope"
+    runs = runs_copy(tmp_path)
+    runs, corpus = (missing, CORPUS) if which == "runs" else (runs, missing)
+
+    result = runner.invoke(app, ["eval", "rescore", str(runs), "--corpus", str(corpus)])
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert result.stderr == f"{missing} is not a directory\n"
+
+
+@pytest.mark.parametrize("model", ["claude-sonnet-5-5", "runs"])
+def test_rescore_refuses_a_directory_not_named_after_a_registered_model(
+    tmp_path: Path, model: str
+) -> None:
+    runs = runs_copy(tmp_path, model)
+    before = {path: path.read_bytes() for path in runs.rglob("*") if path.is_file()}
+
+    result = rescore(runs)
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert result.stderr == (
+        f"no pre-registered Test A settings for {model!r}; "
+        "use claude-haiku-5-5, gemini-3.8-flash or claude-opus-5-5\n"
+    )
+    assert {path: path.read_bytes() for path in runs.rglob("*") if path.is_file()} == before
+
+
+def test_rescore_help_states_the_lines_and_exit_codes() -> None:
+    text = help_text("eval", "rescore")
+
+    assert "from response.json alone" in text
+    assert "no request is sent" in text
+    assert "unchanged, updated (<files>) or skipped (no response.json)" in text
+    assert "Exit code 0: all directories processed" in text
+    assert (
+        "1: missing runs or corpus directory, a runs directory not named after a registered "
+        "model, or a scenario not in the corpus (its line is printed and processing continues)"
+    ) in text
+    assert "RUNS_DIR" in text

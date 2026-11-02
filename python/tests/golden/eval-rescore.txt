@@ -1,0 +1,3 @@
+01-pharmacy: unchanged
+03-call-centre: updated (comparison.json)
+04-restaurant: unchanged

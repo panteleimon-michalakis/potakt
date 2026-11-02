@@ -6,6 +6,15 @@ corpus format, the input bundle and the metric are pre-registered in
 `potakt.evaluation`. The Test A harness is pre-registered in ADR-0007 §7; its instruction text is
 [`prompts/test-a.md`](prompts/test-a.md), and `potakt eval prompt` shows the exact request.
 
+Test A records go to `runs/test-a/<model>/<scenario id>/` (ADR-0007 §7 and its amendment):
+`request.json`, `response.json` (the raw answer, written first and never overwritten),
+`candidate.txt` and `comparison.json`. The last two are derived from `response.json` alone, so
+`uv run potakt eval rescore ../docs/validation/runs/test-a/<model>` recomputes them offline after
+a harness fix, without a new request; it prints `unchanged`, `updated (<files>)` or
+`skipped (no response.json)` per scenario and exits 1 for a missing directory, a directory not
+named after a registered model or a scenario not in the corpus. `potakt eval summary` reports a
+model's results; the Test A gate is read only from a complete summary of `claude-opus-5-5`.
+
 Each scenario is one directory, `scenarios/<NN>-<slug>/`:
 - `request.md`: the manager's message, the only free text the LLM sees;
 - the CSV files named in the request;

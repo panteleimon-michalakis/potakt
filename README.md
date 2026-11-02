@@ -32,7 +32,12 @@ exists; none of these commands calls a model or needs credentials:
   invalid candidates alike, 1 invalid scenario or unreadable file);
 - `potakt eval summary <model runs dir> [--corpus DIR] [--json]` summarizes one model's recorded
   runs at the batch prices, with how the answers stopped and the scenarios still missing; it is
-  complete only when all ten are scored (exit code 0 printed, 1 missing directory).
+  complete only when all ten are scored (exit code 0 printed, 1 missing directory);
+- `potakt eval rescore <model runs dir> [--corpus DIR]` recomputes each run's `candidate.txt` and
+  `comparison.json` from its `response.json` alone, sending no request, and prints one line per
+  scenario: `unchanged`, `updated (<files>)` or `skipped (no response.json)` (exit code 0 all
+  processed, 1 missing directory, a directory not named after a registered model, or a scenario
+  not in the corpus, whose line is printed while processing continues).
 
 There is no LLM, solver, agent or server yet; the capabilities below are planned.
 

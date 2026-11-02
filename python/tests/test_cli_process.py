@@ -7,6 +7,7 @@ CI runs these tests on Linux and Windows; the golden file must match byte for by
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -220,6 +221,20 @@ def test_eval_summary_matches_the_golden_byte_for_byte() -> None:
     assert result.stdout == (GOLDEN / "test-a-summary.txt").read_bytes()
 
 
+def test_eval_rescore_matches_the_golden_byte_for_byte(tmp_path: Path) -> None:
+    runs = tmp_path / "claude-opus-5-5"
+    shutil.copytree(OPUS_RUNS, runs)
+    (runs / "03-call-centre" / "comparison.json").unlink()
+
+    result = potakt("eval", "rescore", runs, "--corpus", SCENARIOS, extra_env=FORCED_COLOUR)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == b""
+    assert result.stdout == (GOLDEN / "eval-rescore.txt").read_bytes()
+    restored = (runs / "03-call-centre" / "comparison.json").read_bytes()
+    assert restored == (OPUS_RUNS / "03-call-centre" / "comparison.json").read_bytes()
+
+
 @pytest.mark.parametrize(
     ("case", "expected"),
     [
@@ -234,6 +249,9 @@ def test_eval_summary_matches_the_golden_byte_for_byte() -> None:
         ("summary-ok", 0),
         ("summary-json", 0),
         ("summary-missing-directory", 1),
+        ("rescore-ok", 0),
+        ("rescore-missing-directory", 1),
+        ("rescore-unregistered-model", 1),
     ],
 )
 def test_eval_exit_codes(case: str, expected: int, tmp_path: Path) -> None:
@@ -241,6 +259,10 @@ def test_eval_exit_codes(case: str, expected: int, tmp_path: Path) -> None:
     truth.write_bytes((PHARMACY / "truth.json").read_bytes())
     junk = tmp_path / "junk.txt"
     junk.write_bytes(b"Sorry, no model today.\n")
+    runs = tmp_path / "claude-opus-5-5"  # rescoring writes: never into the fixtures
+    shutil.copytree(OPUS_RUNS, runs)
+    unregistered = tmp_path / "claude-sonnet-5-5"
+    shutil.copytree(OPUS_RUNS, unregistered)
     args: dict[str, tuple[str | Path, ...]] = {
         "prompt-ok": ("prompt", HOTEL),
         "prompt-gemini": ("prompt", HOTEL, "--model", "gemini-3.8-flash"),
@@ -253,6 +275,9 @@ def test_eval_exit_codes(case: str, expected: int, tmp_path: Path) -> None:
         "summary-ok": ("summary", OPUS_RUNS),
         "summary-json": ("summary", OPUS_RUNS, "--json"),
         "summary-missing-directory": ("summary", tmp_path / "nope"),
+        "rescore-ok": ("rescore", runs),
+        "rescore-missing-directory": ("rescore", tmp_path / "nope"),
+        "rescore-unregistered-model": ("rescore", unregistered),
     }
 
     result = potakt("eval", *args[case])

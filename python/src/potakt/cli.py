@@ -23,8 +23,11 @@ from potakt.evaluation import (
     render_payload,
     render_test_a,
     request_payload,
+    rescore_run,
     summarize,
 )
+from potakt.evaluation.records import RESPONSE_FILE
+from potakt.evaluation.test_a import check_registered
 from potakt.model import (
     DecisionModel,
     DecisionModelError,
@@ -293,3 +296,62 @@ def eval_summary(
     except ValueError as error:
         _stop(1, str(error))
     typer.echo(summary.to_json() if as_json else summary.to_text(), nl=False)
+
+
+@eval_app.command("rescore")
+def eval_rescore(
+    runs: Annotated[
+        Path,
+        typer.Argument(
+            help="One model's runs directory, named after a registered model.",
+            metavar="RUNS_DIR",
+            show_default=False,
+        ),
+    ],
+    corpus: Annotated[
+        Path,
+        typer.Option(
+            "--corpus",
+            help="Scenario corpus directory (default: the repository's docs/validation/scenarios).",
+            show_default=False,
+        ),
+    ] = CORPUS_PATH,
+) -> None:
+    """Recompute candidate.txt and comparison.json of one model's recorded Test A runs from
+    response.json alone (ADR-0007 §7 amendment «Records»); no request is sent.
+
+    One line per scenario directory, in byte order of its name: unchanged, updated (<files>) or
+    skipped (no response.json). Only missing or different files are written; response.json and
+    request.json are never touched. Exit code 0: all directories processed; 1: missing runs or
+    corpus directory, a runs directory not named after a registered model, or a scenario not in
+    the corpus (its line is printed and processing continues); 2: usage error.
+    """
+    for directory in (runs, corpus):
+        if not directory.is_dir():
+            _stop(1, f"{directory} is not a directory")
+    model = runs.name
+    try:
+        check_registered(model)
+    except UnknownModelError as error:
+        _stop(1, str(error))
+    in_corpus = True
+    for run in sorted(
+        (path for path in runs.iterdir() if path.is_dir()),
+        key=lambda path: path.name.encode("utf-8"),
+    ):
+        outcome = _rescored(run, corpus, model)
+        in_corpus = in_corpus and outcome is not None
+        typer.echo(f"{run.name}: {outcome or 'not a scenario of the corpus'}")
+    raise typer.Exit(code=0 if in_corpus else 1)
+
+
+def _rescored(run: Path, corpus: Path, model: str) -> str | None:
+    """What rescoring did to one run; ``None`` if it is not a (loadable) corpus scenario."""
+    try:
+        scenario = load_scenario(corpus / run.name)
+    except ScenarioError:
+        return None
+    if not (run / RESPONSE_FILE).is_file():
+        return f"skipped (no {RESPONSE_FILE})"
+    written = rescore_run(run, scenario, model)
+    return f"updated ({', '.join(written)})" if written else "unchanged"
