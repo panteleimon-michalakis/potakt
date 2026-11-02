@@ -16,7 +16,7 @@ import json
 import os
 import re
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from importlib.metadata import version
 from pathlib import Path
@@ -57,8 +57,10 @@ from potakt.evaluation.transport import (
     describe_response,
     redact,
     retry_delay,
+    secret_values,
     send_with_retries,
     server_hint,
+    server_text,
 )
 
 __all__ = [
@@ -101,7 +103,7 @@ _INSTANT = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d+)?(Z|[+-]\d{2
 _STATUSES = ("in_progress", "canceling", "ended")
 _COUNTS = ("processing", "succeeded", "errored", "expired", "canceled")
 _RESULT_TYPES = ("succeeded", "errored", "expired", "canceled")
-_ERROR_TEXT_LIMIT = 300
+_ERROR_TYPE = re.compile(r"[a-z_]{1,64}")  # an API error type, safe to echo
 _TEMPORARY_SUFFIX = ".tmp"
 
 Sleep = Callable[[float], object]
@@ -162,6 +164,17 @@ def _load_state(model_dir: Path) -> list[_Batch]:
         names = tuple(cast(list[str], scenarios))
         batches.append(_Batch(batch_id, names, created_at, cast(str, state)))
     return batches
+
+
+def _all_batch_ids(runs_dir: Path) -> set[str]:
+    """The ids in the ``batches.json`` of every model directory under ``runs_dir`` (it exists:
+    ``request.json`` files are written before any batch is created)."""
+    return {
+        batch.id
+        for model_dir in runs_dir.iterdir()
+        if (model_dir / BATCH_STATE_FILE).is_file()
+        for batch in _load_state(model_dir)
+    }
 
 
 def _save_state(model_dir: Path, batches: list[_Batch]) -> None:
@@ -319,7 +332,7 @@ class _AnthropicRun:
     model: str
     corpus_dir: Path
     model_dir: Path
-    headers: dict[str, str]
+    headers: dict[str, str] = field(repr=False)  # carries the key: never in a repr
     transport: Transport
     sleep: Sleep
     now: Callable[[], datetime]
@@ -375,7 +388,8 @@ class _AnthropicRun:
         ]
         body = json.dumps({"requests": requests}, ensure_ascii=False).encode("utf-8")
         started = self.now()
-        known = {batch.id for batch in batches}
+        # Every batch any model recorded: another model's batch of the same size is never this one.
+        known = {batch.id for batch in batches} | _all_batch_ids(self.model_dir.parent)
         last = ""
         for attempt in range(1, ATTEMPTS + 1):
             hint: int | None = None
@@ -393,9 +407,9 @@ class _AnthropicRun:
                 if response.status == 200:
                     last, lost = "HTTP 200 without a readable batch object", True
                 elif response.status in RETRIED_STATUSES:
-                    last, hint = describe_response(response), server_hint(response)
+                    last, hint = self._describe(response), server_hint(response)
                 else:
-                    raise RunStopped(f"creating a batch failed: {describe_response(response)}")
+                    raise RunStopped(f"creating a batch failed: {self._describe(response)}")
             if lost:
                 adopted = self._adopt(started, known, len(pending))
                 if adopted is not None:
@@ -421,7 +435,7 @@ class _AnthropicRun:
         self.sleep(ADOPTION_WAIT_SECONDS)
         response = self._get(f"{BATCHES_URL}?limit={LIST_LIMIT}", CALL_TIMEOUT_SECONDS)
         if response.status != 200:
-            raise RunStopped(f"listing batches failed: {describe_response(response)}")
+            raise RunStopped(f"listing batches failed: {self._describe(response)}")
         data = _field(_json(response.body), "data")
         if not isinstance(data, list):
             raise RunStopped("listing batches failed: unexpected list object")
@@ -444,6 +458,9 @@ class _AnthropicRun:
 
     # -- poll, download, record (F2 steps 4, 5) --
 
+    def _describe(self, response: HttpResponse) -> str:
+        return describe_response(response, secret_values(self.headers))
+
     def _get(self, url: str, timeout: float) -> HttpResponse:
         return send_with_retries(
             self.transport, "GET", url, self.headers, None, timeout, sleep=self.sleep
@@ -454,7 +471,7 @@ class _AnthropicRun:
         while True:
             response = self._get(f"{BATCHES_URL}/{batch_id}", CALL_TIMEOUT_SECONDS)
             if response.status != 200:
-                raise RunStopped(f"polling batch {batch_id} failed: {describe_response(response)}")
+                raise RunStopped(f"polling batch {batch_id} failed: {self._describe(response)}")
             status = _batch_status(_json(response.body))
             if status is None or status.id != batch_id:
                 raise RunStopped(f"polling batch {batch_id} failed: unexpected batch object")
@@ -474,11 +491,11 @@ class _AnthropicRun:
         try:
             check_url(status.results_url)
         except ValueError as error:
-            raise RunStopped(f"batch {batch.id}: results_url {error}") from None
+            raise RunStopped(f"batch {batch.id}: results_url {server_text(str(error))}") from None
         response = self._get(status.results_url, RESULTS_TIMEOUT_SECONDS)
         if response.status != 200:
             raise RunStopped(
-                f"downloading the results of batch {batch.id} failed: {describe_response(response)}"
+                f"downloading the results of batch {batch.id} failed: {self._describe(response)}"
             )
         _write_atomic(self.model_dir / _results_file(batch.id), response.body)
         problems = self._record_results(batch, response.body)
@@ -542,9 +559,11 @@ class _AnthropicRun:
             error = _field(_field(result, "error"), "error")
             error_type, text = _field(error, "type"), _field(error, "message")
             if error_type == "invalid_request_error":
-                detail = text[:_ERROR_TEXT_LIMIT] if isinstance(text, str) else "no message"
+                secrets = secret_values(self.headers)
+                detail = server_text(text, secrets) if isinstance(text, str) else "no message"
                 return f"{name}: invalid_request_error: {detail}"
-            shown = error_type if isinstance(error_type, str) else "unknown error"
+            known_type = isinstance(error_type, str) and _ERROR_TYPE.fullmatch(error_type)
+            shown = error_type if known_type else "unknown error"
             self.echo(f"{name}: errored ({shown}); pending")
             return None
         self.echo(f"{name}: {kind}; pending")  # expired or canceled
@@ -640,7 +659,7 @@ def _run_gemini(
         except RunStopped as error:
             raise RunStopped(f"{name}: {error}") from None
         if response.status != 200:
-            raise RunStopped(f"{name}: {describe_response(response)}")
+            raise RunStopped(f"{name}: {describe_response(response, secret_values(headers))}")
         document = cast(dict[str, object], _json(response.body))
         comparison = write_answer(model_dir / name, _load(corpus_dir, name), model, document)
         echo(recorded_line(name, model, document, comparison))

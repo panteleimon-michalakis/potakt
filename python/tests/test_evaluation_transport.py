@@ -27,6 +27,7 @@ from potakt.evaluation.transport import (
     base_delay,
     build_opener,
     describe_response,
+    secret_values,
     send_with_retries,
 )
 
@@ -525,6 +526,41 @@ def test_the_stop_message_never_contains_a_header_value() -> None:
 
     assert KEY not in str(raised.value)
     assert "[redacted]" in str(raised.value)
+
+
+def test_a_key_across_the_300_character_cut_is_redacted_before_the_cut() -> None:
+    # Review finding (minor 4): cutting first left the key's first characters in the message.
+    body = {"type": "error", "error": {"type": "api_error", "message": "x" * 290 + KEY}}
+
+    text = describe_response(HttpResponse(500, {}, json.dumps(body).encode()), [KEY])
+
+    assert text == "HTTP 500 (api_error: " + "x" * 290 + "[redacted])"
+    assert KEY[:5] not in text
+
+
+def test_server_text_loses_its_control_characters() -> None:
+    # Review finding (minor 3): a server string could carry ANSI escapes to the terminal.
+    body = {"type": "error", "error": {"type": "api\x1b[2J", "message": "bad\x1b[31m\nred\x07"}}
+
+    text = describe_response(HttpResponse(500, {}, json.dumps(body).encode()))
+
+    assert text == "HTTP 500 (api?[2J: bad?[31m?red?)"
+
+
+def test_only_the_key_headers_are_redacted_from_the_stop_message() -> None:
+    # Review finding (minor 6): every header value was redacted, "application/json" included.
+    error = anthropic_error(503, "api_error", f"expected application/json, not {KEY}")
+
+    with pytest.raises(RunStopped) as raised:
+        run(Scripted(error, error, error, error))
+
+    assert str(raised.value).endswith("(api_error: expected application/json, not [redacted])")
+
+
+def test_secret_values_are_the_key_headers() -> None:
+    headers = {"x-api-key": "a", "x-goog-api-key": "b", "content-type": "application/json"}
+
+    assert secret_values(headers) == ["a", "b"]
 
 
 def test_a_400_is_returned_at_once() -> None:

@@ -26,6 +26,7 @@ from runner_helpers import (
 )
 from typer.testing import CliRunner
 
+import potakt.evaluation.runner as runner_module
 from potakt import __version__
 from potakt.cli import app
 from potakt.evaluation import load_scenario, summarize, write_answer
@@ -939,3 +940,88 @@ def test_the_stop_message_is_redacted_of_the_key(tmp_path: Path) -> None:
     assert str(raised.value) == (
         "creating a batch failed: HTTP 401 (authentication_error: [redacted])"
     )
+
+
+# --- review findings (TASK-005c3 self-review) --------------------------------------------------
+
+
+def test_a_key_across_the_cut_of_an_invalid_request_message_is_redacted(tmp_path: Path) -> None:
+    # Minor 4: the message was cut to 300 characters before the key was redacted.
+    text = "x" * 290 + KEY
+    server = FakeBatches(outcome=lambda n, s: errored("invalid_request_error", text))
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == f"01-pharmacy: invalid_request_error: {'x' * 290}[redacted]"
+
+
+def test_a_key_across_the_cut_of_an_http_error_is_redacted(tmp_path: Path) -> None:
+    body = {"type": "error", "error": {"type": "permission_error", "message": "x" * 290 + KEY}}
+    server = FakeBatches(create_script=[HttpResponse(403, {}, json.dumps(body).encode())])
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert KEY[:5] not in str(raised.value)
+
+
+@pytest.mark.parametrize("kind", ["\x1b[2J", "a" * 65, 7])
+def test_an_odd_error_type_is_not_echoed(tmp_path: Path, kind: object) -> None:
+    # Minor 3: the error type of a result line was echoed as the server sent it.
+    def outcome(number: int, scenario: str) -> dict[str, Any]:
+        if number > 1:
+            return succeeded()
+        return {"type": "errored", "error": {"type": "error", "error": {"type": kind}}}
+
+    run = make_run(tmp_path, FakeBatches(outcome=outcome), ALL_SCENARIOS[:1])
+
+    run()
+
+    assert "01-pharmacy: errored (unknown error); pending" in run.echo
+
+
+def test_an_invalid_request_message_loses_its_control_characters(tmp_path: Path) -> None:
+    server = FakeBatches(outcome=lambda n, s: errored("invalid_request_error", "bad\x1b[31m\n"))
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == "01-pharmacy: invalid_request_error: bad?[31m?"
+
+
+def test_the_run_state_repr_never_shows_the_key(tmp_path: Path) -> None:
+    # Minor 5: the dataclass repr included the request headers.
+    state = runner_module._AnthropicRun(
+        model=HAIKU,
+        corpus_dir=tmp_path,
+        model_dir=tmp_path,
+        headers=runner_module.anthropic_headers(KEY),
+        transport=FakeBatches(),
+        sleep=Sleeps(),
+        now=lambda: NOW,
+        poll_seconds=60,
+        echo=Echo(),
+    )
+
+    assert KEY not in repr(state)
+
+
+def test_a_batch_of_another_model_is_never_adopted(tmp_path: Path) -> None:
+    # Minor 7: a batch recorded by another model with the same size, created minutes before.
+    server = FakeBatches(create_script=["lost-none"])
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+    other = server.register(list(ALL_SCENARIOS[:1]), created_at=iso(-timedelta(minutes=3)))
+    entry = {"id": other, "scenarios": list(ALL_SCENARIOS[:1]), "created_at": CREATED_AT}
+    (run.runs / OPUS).mkdir(parents=True)
+    state = json.dumps({"batches": [entry | {"state": "done"}]})
+    (run.runs / OPUS / BATCH_STATE_FILE).write_text(state, encoding="utf-8")
+
+    run()
+
+    assert not any("adopted" in line for line in run.echo)
+    assert len(server.creates()) == 2
+    assert run.batch_ids() == ["msgbatch_02"]

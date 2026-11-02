@@ -30,6 +30,7 @@ _RETRY_INFO = "google.rpc.RetryInfo"
 _DURATION = re.compile(r"(\d+(?:\.\d+)?)s")
 _ERROR_TEXT_LIMIT = 300
 _REDACTED = "[redacted]"
+KEY_HEADERS = frozenset({"x-api-key", "x-goog-api-key"})
 # Connection-level failures: no HTTP response arrived (``HTTPError`` is caught before these).
 _NETWORK_ERRORS = (
     urllib.error.URLError,
@@ -195,6 +196,11 @@ def retry_delay(attempt: int, hint: int | None) -> int:
     return min(max(base_delay(attempt), hint or 0), MAX_DELAY_SECONDS)
 
 
+def secret_values(headers: Mapping[str, str]) -> list[str]:
+    """The values of the headers that carry an API key (``KEY_HEADERS``)."""
+    return [value for name, value in headers.items() if name.lower() in KEY_HEADERS]
+
+
 def redact(text: str, secrets: Mapping[str, str] | list[str]) -> str:
     """``text`` with every given value (header values, keys) replaced by ``[redacted]``."""
     values = secrets.values() if isinstance(secrets, Mapping) else secrets
@@ -203,10 +209,18 @@ def redact(text: str, secrets: Mapping[str, str] | list[str]) -> str:
     return text
 
 
-def describe_response(response: HttpResponse) -> str:
+def server_text(text: str, secrets: list[str] | None = None, limit: int = _ERROR_TEXT_LIMIT) -> str:
+    """A string from a response, safe to print: ``secrets`` redacted first, then cut to
+    ``limit`` characters, every non-printable character (control, escape, newline) as ``?``."""
+    shortened = redact(text, secrets or [])[:limit]
+    return "".join(char if char.isprintable() else "?" for char in shortened)
+
+
+def describe_response(response: HttpResponse, secrets: list[str] | None = None) -> str:
     """``HTTP <status>``, plus ``(<type>: <message>)`` from an API error body: Anthropic's
     ``error.type`` and ``error.message``, Gemini's ``error.status`` and ``error.message``.
-    Nothing else from the body; the message is shortened to 300 characters."""
+    Nothing else from the body; both go through ``server_text`` (``secrets`` redacted before the
+    message is cut to 300 characters)."""
     text = f"HTTP {response.status}"
     error = _json_error(response.body)
     if error is None:
@@ -214,9 +228,9 @@ def describe_response(response: HttpResponse) -> str:
     kind = error.get("type") if isinstance(error.get("type"), str) else error.get("status")
     detail = error.get("message")
     if isinstance(kind, str) and isinstance(detail, str):
-        return f"{text} ({kind}: {detail[:_ERROR_TEXT_LIMIT]})"
+        return f"{text} ({server_text(kind, secrets)}: {server_text(detail, secrets)})"
     if isinstance(kind, str):
-        return f"{text} ({kind})"
+        return f"{text} ({server_text(kind, secrets)})"
     return text
 
 
@@ -237,9 +251,11 @@ def send_with_retries(
     ``attempts`` in total, sleeping ``retry_delay`` before each retry. Any other status is
     returned at once (a 3xx too: it is never followed). After the last failed attempt,
     ``RunStopped`` names the last status and its API error, or the last ``TransportError``;
-    header values are redacted from it. ``check_url`` runs before the first attempt.
+    the values of the key headers (``KEY_HEADERS``) are redacted from it. ``check_url`` runs
+    before the first attempt.
     """
     check_url(url)
+    secrets = secret_values(headers)
     last = ""
     for attempt in range(1, attempts + 1):
         hint: int | None = None
@@ -250,9 +266,9 @@ def send_with_retries(
         else:
             if response.status not in RETRIED_STATUSES:
                 return response
-            last = describe_response(response)
+            last = describe_response(response, secrets)
             hint = server_hint(response)
         if attempt < attempts:
             sleep(retry_delay(attempt + 1, hint))
     message = f"the request failed {attempts} times; last: {last}"
-    raise RunStopped(redact(message, headers))
+    raise RunStopped(redact(message, secrets))

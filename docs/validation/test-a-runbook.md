@@ -115,6 +115,13 @@ Push only after the reviewer's check of a fresh clone.
 
 - **Interrupted run** (Ctrl+C, a closed window, a lost connection): run the same command again; it
   resumes the open batch or sends only the pending scenarios. Nothing that was recorded is lost.
+  One exception: if a Claude run is interrupted after it starts sending a batch but before it
+  prints `batch <id> created for N scenarios`, the batch may exist without being recorded, and the
+  next run would create another. In that case, first look at the Claude Console (Batches): cancel
+  any batch created in the last minutes, then run again.
+- **A malformed results line** stops the run after the other lines are recorded; the raw results
+  stay in `batch-<id>.results.jsonl`. Send that file to the reviewer before running again,
+  because running again sends the affected scenarios in a new, paid batch.
 - **Several batches could be the one a lost request created** (the run stops and names them):
   none of them is recorded in `batches.json`, so the next run would not use them. Cancel every
   batch the message names in the Claude Console (Batches), then run the same command again; it
