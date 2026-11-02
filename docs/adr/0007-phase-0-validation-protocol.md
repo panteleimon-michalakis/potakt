@@ -282,6 +282,34 @@ because DESIGN §16.2 names "violations, no explanations **or** unstable re-plan
 - **Who runs it.** The owner runs every paid command. Credentials come only from the environment
   variables `POTAKT_ANTHROPIC_API_KEY` and `POTAKT_GEMINI_API_KEY` and are never written anywhere.
 
+**Amendment (2026-11-02, TASK-005c2, before any LLM run).** These rules complete §7; where they
+differ from the bullets above, they apply.
+- **Transport.** The Anthropic requests go through the Message Batches API with the header
+  `anthropic-version: 2026-10-21`: one batch per model, one request per scenario, `custom_id` = the
+  scenario id and `params` = the payload `potakt eval prompt` prints. Anthropic advises batches or
+  streaming for a large `max_tokens`; a batch also needs no open connection and costs half.
+  `response.json` is the result's `message` object. A result `errored` with an
+  `invalid_request_error` stops the run and records no candidate; any other `errored` result and an
+  `expired` result are failures before an answer, repeated as above. The Gemini requests use
+  `generateContent`, one at a time. The summary prices the Anthropic models at their batch prices.
+- **Order.** `claude-opus-5-5` runs only after `claude-haiku-5-5` has a complete run, so the harness
+  has worked end to end before the strong model's only attempt. `gemini-3.8-flash` runs at any time.
+- **Answer text and normal end.** The text blocks are joined without a separator: the Anthropic
+  content blocks of type `text`; the parts of the first Gemini candidate that have a `text` and are
+  not marked `thought`. A normal end is `stop_reason` `end_turn` (Anthropic) or `finishReason`
+  `STOP` on the first candidate (Gemini); a blocked prompt or a missing candidate is not a normal
+  end.
+- **Data files.** Every `source` of a candidate must be one of the scenario's CSV file names exactly
+  as the bundle shows it, letter case included; a leading `./` is allowed. Any other source makes
+  the candidate invalid on every operating system.
+- **Records.** `response.json` holds the response object as UTF-8 JSON with sorted keys; it is
+  written first and never overwritten. `candidate.txt` and `comparison.json` are derived from
+  `response.json` alone by the rules of §7 and can be recomputed offline (`potakt eval rescore`);
+  recomputing sends no request.
+- **Summary.** The summary names every corpus scenario without a scored run and is complete only
+  when all ten are scored; the gate of §5.4 is read only from a complete summary of
+  `claude-opus-5-5`.
+
 ## Consequences
 - Results can be compared across models and over time, because every rule of the measurement is fixed
   in advance and implemented once, in tested code.
