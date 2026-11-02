@@ -1,8 +1,10 @@
 """Phase 0 evaluation (ADR-0007): the scenario corpus, the Test A comparison metric, answers,
 run records and their summary.
 
-Library code only: no LLM, no network. Depends on ``potakt.model``, ``potakt.checker``, Pydantic
-and the standard library; neither of those core packages imports this one.
+The names below are library code only: no LLM, no network. Depends on ``potakt.model``,
+``potakt.checker``, Pydantic and the standard library; neither of those core packages imports this
+one. The HTTPS transport (``potakt.evaluation.transport``, TASK-005c3) is the only module that can
+reach the network; it is not imported here.
 """
 
 from potakt.evaluation.bundle import Bundle, BundleFile, build_bundle, render_bundle
