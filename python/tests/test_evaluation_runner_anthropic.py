@@ -94,12 +94,18 @@ class FakeBatches:
     # Consumed by the create calls, in order, before normal creates: "lost" registers the batch
     # and raises TransportError (the response was lost); "lost-none" raises without creating it;
     # "interrupt" raises KeyboardInterrupt before the server sees the call; "interrupt-created"
-    # registers the batch, then raises KeyboardInterrupt; an HttpResponse is returned as is (no
-    # batch); Created(response) registers the batch, then returns the response.
+    # registers the batch, then raises KeyboardInterrupt; "duplicated" registers two batches (a
+    # proxy retried the call), the second missing from the list for 60 s more, then raises
+    # TransportError; an HttpResponse is returned as is (no batch); Created(response) registers
+    # the batch, then returns the response.
     create_script: list[CreateStep] = field(default_factory=list[CreateStep])
     listing: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
-    # The batches created by create calls are missing from the first ``hidden_lists`` list calls.
-    hidden_lists: int = 0
+    # A batch created by a create call is missing from the list for ``lag`` seconds of the clock
+    # (plus its entry in ``extra_lag``).
+    lag: float = 0.0
+    extra_lag: dict[str, float] = field(default_factory=dict[str, float])
+    posted_at: dict[str, datetime] = field(default_factory=dict[str, datetime])
+    list_times: list[datetime] = field(default_factory=list[datetime])  # the clock at each list
     # Seconds the clock moves while a create call is answered (``clock.advance``).
     create_seconds: float = 0.0
     clock: Sleeps | None = None
@@ -181,13 +187,17 @@ class FakeBatches:
             if self.list_failures:
                 raise self.list_failures.pop(0)
             self.lists += 1
+            now = self.now()
+            self.list_times.append(now)
             if self.list_answer is not None:
                 return self.list_answer
-            hidden = self.posted if self.lists <= self.hidden_lists else set[str]()
             data = [
                 self.batch(batch_id)
                 for batch_id in reversed(self.batches)
-                if batch_id not in hidden
+                if batch_id not in self.posted
+                or now
+                >= self.posted_at[batch_id]
+                + timedelta(seconds=self.lag + self.extra_lag.get(batch_id, 0.0))
             ] + self.listing
             return ok({"data": data, "has_more": False, "first_id": None, "last_id": None})
         if method == "GET" and url.endswith("/results"):
@@ -219,8 +229,10 @@ class FakeBatches:
             return step
         if step == "lost-none":
             raise TransportError("TimeoutError: no response received")
-        batch_id = self.register(scenarios)
-        self.posted.add(batch_id)
+        batch_id = self.post(scenarios)
+        if step == "duplicated":
+            self.extra_lag[self.post(scenarios)] = 60.0
+            raise TransportError("TimeoutError: no response received")
         if isinstance(step, Created):
             return step.response
         if step == "lost":
@@ -228,6 +240,16 @@ class FakeBatches:
         if step == "interrupt-created":
             raise KeyboardInterrupt
         return ok(self.batch(batch_id))
+
+    def now(self) -> datetime:
+        return self.clock.now() if self.clock is not None else NOW
+
+    def post(self, scenarios: list[str]) -> str:
+        """A batch created by a create call, at the clock's time."""
+        batch_id = self.register(scenarios)
+        self.posted.add(batch_id)
+        self.posted_at[batch_id] = self.now()
+        return batch_id
 
     def creates(self) -> list[list[str]]:
         """The scenarios of every create call, in order."""
@@ -671,7 +693,7 @@ def test_a_results_url_on_another_host_is_refused(tmp_path: Path) -> None:
     assert run.recorded() == []
 
 
-@pytest.mark.parametrize("code", [400, 401, 403, 404, 413])
+@pytest.mark.parametrize("code", [400, 401, 403, 404, 409, 413, 422])
 def test_a_create_refused_with_another_status_is_marked_failed_and_stops(
     tmp_path: Path, code: int
 ) -> None:
@@ -793,7 +815,7 @@ def test_a_lost_create_adopts_the_one_candidate_batch(tmp_path: Path) -> None:
             "state": "done",
         }
     ]
-    assert run.sleeps == [10, 60]
+    assert run.sleeps == [120, 60]
     assert run.lists() == 1
     assert run.recorded() == list(ALL_SCENARIOS[:3])
 
@@ -811,7 +833,7 @@ def test_a_batch_created_exactly_ten_minutes_before_is_a_candidate(tmp_path: Pat
     assert len(server.creates()) == 1
 
 
-def test_a_lost_create_with_no_candidate_is_checked_twice_then_retried(tmp_path: Path) -> None:
+def test_a_lost_create_with_no_candidate_is_checked_once_then_retried(tmp_path: Path) -> None:
     server = FakeBatches(
         create_script=["lost-none"],
         listing=[other_batch("msgbatch_old", 1, iso(-timedelta(minutes=30)))],
@@ -821,12 +843,13 @@ def test_a_lost_create_with_no_candidate_is_checked_twice_then_retried(tmp_path:
     run()
 
     assert len(server.creates()) == 2
-    # check 1 at started + 10 s, check 2 at started + 70 s, then the retry delay and the poll.
-    assert run.sleeps == [10, 60, 15, 60]
-    assert run.lists() == 2
+    # E3: one list call at started + 120 s, then the retry delay and the poll.
+    assert run.sleeps == [120, 15, 60]
+    assert run.lists() == 1
+    assert server.list_times == [NOW + timedelta(seconds=120)]
     assert [batch["id"] for batch in run.state()["batches"]] == ["msgbatch_01"]
     # started_at is the instant just before the create call that created the batch (the retry).
-    assert run.state()["batches"][0]["started_at"] == "2026-11-02T10:01:25Z"
+    assert run.state()["batches"][0]["started_at"] == "2026-11-02T10:02:15Z"
 
 
 def test_a_batch_already_in_the_state_is_no_candidate(tmp_path: Path) -> None:
@@ -870,7 +893,8 @@ def test_four_lost_creates_stop_the_run_and_mark_the_create_failed(tmp_path: Pat
         run()
 
     assert len(server.creates()) == 4
-    assert run.sleeps == [10, 60, 15, 10, 60, 45, 10, 60, 135, 10, 60]
+    assert run.sleeps == [120, 15, 120, 45, 120, 135, 120]
+    assert run.lists() == 4
     assert run.states() == ["failed"]
 
 
@@ -881,8 +905,8 @@ def test_a_create_answered_200_without_a_batch_object_is_treated_as_lost(tmp_pat
     run()
 
     assert len(server.creates()) == 2
-    assert run.lists() == 2
-    assert run.sleeps == [10, 60, 15, 60]
+    assert run.lists() == 1
+    assert run.sleeps == [120, 15, 60]
 
 
 @pytest.mark.parametrize(
@@ -1291,11 +1315,11 @@ def test_a_gateway_error_after_the_batch_was_created_adopts_it(tmp_path: Path, c
     assert len(server.creates()) == 1
     assert run.echo[0] == "adopted batch msgbatch_01 created by an earlier create request"
     assert run.recorded() == list(ALL_SCENARIOS[:2])
-    assert run.sleeps == [10, 60]
+    assert run.sleeps == [120, 60]
 
 
 @pytest.mark.parametrize("code", GATEWAY)
-def test_a_gateway_error_without_a_batch_is_checked_twice_then_retried(
+def test_a_gateway_error_without_a_batch_is_checked_once_then_retried(
     tmp_path: Path, code: int
 ) -> None:
     server = FakeBatches(create_script=[HttpResponse(code, {"retry-after": "30"}, b"")])
@@ -1304,9 +1328,60 @@ def test_a_gateway_error_without_a_batch_is_checked_twice_then_retried(
     run()
 
     assert len(server.creates()) == 2
-    assert run.lists() == 2
-    assert run.sleeps == [10, 60, 30, 60]
+    assert run.lists() == 1
+    assert run.sleeps == [120, 30, 60]
     assert run.states() == ["done"]
+
+
+# -- TASK-005c3c E2: every create answer that is neither a batch nor a definite rejection --
+
+UNCLEAR = [301, 302, 307, 408, 501, 520, 522, 524, 599]
+
+
+@pytest.mark.parametrize("code", UNCLEAR)
+def test_an_unclear_status_after_the_batch_was_created_adopts_it(tmp_path: Path, code: int) -> None:
+    # TASK-005c3b I1: these used to be marked failed at once, leaving the batch a paid orphan.
+    location = {"location": "https://evil.example.com/"} if code < 400 else {}
+    server = FakeBatches(create_script=[Created(HttpResponse(code, location, b""))])
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:2])
+
+    run()
+
+    assert len(server.creates()) == 1
+    assert run.echo[0] == "adopted batch msgbatch_01 created by an earlier create request"
+    assert run.recorded() == list(ALL_SCENARIOS[:2])
+    assert server.list_times == [NOW + timedelta(seconds=120)]
+    assert not any("evil" in call.url for call in server.calls)
+
+
+@pytest.mark.parametrize("code", UNCLEAR)
+def test_an_unclear_status_without_a_batch_is_looked_up_once_then_marked_failed(
+    tmp_path: Path, code: int
+) -> None:
+    server = FakeBatches(create_script=[HttpResponse(code, {}, b"")])
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == f"creating a batch failed: HTTP {code}"
+    assert server.list_times == [NOW + timedelta(seconds=120)]
+    assert run.sleeps == [120]
+    assert len(server.creates()) == 1
+    assert run.state()["batches"] == [batch_entry(None, ALL_SCENARIOS[:1], "failed")]
+
+
+@pytest.mark.parametrize("code", [400, 401, 403, 404, 409, 413, 422])
+def test_a_definite_rejection_lists_nothing(tmp_path: Path, code: int) -> None:
+    server = FakeBatches(create_script=[Created(HttpResponse(code, {}, b""))])
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+
+    with pytest.raises(RunStopped, match=rf"^creating a batch failed: HTTP {code}$"):
+        run()
+
+    assert run.lists() == 0
+    assert run.sleeps == []
+    assert run.states() == ["failed"]
 
 
 def test_four_gateway_errors_mark_the_create_failed(tmp_path: Path) -> None:
@@ -1317,37 +1392,53 @@ def test_four_gateway_errors_mark_the_create_failed(tmp_path: Path) -> None:
         run()
 
     assert str(raised.value) == "creating a batch failed 4 times; last: HTTP 503"
-    assert run.lists() == 8
+    assert run.lists() == 4
     assert run.states() == ["failed"]
 
 
-def test_a_batch_missing_from_the_first_list_is_found_by_the_second(tmp_path: Path) -> None:
-    server = FakeBatches(create_script=["lost"], hidden_lists=1)
+# -- TASK-005c3c E3: one list call, at least 120 s after the later of the call and its answer --
+
+
+def test_a_batch_missing_from_the_list_for_100_seconds_is_found(tmp_path: Path) -> None:
+    server = FakeBatches(create_script=["lost"], lag=100)
     run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
 
     run()
 
     assert len(server.creates()) == 1
-    assert run.lists() == 2
-    assert run.sleeps == [10, 60, 60]
+    assert server.list_times == [NOW + timedelta(seconds=120)]
+    assert run.sleeps == [120, 60]
     assert "adopted batch msgbatch_01 created by an earlier create request" in run.echo
 
 
-def test_a_slow_create_answer_waits_a_full_minute_before_the_second_check(
-    tmp_path: Path,
-) -> None:
-    # The 504 arrives 65 s after the request: the batch may have been created just before, so
-    # the second list call comes at least 60 s after the first one.
+def test_a_duplicated_create_with_a_late_twin_stops_the_run(tmp_path: Path) -> None:
+    # TASK-005c3b I3: the first check saw only the first batch, adopted it, and the twin, still
+    # hidden, became a paid orphan.
+    server = FakeBatches(create_script=["duplicated"])
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+
+    with pytest.raises(RunStopped, match=r"^2 recent batches could be the one created") as raised:
+        run()
+
+    assert "msgbatch_01, msgbatch_02;" in str(raised.value)
+    assert run.lists() == 1
+    assert run.states() == ["creating"]
+    assert server.polled == {}
+
+
+def test_a_slow_unclear_answer_is_looked_up_120_seconds_after_it_arrived(tmp_path: Path) -> None:
+    # The 504 arrives 90 s after the request; the batch may have been created just before it.
     server = FakeBatches(
-        create_script=[Created(HttpResponse(504, {}, b""))], hidden_lists=1, create_seconds=65
+        create_script=[Created(HttpResponse(504, {}, b""))], create_seconds=90, lag=110
     )
     run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
 
     run()
 
-    assert run.sleeps[0] == 60
-    assert run.lists() == 2
+    assert server.list_times == [NOW + timedelta(seconds=90 + 120)]
+    assert run.sleeps[0] == 120
     assert len(server.creates()) == 1
+    assert "adopted batch msgbatch_01 created by an earlier create request" in run.echo
 
 
 def test_a_cancelled_batch_is_never_adopted(tmp_path: Path) -> None:
@@ -1441,8 +1532,8 @@ def test_an_interrupted_create_without_a_batch_is_marked_failed_and_sent_again(
         "no batch was created by the earlier create request (started 2026-11-02T10:00:00Z)"
     )
     assert run.echo[1] == "batch msgbatch_01 created for 2 scenarios"
-    assert run.sleeps == [10, 60, 60]
-    assert run.lists() == 2
+    assert run.sleeps == [120, 60]
+    assert run.lists() == 1
     assert run.states() == ["failed", "done"]
     assert run.recorded() == list(ALL_SCENARIOS[:2])
 
@@ -1458,6 +1549,7 @@ def test_an_old_creating_entry_is_checked_once_without_waiting(tmp_path: Path) -
         "no batch was created by the earlier create request (started 2026-11-02T09:00:00Z)"
     )
     assert run.lists() == 1
+    assert run.server.list_times == [NOW]  # E3: t0 + 120 s is past, so no sleep
     assert run.sleeps == [60]  # the poll only
 
 
@@ -1501,5 +1593,5 @@ def test_the_reconcile_lists_through_the_retries(tmp_path: Path) -> None:
 
     run()
 
-    assert run.sleeps == [10, 15, 60]
+    assert run.sleeps == [120, 15, 60]
     assert "adopted batch msgbatch_01 created by an earlier create request" in run.echo

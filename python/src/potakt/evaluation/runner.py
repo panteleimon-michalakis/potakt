@@ -11,10 +11,11 @@ and ``eval rescore`` ignore (they read directories only). The API key is only ev
 request header; it is never written, printed or put in a URL, and every ``RunStopped`` message is
 redacted of it.
 
-A batch is never paid for twice (TASK-005c3b D1, D2): a ``creating`` entry is saved before every
-create call, so a create whose outcome is unclear (no response, a 5xx, an unreadable 200, an
-interruption or a crash) is reconciled against the list of batches, by two list calls at least
-60 seconds apart, before anything else is sent; the next run starts with that reconciliation.
+A batch is never paid for twice (TASK-005c3b D1, D2, TASK-005c3c E2, E3): a ``creating`` entry is
+saved before every create call, so a create whose outcome is unclear (no response, a 3xx, a 408,
+any status of 500 or more, an unreadable 200, an interruption or a crash) is reconciled against
+the list of batches, by one list call at least 120 seconds after the later of the call and its
+answer, before anything else is sent; the next run starts with that reconciliation.
 """
 
 import json
@@ -102,10 +103,9 @@ GEMINI_TIMEOUT_SECONDS = 600.0
 RUNS_PATH = Path(__file__).resolve().parents[4] / "docs" / "validation" / "runs" / "test-a"
 # ADR-0007 §7 amendment «Order»: the strong model runs only after this one has a complete run.
 FIRST_MODEL = "claude-haiku-5-5"
-# TASK-005c3b D2: the reconciliation of a create whose outcome is unclear.
-FIRST_CHECK = timedelta(seconds=10)  # the first list call, after started_at
-SECOND_CHECK = timedelta(seconds=70)  # the second one, if the first found none
-LIST_LAG = timedelta(seconds=60)  # how long a new batch may be missing from the list
+# TASK-005c3c E3 (ADR-0007 §7 amendment «Unclear create»): the one list call of a reconciliation
+# comes this long after the later of the create call and its answer.
+RECONCILE_DELAY_SECONDS = 120
 ADOPTION_WINDOW = timedelta(minutes=10)  # clock skew allowed between us and the API
 LIST_LIMIT = 100
 # TASK-005c3b D5: an unchanged status line is shown again after this many polls (10 minutes at
@@ -381,6 +381,18 @@ def _batch_status(document: object) -> _BatchStatus | None:
     )
 
 
+def _unclear(status: int) -> bool:
+    """TASK-005c3c E2: a create answered with ``status`` (no readable batch object) may have
+    created a batch. Only a 4xx other than 408 proves that none exists (429 included)."""
+    return not (400 <= status < 500 and status != 408)
+
+
+def _repeated(status: int) -> bool:
+    """A create answered with ``status`` (no readable batch object, and no batch found) is sent
+    again: ADR-0007 §7 «Failures before an answer», plus an unreadable 200."""
+    return status == 200 or status in RETRIED_STATUSES
+
+
 def _instant(text: str) -> datetime | None:
     """An RFC 3339 time with at most microseconds kept; ``None`` if it is not one."""
     matched = _INSTANT.fullmatch(text)
@@ -464,10 +476,13 @@ class _AnthropicRun:
     def _create(self, pending: list[str], batches: list[_Batch]) -> _Batch:
         """Create one batch for ``pending``; a ``creating`` entry is saved before every POST.
 
-        A 429 is no batch; no response, a 5xx or a 200 without a readable batch object is
-        unclear and reconciled; any other status is no batch and stops the run. A
-        ``KeyboardInterrupt`` is not caught: the ``creating`` entry on disk is reconciled by the
-        next run.
+        TASK-005c3c E2: a 429 is no batch and is retried; any other 4xx except 408 is no batch
+        and stops the run; every other answer (no response, a 3xx, a 408, any status of 500 or
+        more, a 200 without a readable batch object, any other status) is unclear and
+        reconciled. When the reconciliation finds no batch, the answers that ADR-0007 §7 repeats
+        (no response, ``RETRIED_STATUSES``, an unreadable 200) are retried and the others stop
+        the run. A ``KeyboardInterrupt`` is not caught: the ``creating`` entry on disk is
+        reconciled by the next run.
         """
         for name in pending:
             if not _CUSTOM_ID.fullmatch(name):
@@ -491,30 +506,29 @@ class _AnthropicRun:
             batches[index] = entry
             _save_state(self.model_dir, batches)
             hint: int | None = None
-            unclear = False
+            response: HttpResponse | None = None
             try:
                 response = self.transport.send(
                     "POST", BATCHES_URL, self.headers, body, CALL_TIMEOUT_SECONDS
                 )
             except TransportError as error:
-                last, unclear = str(error), True
+                last = str(error)
             else:
                 status = _batch_status(_json(response.body)) if response.status == 200 else None
                 if status is not None:
                     return self._opened(batches, index, status, adopted=False)
+                last, hint = self._describe(response), server_hint(response)
                 if response.status == 200:
-                    last, unclear = "HTTP 200 without a readable batch object", True
-                elif response.status in RETRIED_STATUSES:
-                    last, hint = self._describe(response), server_hint(response)
-                    unclear = response.status != 429  # a gateway may answer after the API took it
-                else:
-                    batches[index] = replace(entry, state="failed")
-                    _save_state(self.model_dir, batches)
-                    raise RunStopped(f"creating a batch failed: {self._describe(response)}")
-            if unclear:
+                    last = "HTTP 200 without a readable batch object"
+            if response is None or _unclear(response.status):
+                # A gateway or a proxy may answer after the API created the batch.
                 found = self._reconcile(entry, answered=self.now())
                 if found is not None:
                     return self._opened(batches, index, found, adopted=True)
+            if response is not None and not _repeated(response.status):
+                batches[index] = replace(entry, state="failed")
+                _save_state(self.model_dir, batches)
+                raise RunStopped(f"creating a batch failed: {self._describe(response)}")
             if attempt < ATTEMPTS:
                 self.sleep(retry_delay(attempt + 1, hint))
         # The last answer was a 429, or the last reconciliation found no batch.
@@ -555,32 +569,21 @@ class _AnthropicRun:
         )
         return False
 
-    def _wait_until(self, moment: datetime) -> bool:
-        """Sleep once until ``moment``, computed once from ``now()``; ``False`` if it is past."""
-        seconds = (moment - self.now()).total_seconds()
-        if seconds <= 0:
-            return False
-        self.sleep(seconds)
-        return True
-
     def _reconcile(self, entry: _Batch, answered: datetime | None = None) -> _BatchStatus | None:
         """The batch an unclear create of ``entry`` created, or ``None`` if it created none.
 
-        Check 1 lists the batches ``FIRST_CHECK`` after ``started_at``. If it finds no
-        candidate, check 2 lists them again at ``started_at + SECOND_CHECK`` and, when the
-        answer arrived at ``answered`` (this run), at least ``LIST_LAG`` after it, so the two
-        checks are at least a minute apart; an old entry from an earlier run is checked once.
-        Several candidates stop the run.
+        TASK-005c3c E3: one list call, at ``t0 + RECONCILE_DELAY_SECONDS``, where ``t0`` is the
+        later of ``started_at`` and ``answered`` (the instant the unclear answer arrived, in this
+        run; a leftover entry of an earlier run has none). The wait is computed once from
+        ``now()`` and slept in one call, or skipped if it is not positive. Exactly one candidate
+        is adopted; several stop the run.
         """
         started = cast(datetime, _started(entry.started_at))  # validated or written by _stamp
-        self._wait_until(started + FIRST_CHECK)
+        t0 = started if answered is None else max(started, answered)
+        wait = (t0 + timedelta(seconds=RECONCILE_DELAY_SECONDS) - self.now()).total_seconds()
+        if wait > 0:
+            self.sleep(wait)
         candidates = self._candidates(entry, started)
-        if not candidates:
-            second = started + SECOND_CHECK
-            if answered is not None:
-                second = max(second, answered + LIST_LAG)
-            if self._wait_until(second):
-                candidates = self._candidates(entry, started)
         if len(candidates) > 1:
             ids = ", ".join(sorted(candidate.id for candidate in candidates))
             raise RunStopped(SEVERAL_CANDIDATES.format(count=len(candidates), ids=ids))

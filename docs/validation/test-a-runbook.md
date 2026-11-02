@@ -126,11 +126,11 @@ Push only after the reviewer's check of a fresh clone.
   for that batch in the Claude batch list.
 - **What these lines mean:**
   - `adopted batch <id> created by an earlier create request`: an earlier create request (in
-    this run, when its answer was lost or was a 5xx, or in an interrupted run) did create a
-    batch; the run polls that batch and records its answers instead of sending a new one.
+    this run, when its answer was lost, a redirect, a 408 or a 5xx, or in an interrupted run) did
+    create a batch; the run polls that batch and records its answers instead of sending a new one.
   - `no batch was created by the earlier create request (started <time>)`: the batch list was
-    checked, twice and a minute apart unless the request is old, and no batch was found; the run
-    continues and sends the pending scenarios.
+    checked once, two minutes after the request, and no batch was found; the run continues and
+    sends the pending scenarios.
   - `Unconfirmed create request: started <time> (<n> scenarios); --yes checks for its batch
     before sending anything` (dry run): an earlier run was interrupted while creating a batch.
     The dry run itself sends nothing; the next `--yes` run does the check above first.
