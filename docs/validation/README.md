@@ -13,9 +13,10 @@ bound and sends nothing; with `--yes` it reads the key from `POTAKT_ANTHROPIC_AP
 Message Batch, Gemini one request at a time), records the answers and prints the summary.
 `claude-opus-5-5` runs only after `claude-haiku-5-5` has a complete run; the same command again
 resumes, after any interruption: a batch whose creation was not confirmed is looked up in the
-list of batches before anything is sent, so no batch is paid for twice. Exit code 0: all recorded or the plan printed; 1: the run stopped (the reason on stderr),
-a missing or invalid key, the order refused, a missing directory or an interruption; 2: usage
-error, also for an unregistered model id.
+list of batches before anything is sent, so no batch is paid for twice. Exit code 0: all
+recorded or the plan printed; 1: the run stopped (the reason on stderr), a missing or invalid key,
+the order refused, a missing directory or an interruption; 2: usage error, also for an
+unregistered model id.
 
 Test A records go to `runs/test-a/<model>/<scenario id>/` (ADR-0007 §7 and its amendment):
 `request.json`, `response.json` (the raw answer, written first and never overwritten),

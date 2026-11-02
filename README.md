@@ -27,8 +27,9 @@ the only command that calls the model APIs; the owner runs it by following
 [`docs/validation/test-a-runbook.md`](docs/validation/test-a-runbook.md):
 - `potakt eval run --model ID [--runs DIR] [--corpus DIR] [--poll-seconds N] [--yes]` without
   `--yes` prints the plan (pending and recorded scenarios, an open batch or an unconfirmed create
-  request, the cost upper bound) and sends nothing; with `--yes` it reads the key from `POTAKT_ANTHROPIC_API_KEY` (Claude models,
-  Message Batches API) or `POTAKT_GEMINI_API_KEY` (`gemini-3.8-flash`), records every pending
+  request, the cost upper bound) and sends nothing; with `--yes` it reads the key from
+  `POTAKT_ANTHROPIC_API_KEY` (Claude models, Message Batches API) or `POTAKT_GEMINI_API_KEY`
+  (`gemini-3.8-flash`), records every pending
   scenario under `docs/validation/runs/test-a/<model>/` (`request.json`, `response.json`,
   `candidate.txt`, `comparison.json`, and for Claude models `batches.json` and
   `batch-<id>.results.jsonl`) and prints the summary; `claude-opus-5-5` runs only after

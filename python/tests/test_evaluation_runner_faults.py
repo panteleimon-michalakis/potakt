@@ -7,6 +7,11 @@ result in each batch. A driver plays the owner: it runs the same call again afte
 interrupt and, when the run names several candidate batches, cancels all but the oldest. The
 invariants are the money-safety rules: every scenario is recorded once, and no scenario is paid
 for in two batches that are not cancelled.
+
+What the fake does not model (its limits): an interrupt during a list call, a results download
+or the recording of an answer; time passing during a call; a list lag above 30 seconds; a
+cancelled batch that had already processed some requests (a cancelled batch counts as unpaid).
+A batch the runner never polls still counts as paid: on the real API it runs anyway.
 """
 
 import json
