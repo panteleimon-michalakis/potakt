@@ -19,12 +19,14 @@ need the reviewer is held: every run stops before sending anything until the own
 the lock file `runs/test-a/.eval-run.lock` (never committed). Exit code 0: all recorded or the
 plan printed; 1: the run stopped (the reason on stderr), a held batch, a missing or invalid key,
 the order refused, another run active, a `--release` of a batch that is not held, a missing
-directory or an interruption; 2: usage error, also for an unregistered model id or `--release`
-without `--yes`.
+directory, a corpus without a scenario, an unexpected error (its type only, never its text) or
+an interruption; 2: usage error, also for an unregistered model id or `--release` without
+`--yes`.
 
 Test A records go to `runs/test-a/<model>/<scenario id>/` (ADR-0007 §7 and its amendment):
-`request.json`, `response.json` (the raw answer, written first and never overwritten),
-`candidate.txt` and `comparison.json`. For a Claude model, `runs/test-a/<model>/` also holds
+`request.json`, `response.json` (the raw answer, written first and never overwritten; UTF-8,
+or ASCII with every non-ASCII character escaped if the answer holds text that is not valid
+Unicode, which is a malformed answer), `candidate.txt` and `comparison.json`. For a Claude model, `runs/test-a/<model>/` also holds
 `batches.json` (one entry per batch creation: the batch id, the scenarios, when the create request
 was sent, the batch's creation time, the state `creating`, `open`, `held`, `done` or `failed`,
 and the problems that held the batch, kept after its release) and

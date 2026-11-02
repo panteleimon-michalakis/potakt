@@ -70,18 +70,26 @@ class _Malformed(Exception):
 def answer_of(model: str, response: object) -> Answer:
     """The answer in a raw response of ``model`` (ADR-0007 §7 amendment «Answer text»).
 
-    Never raises for any response: a field with the wrong type gives
-    ``Answer("", "malformed", False)``. ``model`` must be registered (``UnknownModelError``
-    otherwise); Claude models read the Anthropic Messages shape, Gemini the ``generateContent``
-    shape.
+    Never raises for any response: a field with the wrong type, or a text or stop that is not
+    valid Unicode, gives ``Answer("", "malformed", False)``. ``model`` must be registered
+    (``UnknownModelError`` otherwise); Claude models read the Anthropic Messages shape, Gemini
+    the ``generateContent`` shape.
     """
     check_registered(model)
     try:
-        if model.startswith(ANTHROPIC_PREFIX):
-            return _anthropic(response)
-        return _gemini(response)
+        answer = _anthropic(response) if model.startswith(ANTHROPIC_PREFIX) else _gemini(response)
     except _Malformed:
         return _MALFORMED
+    # ADR-0007 §7 amendment of TASK-005c3d (H8): text or a stop that is not valid Unicode (an
+    # unpaired surrogate, which json.loads accepts) is malformed.
+    if _surrogate(answer.text) or _surrogate(answer.stop):
+        return _MALFORMED
+    return answer
+
+
+def _surrogate(text: str) -> bool:
+    """``text`` holds a code point in U+D800-U+DFFF: not valid Unicode, no UTF-8 for it."""
+    return any("\ud800" <= char <= "\udfff" for char in text)
 
 
 def _object(value: object) -> dict[str, object]:
@@ -216,8 +224,15 @@ def rescore_run(run_dir: Path, scenario: LoadedScenario, model: str) -> tuple[st
 
 
 def _response_bytes(response: object) -> bytes:
+    """UTF-8 JSON with sorted keys; if the response holds an unpaired surrogate (no UTF-8 exists
+    for it), ASCII JSON with every non-ASCII character escaped instead, which ``json.loads``
+    turns back into exactly the same object (TASK-005c3d H8)."""
     text = json.dumps(response, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
-    return text.encode("utf-8")
+    try:
+        return text.encode("utf-8")
+    except UnicodeEncodeError:
+        escaped = json.dumps(response, indent=2, ensure_ascii=True, sort_keys=True) + "\n"
+        return escaped.encode("ascii")
 
 
 def write_atomic(path: Path, data: bytes) -> None:

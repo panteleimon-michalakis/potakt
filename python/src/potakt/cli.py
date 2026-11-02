@@ -33,6 +33,7 @@ from potakt.evaluation.records import RESPONSE_FILE
 from potakt.evaluation.runner import (
     RUNS_PATH,
     check_order,
+    corpus_scenarios,
     run_anthropic,
     run_gemini,
     run_plan,
@@ -477,9 +478,27 @@ def eval_run(
     Exit code 0: everything pending is recorded, or the plan was printed; 1: the run stopped (the
     reason on stderr), a held batch, a missing or invalid key, claude-opus-5-5 before a complete
     claude-haiku-5-5 run, another run active (the lock file), a --release of a batch that is not
-    held, a missing directory, or an interruption; 2: usage error (also an unregistered model
-    id, or --release without --yes).
+    held, a missing directory or a corpus without a scenario, an unexpected error (its type only,
+    never its text), or an interruption; 2: usage error (also an unregistered model id, or
+    --release without --yes).
     """
+    try:
+        _eval_run(model, runs, corpus, poll_seconds, yes, release)
+    except (typer.Exit, typer.Abort):  # RuntimeError subclasses in Typer 0.27.3: not unexpected
+        raise
+    except Exception as error:  # TASK-005c3d H10: never a traceback, never the error's text
+        _stop(1, UNEXPECTED.format(kind=type(error).__name__))
+
+
+UNEXPECTED = (
+    "eval run stopped by an unexpected error ({kind}): run the dry run and send its output and "
+    "this message to the reviewer"
+)
+
+
+def _eval_run(
+    model: str, runs: Path, corpus: Path, poll_seconds: int, yes: bool, release: str | None
+) -> None:
     try:
         check_registered(model)
     except UnknownModelError as error:
@@ -490,6 +509,8 @@ def eval_run(
         _stop(1, f"{corpus} is not a directory")
     if runs.exists() and not runs.is_dir():
         _stop(1, f"{runs} is not a directory")
+    if not corpus_scenarios(corpus):
+        _stop(1, f"no scenario in {corpus}")
     anthropic = model.startswith(ANTHROPIC_PREFIX)
     try:
         check_order(model, runs, corpus)
@@ -525,4 +546,12 @@ def eval_run(
         _stop(1, str(error))
     except KeyboardInterrupt:
         _stop(1, INTERRUPTED)
-    typer.echo(summarize(runs / model_directory_name(model), corpus).to_text(), nl=False)
+    model_dir = runs / model_directory_name(model)
+    if not model_dir.is_dir():
+        return
+    try:
+        text = summarize(model_dir, corpus).to_text()
+    except ValueError as error:  # the records are kept; only the summary could not be shown
+        typer.echo(f"cannot summarize {model_dir}: {error}", err=True)
+        return
+    typer.echo(text, nl=False)

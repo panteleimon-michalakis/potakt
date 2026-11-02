@@ -2194,3 +2194,119 @@ def test_a_failed_second_page_stops_the_run(tmp_path: Path) -> None:
 
     assert run.pages() == 2
     assert run.states() == ["creating"]
+
+
+# --- TASK-005c3d H8, H9: invalid Unicode, and no result can wedge a batch ------------------------
+
+
+def test_a_lone_surrogate_answer_is_recorded_as_malformed_and_the_run_goes_on(
+    tmp_path: Path,
+) -> None:
+    # U2: the encode error escaped from write_answer: the batch stayed open, every run crashed.
+    server = FakeBatches(
+        outcome=lambda n, s: succeeded("\ud83d") if s == "01-pharmacy" else succeeded()
+    )
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:2])
+
+    run()
+
+    assert run.recorded() == list(ALL_SCENARIOS[:2])
+    assert "01-pharmacy: recorded (malformed, invalid, recall 0.000)" in run.echo
+    assert run.states() == ["done"]
+    raw = (run.model_dir / "01-pharmacy" / "response.json").read_bytes()
+    assert raw.isascii()
+    assert b"\\ud83d" in raw
+
+
+def test_the_recorded_line_shows_an_odd_stop_safely(tmp_path: Path) -> None:
+    message = anthropic_message(HAIKU, stop="\x1b[2J")
+    server = FakeBatches(outcome=lambda n, s: {"type": "succeeded", "message": message})
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+
+    run()
+
+    assert "01-pharmacy: recorded (?[2J, invalid, recall 0.000)" in run.echo
+
+
+def failing_write_answer(monkeypatch: pytest.MonkeyPatch, name: str, error: BaseException) -> None:
+    """``write_answer`` of the runner raises ``error`` for the scenario ``name`` only."""
+    real = runner_module.write_answer
+
+    def write(run_dir: Path, scenario: Any, model: str, response: object) -> Any:
+        if run_dir.name == name:
+            raise error
+        return real(run_dir, scenario, model, response)
+
+    monkeypatch.setattr(runner_module, "write_answer", write)
+
+
+@pytest.mark.parametrize(
+    ("error", "problem"),
+    [
+        (
+            OSError(28, f"No space left on device {KEY}"),
+            "02-hotel-reception: could not be recorded (OSError)",
+        ),
+        (
+            UnicodeEncodeError("utf-8", "x", 0, 1, "bad"),
+            "02-hotel-reception: could not be recorded (UnicodeEncodeError)",
+        ),
+        (RunStopped("a stop while recording"), "02-hotel-reception: a stop while recording"),
+    ],
+    ids=["oserror", "unicode", "runstopped"],
+)
+def test_a_result_that_cannot_be_recorded_holds_the_batch_and_the_others_are_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: BaseException, problem: str
+) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:3])
+    failing_write_answer(monkeypatch, "02-hotel-reception", error)
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == problem + HELD
+    assert run.recorded() == ["01-pharmacy", "03-call-centre"]
+    assert run.states() == ["held"]
+    assert problems_of(run) == [problem]
+    assert KEY.encode() not in (run.model_dir / BATCH_STATE_FILE).read_bytes()
+    # The next run stops at the held batch before any call.
+    run.server.calls.clear()
+    with pytest.raises(RunStopped, match=r"^batch msgbatch_01 is held for the reviewer: "):
+        run()
+    assert run.server.calls == []
+
+
+def test_an_interrupt_while_recording_is_not_swallowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:2])
+    failing_write_answer(monkeypatch, "02-hotel-reception", KeyboardInterrupt())
+
+    with pytest.raises(KeyboardInterrupt):
+        run()
+
+    assert run.states() == ["open"]  # the next run resumes the batch
+
+
+def test_a_record_that_cannot_be_completed_stops_before_any_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:2])
+    scenario = load_scenario(run.corpus / "01-pharmacy")
+    write_answer(run.model_dir / "01-pharmacy", scenario, HAIKU, anthropic_message(HAIKU))
+    (run.model_dir / "01-pharmacy" / "comparison.json").unlink()
+
+    def broken(*args: object) -> tuple[str, ...]:
+        raise OSError(13, f"Permission denied {KEY}")
+
+    monkeypatch.setattr(runner_module, "rescore_run", broken)
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == (
+        # OSError(13, ...) is built as its subclass PermissionError: only the type is named.
+        "01-pharmacy: the record could not be completed (PermissionError); send this message to "
+        "the reviewer"
+    )
+    assert run.server.calls == []

@@ -4,6 +4,7 @@ through a fake transport. No test opens a connection."""
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import pytest
 from runner_helpers import (
@@ -17,6 +18,7 @@ from runner_helpers import (
     truth_text,
 )
 
+import potakt.evaluation.runner as runner_module
 from potakt.evaluation import CORPUS_PATH, load_scenario, write_answer
 from potakt.evaluation.runner import GEMINI_URL, USER_AGENT, run_gemini
 from potakt.evaluation.transport import HttpResponse, RunStopped, TransportError
@@ -296,3 +298,53 @@ def test_the_stop_message_is_redacted_of_the_key(tmp_path: Path) -> None:
         run()
 
     assert str(raised.value) == "01-pharmacy: HTTP 400 (INVALID_ARGUMENT: key [redacted])"
+
+
+# --- TASK-005c3d H8, H9 ----------------------------------------------------------------------
+
+
+def test_a_lone_surrogate_answer_is_recorded_as_malformed(tmp_path: Path) -> None:
+    server = FakeGemini(script={"01-pharmacy": [ok(gemini_response("\ud83d"))]})
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:2])
+
+    run()
+
+    assert run.echo[0] == "01-pharmacy: recorded (malformed, invalid, recall 0.000)"
+    assert run.recorded() == list(ALL_SCENARIOS[:2])
+
+
+def test_an_answer_that_cannot_be_recorded_stops_with_its_type_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = make_run(tmp_path, FakeGemini(), ALL_SCENARIOS[:3])
+    real = runner_module.write_answer
+
+    def write(run_dir: Path, scenario: Any, model: str, response: object) -> Any:
+        if run_dir.name == "02-hotel-reception":
+            raise OSError(28, f"No space left on device {KEY}")
+        return real(run_dir, scenario, model, response)
+
+    monkeypatch.setattr(runner_module, "write_answer", write)
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == (
+        "02-hotel-reception: could not be recorded (OSError); send this message to the reviewer"
+    )
+    assert run.recorded() == ["01-pharmacy"]
+    assert run.server.sent() == ["01-pharmacy", "02-hotel-reception"]
+
+
+def test_an_interrupt_while_recording_is_not_swallowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = make_run(tmp_path, FakeGemini(), ALL_SCENARIOS[:1])
+
+    def write(*args: object) -> Any:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(runner_module, "write_answer", write)
+
+    with pytest.raises(KeyboardInterrupt):
+        run()

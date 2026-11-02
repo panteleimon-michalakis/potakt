@@ -181,6 +181,23 @@ Push only after the reviewer's check of a fresh clone.
   or `downloading the results of batch <id> failed`, because the batch was deleted or its results
   are no longer kept): do not edit `batches.json`. Send the message and `batches.json` to the
   reviewer, who decides how to continue.
+- **`<scenario>: could not be recorded (<type>)`**: one result could not be saved (for example a
+  full disk). In a Claude batch it is one of the problems of a held batch (above). For Gemini the
+  run stops with `<scenario>: could not be recorded (<type>); send this message to the
+  reviewer`. Only the type of the error is shown, never its text. Send the message to the
+  reviewer.
+- **`<scenario>: the record could not be completed (<type>); send this message to the
+  reviewer`**: an earlier answer is saved but its score could not be derived; nothing was sent.
+  Send the message to the reviewer.
+- **`no scenario in <corpus>`**: the `--corpus` directory holds no scenario; check the path.
+  Nothing was read or sent.
+- **`eval run stopped by an unexpected error (<type>): run the dry run and send its output and
+  this message to the reviewer`**: a failure the runner does not know. The records on disk are
+  kept and the lock is removed. Run the same command without `--yes` and send both outputs to
+  the reviewer; do not run `--yes` again until the reviewer answers.
+- **`malformed` in the summary's `Stops` line**: an answer that could not be read, for example
+  text that is not valid Unicode; it counts as an invalid candidate, like any answer that did not
+  end normally, and its `response.json` keeps it exactly. Nothing to do.
 - **`<id>: record completed (…)`** at the start of a run means an earlier run was interrupted
   after saving an answer and before scoring it; the score is derived from the saved answer, and
   nothing is sent for that scenario.

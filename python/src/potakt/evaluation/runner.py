@@ -51,7 +51,9 @@ from potakt.evaluation.summary import (
 from potakt.evaluation.test_a import (
     ANTHROPIC_MAX_TOKENS,
     ANTHROPIC_PREFIX,
+    INSTRUCTION_PATH,
     STRONG_MODEL,
+    Prompt,
     check_registered,
     render_test_a,
     request_payload,
@@ -326,14 +328,32 @@ def recorded_scenarios(corpus_dir: Path, model_dir: Path) -> list[str]:
     ]
 
 
+def corpus_scenarios(corpus_dir: Path) -> list[str]:
+    """The corpus scenarios (subdirectories with a ``scenario.json``) in UTF-8 byte order."""
+    return _corpus_names(corpus_dir)
+
+
+UNEXPECTED_RECORD = "{name}: could not be recorded ({kind})"
+UNEXPECTED_COMPLETION = (
+    "{name}: the record could not be completed ({kind}); send this message to the reviewer"
+)
+TO_REVIEWER = "; send this message to the reviewer"
+
+
 def _complete_records(corpus_dir: Path, model_dir: Path, model: str, echo: Echo) -> None:
     """Derive the missing ``candidate.txt`` / ``comparison.json`` of every recorded scenario
-    (a run interrupted after ``response.json``) with ``rescore_run``; nothing is sent."""
+    (a run interrupted after ``response.json``) with ``rescore_run``; nothing is sent. An
+    unexpected exception stops the run naming only its type (TASK-005c3d H9)."""
     for name in recorded_scenarios(corpus_dir, model_dir):
         run_dir = model_dir / name
         if (run_dir / CANDIDATE_FILE).is_file() and (run_dir / COMPARISON_FILE).is_file():
             continue
-        written = rescore_run(run_dir, _load(corpus_dir, name), model)
+        scenario = _load(corpus_dir, name)
+        try:
+            written = rescore_run(run_dir, scenario, model)
+        except Exception as error:  # never its text: it may hold anything (H9)
+            kind = type(error).__name__
+            raise RunStopped(UNEXPECTED_COMPLETION.format(name=name, kind=kind)) from None
         echo(f"{name}: record completed ({', '.join(written)})")
 
 
@@ -344,19 +364,39 @@ def _load(corpus_dir: Path, name: str) -> LoadedScenario:
         raise RunStopped(f"{name}: invalid scenario: {error.issues[0]}") from None
 
 
+def _render(corpus_dir: Path, name: str) -> Prompt:
+    """The Test A prompt of one scenario; ``RunStopped`` (TASK-005c3d H10) if the instruction
+    file cannot be read (the wording of ``eval prompt``) or the bundle cannot be built (for
+    example an undecodable CSV file)."""
+    scenario = _load(corpus_dir, name)
+    try:
+        return render_test_a(scenario)
+    except OSError as error:
+        path = error.filename or INSTRUCTION_PATH
+        reason = error.strerror or type(error).__name__
+        raise RunStopped(f"cannot read the instruction file {path}: {reason}") from None
+    except ValueError as error:
+        raise RunStopped(f"{name}: {error}") from None
+
+
 def _prepare(corpus_dir: Path, model_dir: Path, model: str, name: str) -> dict[str, object]:
     """Write ``request.json`` of one scenario (the ``eval prompt`` payload) and return it."""
-    payload = request_payload(render_test_a(_load(corpus_dir, name)), model)
+    payload = request_payload(_render(corpus_dir, name), model)
+    path = model_dir / name / REQUEST_FILE
     try:
         write_request(model_dir / name, payload)
     except FileExistsError as error:
         raise RunStopped(str(error)) from None
+    except OSError as error:
+        reason = error.strerror or type(error).__name__
+        raise RunStopped(f"cannot write {path}: {reason}") from None
     return payload
 
 
 def recorded_line(name: str, model: str, response: object, comparison: Comparison) -> str:
-    """``<id>: recorded (<stop>, valid|invalid, recall <r:.3f>)`` (F2 step 5)."""
-    stop = answer_of(model, response).stop
+    """``<id>: recorded (<stop>, valid|invalid, recall <r:.3f>)`` (F2 step 5); the stop is a
+    server string, shown through ``server_text`` (TASK-005c3d H8)."""
+    stop = server_text(answer_of(model, response).stop)
     validity = "valid" if comparison.valid else "invalid"
     recall = "n/a" if comparison.recall is None else f"{comparison.recall:.3f}"
     return f"{name}: recorded ({stop}, {validity}, recall {recall})"
@@ -845,10 +885,22 @@ class _AnthropicRun:
         ]
         for name in batch.scenarios:
             if name in results:
-                problem = self._record_result(name, results[name])
+                problem = self._recorded(name, results[name])
                 if problem:
                     problems.append(problem)
         return problems
+
+    def _recorded(self, name: str, result: dict[str, object]) -> str | None:
+        """``_record_result``, with any exception of one result turned into its problem
+        (TASK-005c3d H9), so the other results are still recorded and the batch is held, never
+        left open: a ``RunStopped`` gives its message, any other ``Exception`` only its type (its
+        text could hold anything). A ``KeyboardInterrupt`` is not caught."""
+        try:
+            return self._record_result(name, result)
+        except RunStopped as error:
+            return f"{name}: {server_text(str(error), secret_values(self.headers))}"
+        except Exception as error:
+            return UNEXPECTED_RECORD.format(name=name, kind=type(error).__name__)
 
     def _record_result(self, name: str, result: dict[str, object]) -> str | None:
         """Record one result line; return a problem, if any."""
@@ -977,8 +1029,14 @@ def _run_gemini(
         if response.status != 200:
             raise RunStopped(f"{name}: {describe_response(response, secret_values(headers))}")
         document = cast(dict[str, object], _json(response.body))
-        comparison = write_answer(model_dir / name, _load(corpus_dir, name), model, document)
-        echo(recorded_line(name, model, document, comparison))
+        scenario = _load(corpus_dir, name)
+        try:
+            comparison = write_answer(model_dir / name, scenario, model, document)
+            line = recorded_line(name, model, document, comparison)
+        except Exception as error:  # never its text (TASK-005c3d H9)
+            kind = type(error).__name__
+            raise RunStopped(UNEXPECTED_RECORD.format(name=name, kind=kind) + TO_REVIEWER) from None
+        echo(line)
 
 
 def run_gemini(
@@ -1122,7 +1180,7 @@ def cost_upper_bound(model: str, corpus_dir: Path, scenarios: list[str]) -> floa
     long_prompt = LONG_PROMPT_PRICES_USD_PER_MILLION.get(model)
     total = 0.0
     for name in scenarios:
-        prompt = render_test_a(_load(corpus_dir, name))
+        prompt = _render(corpus_dir, name)
         input_bytes = len(prompt.system.encode("utf-8")) + len(prompt.user.encode("utf-8"))
         prices = (price_in, price_out)
         if long_prompt is not None and input_bytes > long_prompt[0]:

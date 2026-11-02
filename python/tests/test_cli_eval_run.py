@@ -27,6 +27,7 @@ from typer.testing import CliRunner, Result
 
 import potakt.cli as cli
 import potakt.evaluation.runner as runner_module
+import potakt.evaluation.test_a as test_a_module
 from potakt.cli import app, eval_app
 from potakt.evaluation import CORPUS_PATH, load_scenario, render_test_a, summarize, write_answer
 from potakt.evaluation.runner import RUNS_PATH, cost_upper_bound
@@ -843,6 +844,165 @@ def test_a_lock_taken_over_by_another_run_is_left_to_it(
     )
 
 
+# --- TASK-005c3d H10: eval run never ends with a traceback --------------------------------------
+
+
+def assert_clean_exit_1(result: Result, message: str) -> None:
+    """Exit 1 with ``message`` on stderr, no traceback, and the fake key in no output."""
+    assert result.exit_code == 1, result.output
+    assert isinstance(result.exception, SystemExit)
+    assert message in result.stderr
+    assert "Traceback" not in result.output
+    assert KEY not in result.output
+
+
+# Gemini's dry run renders no prompt (its cost is $0), so it has no case here.
+WITH_PROMPT = [(HAIKU, False), (HAIKU, True), (GEMINI, True)]
+WITH_PROMPT_IDS = ["haiku-dry-run", "haiku-yes", "gemini-yes"]
+
+
+@pytest.mark.parametrize(("model", "yes"), WITH_PROMPT, ids=WITH_PROMPT_IDS)
+def test_a_missing_instruction_file_exits_1_with_the_eval_prompt_wording(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, yes: bool, model: str
+) -> None:
+    monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
+    monkeypatch.setenv(GEMINI_VARIABLE, KEY)
+    missing = tmp_path / "test-a.md"
+    monkeypatch.setattr(test_a_module, "INSTRUCTION_PATH", missing)
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:1])
+
+    result = eval_run(tmp_path / "runs", model, *(["--yes"] if yes else []), corpus=corpus)
+
+    assert_clean_exit_1(result, f"cannot read the instruction file {missing}: ")
+    assert not (tmp_path / "runs" / ".eval-run.lock").exists()
+
+
+def undecodable_unbound_csv(tmp_path: Path) -> Path:
+    """A corpus whose scenario lists a CSV that the truth does not bind and that is not UTF-8:
+    the scenario loads, the bundle cannot decode the file."""
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:1])
+    directory = corpus / "01-pharmacy"
+    (directory / "extra.csv").write_bytes(b"name\n\xff\xfe\n")
+    metadata = json.loads((directory / "scenario.json").read_bytes())
+    metadata["csv_files"].append("extra.csv")
+    (directory / "scenario.json").write_text(json.dumps(metadata), encoding="utf-8")
+    return corpus
+
+
+@pytest.mark.parametrize(("model", "yes"), WITH_PROMPT, ids=WITH_PROMPT_IDS)
+def test_an_undecodable_csv_exits_1_naming_the_scenario(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, yes: bool, model: str
+) -> None:
+    monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
+    monkeypatch.setenv(GEMINI_VARIABLE, KEY)
+    corpus = undecodable_unbound_csv(tmp_path)
+
+    result = eval_run(tmp_path / "runs", model, *(["--yes"] if yes else []), corpus=corpus)
+
+    assert_clean_exit_1(result, "01-pharmacy: extra.csv is not valid utf-8\n")
+
+
+def test_a_request_that_cannot_be_written_exits_1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:1])
+    runs = tmp_path / "runs"
+
+    def full_disk(run_dir: Path, payload: object) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(runner_module, "write_request", full_disk)
+
+    result = eval_run(runs, HAIKU, "--yes", corpus=corpus)
+
+    path = runs / HAIKU / "01-pharmacy" / "request.json"
+    assert_clean_exit_1(result, f"cannot write {path}: No space left on device\n")
+
+
+@pytest.mark.parametrize("yes", [False, True], ids=["dry-run", "yes"])
+@pytest.mark.parametrize("model", [HAIKU, GEMINI, OPUS])
+def test_an_empty_corpus_exits_1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, yes: bool, model: str
+) -> None:
+    # U4: summarize raised ValueError for an empty corpus, after a run that sent nothing.
+    monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
+    monkeypatch.setenv(GEMINI_VARIABLE, KEY)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "not-a-scenario").mkdir()
+
+    result = eval_run(tmp_path / "runs", model, *(["--yes"] if yes else []), corpus=corpus)
+
+    assert_clean_exit_1(result, f"no scenario in {corpus}\n")
+    assert result.stderr == f"no scenario in {corpus}\n"
+    assert not (tmp_path / "runs").exists()
+
+
+def test_an_unexpected_error_exits_1_without_its_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:1])
+    runs = tmp_path / "runs"
+
+    def broken(*args: object, **kwargs: object) -> None:
+        raise RuntimeError(f"x-api-key: {KEY}")
+
+    monkeypatch.setattr(cli, "run_anthropic", broken)
+
+    result = eval_run(runs, HAIKU, "--yes", corpus=corpus)
+
+    assert_clean_exit_1(result, "")
+    assert result.stderr == (
+        "eval run stopped by an unexpected error (RuntimeError): run the dry run and send its "
+        "output and this message to the reviewer\n"
+    )
+    assert not (runs / LOCK).exists()
+
+
+def test_a_missing_key_keeps_its_own_message(tmp_path: Path) -> None:
+    # typer.Exit subclasses RuntimeError in Typer 0.27.3: the last resort must not catch it.
+    result = eval_run(tmp_path, HAIKU, "--yes")
+
+    assert result.exit_code == 1
+    assert result.stderr == f"{ANTHROPIC_VARIABLE} is not set in this shell\n"
+    assert "unexpected error" not in result.output
+
+
+def test_a_summary_that_fails_is_reported_and_the_run_still_exits_0(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(GEMINI_VARIABLE, KEY)
+    monkeypatch.setattr(cli, "make_transport", FakeGemini)
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:1])
+    runs = tmp_path / "runs"
+
+    def broken(runs_dir: Path, corpus_dir: Path) -> Any:
+        raise ValueError(f"{runs_dir} is broken")
+
+    monkeypatch.setattr(cli, "summarize", broken)
+
+    result = eval_run(runs, GEMINI, "--yes", corpus=corpus)
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "01-pharmacy: recorded (STOP, invalid, recall 0.000)\n"
+    assert result.stderr == f"cannot summarize {runs / GEMINI}: {runs / GEMINI} is broken\n"
+
+
+def test_no_summary_without_a_model_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(GEMINI_VARIABLE, KEY)
+    monkeypatch.setattr(cli, "run_gemini", lambda *args, **kwargs: None)
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:1])
+
+    result = eval_run(tmp_path / "runs", GEMINI, "--yes", corpus=corpus)
+
+    assert result.exit_code == 0, result.output
+    assert result.output == ""
+
+
 # --- the app, the key reader and the help ---------------------------------------------------
 
 
@@ -930,7 +1090,8 @@ def test_the_run_help_states_the_exit_codes_and_files() -> None:
         "Exit code 0: everything pending is recorded, or the plan was printed; 1: the run "
         "stopped (the reason on stderr), a held batch, a missing or invalid key, claude-opus-5-5 "
         "before a complete claude-haiku-5-5 run, another run active (the lock file), a --release "
-        "of a batch that is not held, a missing directory, or an interruption; 2: usage error "
+        "of a batch that is not held, a missing directory or a corpus without a scenario, an "
+        "unexpected error (its type only, never its text), or an interruption; 2: usage error "
         "(also an unregistered model id, or --release without --yes)"
     ) in text
     assert "--release" in text
@@ -1020,6 +1181,16 @@ def test_the_runbook_quotes_the_reconciliation_messages_and_the_new_rules() -> N
         "`" + runner_module.FUTURE_STOP.format(started_at="<time>") + "`",
         "`" + runner_module.TOO_MANY_BATCHES + "`",
         "page by page back to the request",
+        # TASK-005c3d H8-H10: unrecordable results, the empty corpus, the last resort.
+        "`" + runner_module.UNEXPECTED_RECORD.format(name="<scenario>", kind="<type>") + "`",
+        "`"
+        + runner_module.UNEXPECTED_RECORD.format(name="<scenario>", kind="<type>")
+        + runner_module.TO_REVIEWER
+        + "`",
+        "`" + runner_module.UNEXPECTED_COMPLETION.format(name="<scenario>", kind="<type>") + "`",
+        "`no scenario in <corpus>`",
+        "`" + cli.UNEXPECTED.format(kind="<type>") + "`",
+        "`malformed` in the summary's `Stops` line",
     ):
         assert quoted in text, quoted
     assert "cancel all but the oldest, then run the same command again" in lines

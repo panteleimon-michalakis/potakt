@@ -39,8 +39,9 @@ the only command that calls the model APIs; the owner runs it by following
   need the reviewer is held, and every run stops until `--yes --release <id>` after the
   reviewer's decision; one `--yes` run at a time (the lock file `<runs>/.eval-run.lock`) (exit
   code 0 all recorded or plan printed, 1 run stopped, a held batch, missing or invalid key, order
-  refused, another run active, a `--release` of a batch that is not held, missing directory or
-  interrupted, 2 usage error, also for an unregistered model id or `--release` without `--yes`).
+  refused, another run active, a `--release` of a batch that is not held, missing directory, a
+  corpus without a scenario, an unexpected error (its type only) or interrupted, 2 usage error,
+  also for an unregistered model id or `--release` without `--yes`).
 
 The other commands are offline: none of them calls a model or needs credentials:
 - `potakt eval prompt <scenario dir> [--model ID]` prints the exact JSON request payload for one

@@ -27,6 +27,7 @@ from potakt.evaluation import (
     request_payload,
     rescore_run,
     score_answer,
+    summarize,
     write_answer,
     write_request,
 )
@@ -410,3 +411,82 @@ def test_a_leftover_temporary_file_is_overwritten(tmp_path: Path, pharmacy: Load
 
     assert (run / "candidate.txt").read_bytes() == TRUTH_01.encode("utf-8")
     assert not (run / "candidate.txt.tmp").exists()
+
+
+# --- TASK-005c3d H8: answers that are not valid Unicode ---------------------------------------
+
+SURROGATE = "\ud83d"  # an unpaired surrogate: json.loads accepts "\ud83d", UTF-8 cannot encode it
+MALFORMED = Answer("", "malformed", False)
+
+
+@pytest.mark.parametrize(
+    ("model", "response"),
+    [
+        (OPUS, anthropic(text_block(FENCED_01), text_block(SURROGATE))),
+        (GEMINI, gemini({"text": "fine " + SURROGATE + " text"})),
+    ],
+    ids=["anthropic-text", "gemini-text"],
+)
+def test_a_lone_surrogate_in_the_text_is_stored_exactly_and_is_malformed(
+    tmp_path: Path, pharmacy: LoadedScenario, model: str, response: dict[str, object]
+) -> None:
+    # U2: .encode("utf-8") raised in _response_bytes, so the batch stayed open on every run.
+    run = tmp_path / model / "01-pharmacy"
+
+    comparison = write_answer(run, pharmacy, model, response)
+
+    raw = (run / "response.json").read_bytes()
+    assert raw.isascii()
+    assert b"\\ud83d" in raw
+    assert json.loads(raw) == response
+    assert (
+        raw == (json.dumps(response, indent=2, ensure_ascii=True, sort_keys=True) + "\n").encode()
+    )
+    assert answer_of(model, response) == MALFORMED
+    assert (run / "candidate.txt").read_bytes() == b""
+    assert comparison == score_answer(pharmacy, MALFORMED)[1]
+    assert not comparison.valid
+    assert (run / "comparison.json").read_bytes() == comparison.to_json().encode("utf-8")
+    assert rescore_run(run, pharmacy, model) == ()
+    summary = summarize(tmp_path / model, CORPUS)
+    assert summary.stops == {"malformed": 1}
+    assert "Stops: malformed 1\n" in summary.to_text()
+
+
+@pytest.mark.parametrize(
+    ("model", "response"),
+    [
+        (OPUS, anthropic(text_block(FENCED_01), stop="end" + SURROGATE)),
+        (GEMINI, gemini({"text": "x"}, finish="STOP" + SURROGATE)),
+        (GEMINI, {"promptFeedback": {"blockReason": SURROGATE + "SAFETY"}}),
+    ],
+    ids=["stop_reason", "finishReason", "blockReason"],
+)
+def test_a_lone_surrogate_in_the_stop_is_malformed(
+    tmp_path: Path, pharmacy: LoadedScenario, model: str, response: dict[str, object]
+) -> None:
+    assert answer_of(model, response) == MALFORMED
+
+    comparison = write_answer(tmp_path / "run", pharmacy, model, response)
+
+    assert json.loads((tmp_path / "run" / "response.json").read_bytes()) == response
+    assert comparison == score_answer(pharmacy, MALFORMED)[1]
+
+
+def test_a_paired_surrogate_escape_is_valid_text(pharmacy: LoadedScenario) -> None:
+    # "😀" in JSON is one character, U+1F600: valid Unicode, kept as text.
+    response = json.loads(json.dumps(anthropic(text_block(FENCED_01 + "\U0001f600"))))
+
+    assert answer_of(OPUS, response) == Answer(FENCED_01 + "\U0001f600", "end_turn", True)
+
+
+def test_valid_text_is_still_stored_as_utf_8(tmp_path: Path, pharmacy: LoadedScenario) -> None:
+    response = anthropic(text_block(FENCED_01 + " café"))
+
+    write_answer(tmp_path, pharmacy, OPUS, response)
+
+    raw = (tmp_path / "response.json").read_bytes()
+    assert "café".encode() in raw
+    assert (
+        raw == (json.dumps(response, indent=2, ensure_ascii=False, sort_keys=True) + "\n").encode()
+    )
