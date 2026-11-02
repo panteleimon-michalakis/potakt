@@ -1,7 +1,8 @@
-"""The Test A runs (ADR-0007 §7 and its amendment «Transport», TASK-005c3 F2, F3).
+"""The Test A runs (ADR-0007 §7 and its amendment «Transport», TASK-005c3 F2-F4).
 
 ``run_anthropic`` sends every pending scenario of the corpus to a Claude model through the Message
-Batches API and records each answer with ``write_answer``. A scenario is pending while its run
+Batches API, ``run_gemini`` sends them to Gemini one ``generateContent`` call at a time; both
+record each answer with ``write_answer``. A scenario is pending while its run
 directory has no ``response.json``; a recorded answer is never sent again.
 
 The batches of a model live in ``<model dir>/batches.json`` and each batch's raw results in
@@ -22,7 +23,13 @@ from pathlib import Path
 from typing import cast
 
 from potakt.evaluation.compare import Comparison
-from potakt.evaluation.records import RESPONSE_FILE, answer_of, write_answer, write_request
+from potakt.evaluation.records import (
+    REQUEST_FILE,
+    RESPONSE_FILE,
+    answer_of,
+    write_answer,
+    write_request,
+)
 from potakt.evaluation.scenario import METADATA_FILE, LoadedScenario, ScenarioError, load_scenario
 from potakt.evaluation.summary import model_directory_name
 from potakt.evaluation.test_a import (
@@ -51,7 +58,10 @@ __all__ = [
     "ANTHROPIC_VERSION",
     "BATCHES_URL",
     "BATCH_STATE_FILE",
+    "GEMINI_URL",
+    "USER_AGENT",
     "run_anthropic",
+    "run_gemini",
 ]
 
 ANTHROPIC_VERSION = "2026-10-21"  # ADR-0007 §7 amendment «Transport»
@@ -61,6 +71,9 @@ BATCHES_URL = "https://api.anthropic.com/v1/messages/batches"
 BATCH_STATE_FILE = "batches.json"
 CALL_TIMEOUT_SECONDS = 60.0  # create, poll and list
 RESULTS_TIMEOUT_SECONDS = 300.0
+# ADR-0007 §7: Gemini ``generateContent``, the key in a header (TASK-005c3 F4).
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+GEMINI_TIMEOUT_SECONDS = 600.0
 ADOPTION_WAIT_SECONDS = 10
 ADOPTION_WINDOW = timedelta(minutes=10)
 LIST_LIMIT = 20
@@ -549,5 +562,89 @@ def run_anthropic(
     )
     try:
         run.run()
+    except RunStopped as error:
+        raise RunStopped(redact(str(error), [key])) from None
+
+
+# --- the Gemini runner (F4) ------------------------------------------------------------------
+
+
+def gemini_headers(key: str) -> dict[str, str]:
+    """The request headers of a ``generateContent`` call: the key only in ``x-goog-api-key``,
+    never in the URL (no ``?key=``)."""
+    return {"x-goog-api-key": key, "content-type": "application/json", "user-agent": USER_AGENT}
+
+
+class _JsonObjectOnly:
+    """A 200 whose body is not a JSON object counts as no response (retried like one)."""
+
+    def __init__(self, transport: Transport) -> None:
+        self._transport = transport
+
+    def send(
+        self, method: str, url: str, headers: dict[str, str], body: bytes | None, timeout: float
+    ) -> HttpResponse:
+        response = self._transport.send(method, url, headers, body, timeout)
+        if response.status == 200 and not isinstance(_json(response.body), dict):
+            raise TransportError("HTTP 200 without a JSON object")
+        return response
+
+
+def _run_gemini(
+    model: str,
+    corpus_dir: Path,
+    model_dir: Path,
+    headers: dict[str, str],
+    transport: Transport,
+    sleep: Sleep,
+    echo: Echo,
+) -> None:
+    pending = pending_scenarios(corpus_dir, model_dir)
+    if not pending:
+        echo("nothing to run")
+        return
+    url = GEMINI_URL.format(model=model)
+    checked = _JsonObjectOnly(transport)
+    for name in pending:
+        _prepare(corpus_dir, model_dir, model, name)
+        body = (model_dir / name / REQUEST_FILE).read_bytes()  # exactly the recorded request
+        try:
+            response = send_with_retries(
+                checked, "POST", url, headers, body, GEMINI_TIMEOUT_SECONDS, sleep=sleep
+            )
+        except RunStopped as error:
+            raise RunStopped(f"{name}: {error}") from None
+        if response.status != 200:
+            raise RunStopped(f"{name}: {describe_response(response)}")
+        document = cast(dict[str, object], _json(response.body))
+        comparison = write_answer(model_dir / name, _load(corpus_dir, name), model, document)
+        echo(recorded_line(name, model, document, comparison))
+
+
+def run_gemini(
+    model: str,
+    corpus_dir: Path,
+    runs_dir: Path,
+    key: str,
+    transport: Transport,
+    *,
+    sleep: Sleep,
+    echo: Echo,
+) -> None:
+    """Run every pending scenario of ``corpus_dir`` on a Gemini model, one ``generateContent``
+    call at a time in UTF-8 byte order (TASK-005c3 F4), and record each answer under
+    ``runs_dir / model_directory_name(model)``.
+
+    A 200 with a JSON object is recorded, a blocked prompt included (an invalid answer). Returns
+    once every corpus scenario is recorded; raises ``RunStopped`` (never containing ``key``)
+    when the run must stop, and running again sends only the scenarios still pending. Raises
+    ``ValueError`` for a model that is not a registered Gemini model.
+    """
+    check_registered(model)
+    if model.startswith(ANTHROPIC_PREFIX):
+        raise ValueError(f"{model} is not a Gemini model")
+    model_dir = runs_dir / model_directory_name(model)
+    try:
+        _run_gemini(model, corpus_dir, model_dir, gemini_headers(key), transport, sleep, echo)
     except RunStopped as error:
         raise RunStopped(redact(str(error), [key])) from None

@@ -1,0 +1,285 @@
+"""The Gemini Test A runner (TASK-005c3 F4): one ``generateContent`` call per pending scenario,
+through a fake transport. No test opens a connection."""
+
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import pytest
+from runner_helpers import (
+    ALL_SCENARIOS,
+    KEY,
+    Echo,
+    Sleeps,
+    corpus_copy,
+    files_containing,
+    gemini_response,
+    truth_text,
+)
+
+from potakt.evaluation import CORPUS_PATH, load_scenario, write_answer
+from potakt.evaluation.runner import GEMINI_URL, USER_AGENT, run_gemini
+from potakt.evaluation.transport import HttpResponse, RunStopped, TransportError
+
+GEMINI = "gemini-3.8-flash"
+ENDPOINT = (
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"
+)
+
+
+def ok(document: object) -> HttpResponse:
+    return HttpResponse(200, {"content-type": "application/json"}, json.dumps(document).encode())
+
+
+def error(status: int, state: str, text: str, delay: str | None = None) -> HttpResponse:
+    details = []
+    if delay is not None:
+        details.append({"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": delay})
+    body = {"error": {"code": status, "message": text, "status": state, "details": details}}
+    return HttpResponse(status, {}, json.dumps(body).encode())
+
+
+@dataclass
+class Call:
+    url: str
+    headers: dict[str, str]
+    body: bytes
+    timeout: float
+
+
+@dataclass
+class FakeGemini:
+    """Answers each call from ``script`` (per scenario, in order), else with a junk answer."""
+
+    script: dict[str, list[HttpResponse | TransportError]] = field(
+        default_factory=dict[str, list[HttpResponse | TransportError]]
+    )
+    calls: list[Call] = field(default_factory=list[Call])
+
+    def send(
+        self, method: str, url: str, headers: dict[str, str], body: bytes | None, timeout: float
+    ) -> HttpResponse:
+        assert method == "POST"
+        assert body is not None
+        self.calls.append(Call(url, headers, body, timeout))
+        name = self.scenario_of(body)
+        steps = self.script.get(name, [])
+        if steps:
+            step = steps.pop(0)
+            if isinstance(step, TransportError):
+                raise step
+            return step
+        return ok(gemini_response())
+
+    @staticmethod
+    def scenario_of(body: bytes) -> str:
+        """The scenario of a request: the one whose ``request.md`` its user message contains."""
+        text = json.loads(body)["contents"][0]["parts"][0]["text"]
+        return next(name for name, request in REQUESTS.items() if request in text)
+
+    def sent(self) -> list[str]:
+        return [self.scenario_of(call.body) for call in self.calls]
+
+
+REQUESTS = {
+    name: (CORPUS_PATH / name / "request.md").read_text(encoding="utf-8").strip()
+    for name in ALL_SCENARIOS
+}
+
+
+@dataclass
+class Run:
+    corpus: Path
+    runs: Path
+    server: FakeGemini
+    sleeps: Sleeps
+    echo: Echo
+
+    @property
+    def model_dir(self) -> Path:
+        return self.runs / GEMINI
+
+    def __call__(self) -> None:
+        run_gemini(
+            GEMINI, self.corpus, self.runs, KEY, self.server, sleep=self.sleeps, echo=self.echo
+        )
+
+    def recorded(self) -> list[str]:
+        return sorted(p.parent.name for p in self.model_dir.glob("*/response.json"))
+
+
+def make_run(tmp_path: Path, server: FakeGemini, names: tuple[str, ...] = ALL_SCENARIOS) -> Run:
+    return Run(corpus_copy(tmp_path, names), tmp_path / "runs", server, Sleeps(), Echo())
+
+
+def test_the_endpoint_is_generate_content_of_the_model() -> None:
+    assert GEMINI_URL.format(model=GEMINI) == ENDPOINT
+
+
+def test_the_happy_path_records_all_ten_scenarios_one_at_a_time(tmp_path: Path) -> None:
+    server = FakeGemini(script={"01-pharmacy": [ok(gemini_response(truth_text("01-pharmacy")))]})
+    run = make_run(tmp_path, server)
+
+    run()
+
+    assert run.recorded() == list(ALL_SCENARIOS)
+    assert server.sent() == list(ALL_SCENARIOS)
+    assert run.sleeps == []
+    assert run.echo[0] == "01-pharmacy: recorded (STOP, valid, recall 1.000)"
+    assert run.echo[1] == "02-hotel-reception: recorded (STOP, invalid, recall 0.000)"
+    assert len(run.echo) == 10
+    for call, name in zip(server.calls, ALL_SCENARIOS, strict=True):
+        assert call.url == ENDPOINT
+        assert call.headers == {
+            "x-goog-api-key": KEY,
+            "content-type": "application/json",
+            "user-agent": USER_AGENT,
+        }
+        assert call.timeout == 600.0
+        assert call.body == (run.model_dir / name / "request.json").read_bytes()
+    recorded = json.loads((run.model_dir / "02-hotel-reception" / "response.json").read_bytes())
+    assert recorded == gemini_response()
+
+
+def test_the_key_is_only_in_the_header(tmp_path: Path) -> None:
+    server = FakeGemini(script={"02-hotel-reception": [error(429, "RESOURCE_EXHAUSTED", "q")]})
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:3])
+
+    run()
+
+    assert files_containing(tmp_path, KEY) == []
+    assert all(KEY not in line for line in run.echo)
+    for call in server.calls:
+        assert KEY not in call.url
+        assert "?" not in call.url
+        assert KEY.encode() not in call.body
+        assert [name for name, value in call.headers.items() if value == KEY] == ["x-goog-api-key"]
+
+
+def test_a_429_with_a_retry_delay_then_200(tmp_path: Path) -> None:
+    server = FakeGemini(
+        script={"01-pharmacy": [error(429, "RESOURCE_EXHAUSTED", "Quota exceeded", "30s")]}
+    )
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+
+    run()
+
+    assert run.sleeps == [30]
+    assert server.sent() == ["01-pharmacy", "01-pharmacy"]
+    assert run.recorded() == ["01-pharmacy"]
+
+
+def test_four_503_stop_the_run_and_keep_earlier_records(tmp_path: Path) -> None:
+    unavailable = error(503, "UNAVAILABLE", "The model is overloaded.")
+    server = FakeGemini(script={"02-hotel-reception": [unavailable] * 4})
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:3])
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == (
+        "02-hotel-reception: the request failed 4 times; "
+        "last: HTTP 503 (UNAVAILABLE: The model is overloaded.)"
+    )
+    assert run.recorded() == ["01-pharmacy"]
+    assert run.sleeps == [15, 45, 135]
+    assert server.sent() == ["01-pharmacy"] + ["02-hotel-reception"] * 4
+
+
+def test_another_status_stops_at_once(tmp_path: Path) -> None:
+    server = FakeGemini(script={"01-pharmacy": [error(400, "INVALID_ARGUMENT", "bad field")]})
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:2])
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == "01-pharmacy: HTTP 400 (INVALID_ARGUMENT: bad field)"
+    assert run.recorded() == []
+    assert server.sent() == ["01-pharmacy"]
+
+
+def test_a_blocked_prompt_is_recorded_as_an_invalid_answer(tmp_path: Path) -> None:
+    blocked = {"promptFeedback": {"blockReason": "SAFETY"}, "usageMetadata": {}}
+    server = FakeGemini(script={"01-pharmacy": [ok(blocked)]})
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+
+    run()
+
+    assert run.echo == ["01-pharmacy: recorded (blocked:SAFETY, invalid, recall 0.000)"]
+    assert json.loads((run.model_dir / "01-pharmacy" / "response.json").read_bytes()) == blocked
+
+
+@pytest.mark.parametrize("body", [b"<html>busy</html>", b"[1, 2]", b""])
+def test_a_200_without_a_json_object_is_retried(tmp_path: Path, body: bytes) -> None:
+    server = FakeGemini(script={"01-pharmacy": [HttpResponse(200, {}, body)]})
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+
+    run()
+
+    assert run.sleeps == [15]
+    assert run.recorded() == ["01-pharmacy"]
+
+
+def test_four_200_without_a_json_object_stop_the_run(tmp_path: Path) -> None:
+    server = FakeGemini(script={"01-pharmacy": [HttpResponse(200, {}, b"<html>")] * 4})
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == (
+        "01-pharmacy: the request failed 4 times; last: HTTP 200 without a JSON object"
+    )
+    assert run.recorded() == []
+
+
+def test_a_transport_error_is_retried(tmp_path: Path) -> None:
+    server = FakeGemini(script={"01-pharmacy": [TransportError("TimeoutError: no response")]})
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+
+    run()
+
+    assert run.sleeps == [15]
+    assert run.recorded() == ["01-pharmacy"]
+
+
+def test_a_rerun_sends_only_the_pending_scenarios(tmp_path: Path) -> None:
+    server = FakeGemini()
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:4])
+    for name in ("01-pharmacy", "03-call-centre"):
+        scenario = load_scenario(run.corpus / name)
+        write_answer(run.model_dir / name, scenario, GEMINI, gemini_response())
+
+    run()
+
+    assert server.sent() == ["02-hotel-reception", "04-restaurant"]
+    assert run.recorded() == list(ALL_SCENARIOS[:4])
+
+
+def test_nothing_pending_prints_nothing_to_run(tmp_path: Path) -> None:
+    run = make_run(tmp_path, FakeGemini(), ALL_SCENARIOS[:1])
+    run()
+    run.server.calls.clear()
+    run.echo.clear()
+
+    run()
+
+    assert run.server.calls == []
+    assert run.echo == ["nothing to run"]
+
+
+def test_only_gemini_runs_on_generate_content(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match=r"claude-haiku-5-5 is not a Gemini model"):
+        run_gemini(
+            "claude-haiku-5-5", tmp_path, tmp_path, KEY, FakeGemini(), sleep=Sleeps(), echo=Echo()
+        )
+
+
+def test_the_stop_message_is_redacted_of_the_key(tmp_path: Path) -> None:
+    server = FakeGemini(script={"01-pharmacy": [error(400, "INVALID_ARGUMENT", f"key {KEY}")]})
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == "01-pharmacy: HTTP 400 (INVALID_ARGUMENT: key [redacted])"
