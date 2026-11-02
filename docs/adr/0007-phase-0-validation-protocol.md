@@ -321,6 +321,16 @@ differ from the bullets above, they apply.
   cannot be read, or an `invalid_request_error`) is held: no scenario of it is sent again until the
   owner releases it after the reviewer's decision.
 
+**Amendment (2026-11-02, TASK-005c3d, before any LLM run).** The Anthropic key is sent as
+`Authorization: Bearer <key>`, the documented method (`x-api-key` is deprecated), and only to
+`api.anthropic.com`. An answer whose text or stop reason is not valid Unicode (it contains an
+unpaired surrogate) is malformed, so its candidate is invalid; `response.json` keeps that response
+exactly, with every non-ASCII character escaped. After every run of a Claude model that called the
+API and was not interrupted, the runner lists the batches created since that model's first create
+request, at least 5 minutes after its last one, and names each batch that no run recorded (except
+those that a still unconfirmed create request may adopt), so the owner can cancel a paid
+duplicate; this check never changes the records or the exit code.
+
 ## Consequences
 - Results can be compared across models and over time, because every rule of the measurement is fixed
   in advance and implemented once, in tested code.
