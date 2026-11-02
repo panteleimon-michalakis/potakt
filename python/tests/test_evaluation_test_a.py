@@ -15,15 +15,17 @@ from potakt.evaluation import (
     INSTRUCTION_PATH,
     InvalidModel,
     LoadedModel,
+    LoadedScenario,
     Prompt,
     build_bundle,
+    compare_models,
     evaluate_candidate,
     extract_candidate,
     load_scenario,
     render_bundle,
     render_test_a,
 )
-from potakt.model import render_json_schema
+from potakt.model import ValidationIssue, render_json_schema
 
 REPO = Path(__file__).resolve().parents[2]
 CORPUS = REPO / "docs" / "validation" / "scenarios"
@@ -242,3 +244,125 @@ def test_the_candidate_is_validated_in_a_directory_with_the_csv_files_only(
     evaluate_candidate(load_scenario(SCENARIO_03), truth_text(SCENARIO_03))
 
     assert seen == [{"agents.csv", "shifts.csv"}]
+
+
+# --- exact data file names (TASK-005c2 E2, ADR-0007 §7 amendment «Data files») ---------------
+
+SCENARIO_02 = CORPUS / "02-hotel-reception"
+NAMES_02 = "ypodoxi_prosopiko.csv, ypodoxi_vardies.csv"  # csv_files in UTF-8 byte order
+
+
+def expected_name_issue_json(scenario: LoadedScenario, issues: list[tuple[str, str]]) -> str:
+    """The comparison JSON of an invalid candidate with exactly these (path, message) issues."""
+    truth = LoadedModel(scenario.truth, scenario.instance)
+    invalid = InvalidModel(tuple(ValidationIssue(path, message) for path, message in issues))
+    return compare_models(truth, invalid).to_json()
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "YPODOXI_PROSOPIKO.csv",
+        ".\\ypodoxi_prosopiko.csv",
+        "ypodoxi_prosopiko.csv.",
+        "ypodoxi_prosopiko.csv ",
+        "sub/ypodoxi_prosopiko.csv",
+    ],
+    ids=["upper-case", "backslash", "trailing-dot", "trailing-space", "subdirectory"],
+)
+def test_a_source_that_is_not_exactly_a_csv_file_name_is_invalid_on_every_os(
+    source: str, private_tempdir: Path
+) -> None:
+    # On Windows the first four load the real file through the OS; our code decides instead.
+    scenario = load_scenario(SCENARIO_02)
+    candidate = with_resource_source(truth_text(SCENARIO_02), source)
+
+    result = evaluate_candidate(scenario, candidate)
+
+    message = f'"{source}" is not one of the scenario\'s data files: {NAMES_02}'
+    assert [(issue.path, issue.message) for issue in result.issues] == [
+        ("/data/resources/source", message)
+    ]
+    assert result.to_json() == expected_name_issue_json(
+        scenario, [("/data/resources/source", message)]
+    )
+
+
+@pytest.mark.parametrize(
+    "source", ["./ypodoxi_prosopiko.csv", "ypodoxi_prosopiko.csv/", ".//ypodoxi_prosopiko.csv"]
+)
+def test_a_leading_dot_slash_or_a_trailing_slash_stays_valid(
+    source: str, private_tempdir: Path
+) -> None:
+    result = evaluate_candidate(
+        load_scenario(SCENARIO_02), with_resource_source(truth_text(SCENARIO_02), source)
+    )
+
+    assert result.valid
+    assert (result.recall, result.precision) == (1.0, 1.0)
+
+
+def test_every_rejected_source_is_reported_in_binding_then_constraint_order(
+    private_tempdir: Path,
+) -> None:
+    scenario = load_scenario(SCENARIO_02)
+    document = json.loads(truth_text(SCENARIO_02))
+    document["data"]["tasks"]["source"] = "Ypodoxi_vardies.csv"
+    document["data"]["resources"]["source"] = "ypodoxi_prosopiko.CSV"
+    index = next(
+        i for i, rule in enumerate(document["constraints"]) if rule["template"] == "unavailable"
+    )
+    document["constraints"][index]["params"]["source"] = {
+        "source": "apousies.csv",
+        "resource_id": "id",
+        "start": "from",
+        "end": "to",
+    }
+
+    result = evaluate_candidate(scenario, json.dumps(document, ensure_ascii=False))
+
+    files = f"is not one of the scenario's data files: {NAMES_02}"
+    expected = [
+        ("/data/resources/source", f'"ypodoxi_prosopiko.CSV" {files}'),
+        ("/data/tasks/source", f'"Ypodoxi_vardies.csv" {files}'),
+        (f"/constraints/{index}/params/source/source", f'"apousies.csv" {files}'),
+    ]
+    assert [(issue.path, issue.message) for issue in result.issues] == expected
+    assert result.to_json() == expected_name_issue_json(scenario, expected)
+
+
+def test_the_loader_does_not_run_when_a_source_is_rejected(
+    private_tempdir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    real = test_a_module.load_model
+
+    def spy(text: str, directory: Path) -> LoadedModel | InvalidModel:
+        calls.append(text)
+        return real(text, directory)
+
+    monkeypatch.setattr(test_a_module, "load_model", spy)
+
+    evaluate_candidate(
+        load_scenario(SCENARIO_02),
+        with_resource_source(truth_text(SCENARIO_02), "YPODOXI_PROSOPIKO.csv"),
+    )
+
+    assert calls == []
+
+
+def test_a_candidate_that_does_not_parse_is_reported_by_the_loader(private_tempdir: Path) -> None:
+    result = evaluate_candidate(load_scenario(SCENARIO_02), '{"schema_version": "0.2"}')
+
+    assert not result.valid
+    assert all("is not one of the scenario's data files" not in i.message for i in result.issues)
+
+
+@pytest.mark.parametrize("name", SCENARIOS)
+def test_every_truth_still_matches_itself(name: str, private_tempdir: Path) -> None:
+    directory = CORPUS / name
+
+    result = evaluate_candidate(load_scenario(directory), truth_text(directory))
+
+    assert result.valid, result.issues
+    assert (result.recall, result.precision) == (1.0, 1.0)

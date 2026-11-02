@@ -7,14 +7,29 @@ elsewhere (TASK-005c2); this module fixes what they send and how an answer is sc
 import json
 import shutil
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from potakt.evaluation.bundle import build_bundle, render_bundle
-from potakt.evaluation.compare import Comparison, LoadedModel, compare_models, load_model
+from potakt.evaluation.compare import (
+    Comparison,
+    InvalidModel,
+    LoadedModel,
+    compare_models,
+    load_model,
+)
 from potakt.evaluation.scenario import LoadedScenario
-from potakt.model import render_json_schema
+from potakt.model import (
+    DecisionModel,
+    DecisionModelError,
+    Unavailable,
+    ValidationIssue,
+    parse_decision_model,
+    render_json_schema,
+)
+from potakt.model.validation import issue_at
 
 # The instruction text of ADR-0007 §7, resolved from the repository root (src layout:
 # python/src/potakt/evaluation/test_a.py). Its SHA256 is pinned in the ADR and by a test.
@@ -111,16 +126,53 @@ def extract_candidate(text: str) -> str:
 
 def evaluate_candidate(scenario: LoadedScenario, text: str) -> Comparison:
     """Validate a candidate against a copy of the scenario's CSV files only and compare it with
-    the truth (ADR-0007 §7 «Validation»).
+    the truth (ADR-0007 §7 «Validation» and its amendment «Data files»).
 
-    No ``truth.json``, ``solution.json``, ``scenario.json`` or ``request.md`` is present where the
-    candidate's ``source`` paths resolve, so a candidate cannot read them as data. The temporary
-    directory is always removed.
+    Every ``source`` of a candidate that parses must name one of the scenario's CSV files
+    exactly (``source_issues``); otherwise the candidate is invalid and the loader does not run,
+    so validity never depends on how the OS resolves a file name. No ``truth.json``,
+    ``solution.json``, ``scenario.json`` or ``request.md`` is present where the candidate's
+    ``source`` paths resolve, so a candidate cannot read them as data. The temporary directory
+    is always removed.
     """
     truth = LoadedModel(scenario.truth, scenario.instance)
+    try:
+        parsed = parse_decision_model(text)
+    except DecisionModelError:
+        parsed = None  # the loader reports it below
+    if parsed is not None:
+        rejected = source_issues(parsed, scenario.scenario.csv_files)
+        if rejected:
+            return compare_models(truth, InvalidModel(rejected))
     with tempfile.TemporaryDirectory(prefix="potakt-candidate-") as folder:
         directory = Path(folder)
         for name in scenario.scenario.csv_files:
             shutil.copyfile(scenario.directory / name, directory / name)
         candidate = load_model(text, directory)
     return compare_models(truth, candidate)
+
+
+def source_issues(dm: DecisionModel, csv_files: Sequence[str]) -> tuple[ValidationIssue, ...]:
+    """One issue per ``source`` of ``dm`` that is not exactly one of ``csv_files``.
+
+    A source is accepted iff its POSIX path parts are exactly one file name, so ``x.csv``,
+    ``./x.csv`` and ``x.csv/`` are accepted, while another letter case, a backslash, a trailing
+    dot or space and a subdirectory are not. Checked in order: the resources binding, the tasks
+    binding, then each ``unavailable`` rule's window source in constraint order.
+    """
+    names = ", ".join(sorted(csv_files, key=lambda name: name.encode("utf-8")))
+    sources: list[tuple[tuple[str | int, ...], str]] = [
+        (("data", "resources", "source"), dm.data.resources.source),
+        (("data", "tasks", "source"), dm.data.tasks.source),
+    ]
+    sources += [
+        (("constraints", index, "params", "source", "source"), rule.params.source.source)
+        for index, rule in enumerate(dm.constraints)
+        if isinstance(rule, Unavailable) and rule.params.source is not None
+    ]
+    allowed = {(name,) for name in csv_files}
+    return tuple(
+        issue_at(location, f'"{source}" is not one of the scenario\'s data files: {names}')
+        for location, source in sources
+        if PurePosixPath(source).parts not in allowed
+    )

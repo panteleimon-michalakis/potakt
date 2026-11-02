@@ -132,6 +132,30 @@ def test_an_unbound_file_that_is_not_utf8_is_an_error(tmp_path: Path) -> None:
         build_bundle(scenario)
 
 
+def test_a_csv_line_starting_with_a_fence_is_refused(tmp_path: Path) -> None:
+    # TASK-005c2 E2: such a line would end its fenced block early and make the prompt ambiguous.
+    metadata = scenario_metadata()
+    metadata["csv_files"] = ["resources.csv", "tasks.csv", "draft.csv"]
+    directory = write_scenario_dir(tmp_path, metadata=metadata)
+    (directory / "draft.csv").write_bytes(b"id\r\nr1 ```\r\n```oops\r\n```\r\n")
+    bundle = build_bundle(load_scenario(directory))
+
+    with pytest.raises(ValueError) as caught:
+        render_bundle(bundle)
+
+    assert str(caught.value) == "draft.csv: line 3 starts with ``` and would end its fenced block"
+
+
+def test_render_refuses_the_first_fence_line_of_the_first_such_file() -> None:
+    bundle = Bundle(
+        request="```\n",  # the request is not fenced, so a fence line there is harmless
+        files=(BundleFile("a.csv", "utf-8", "``` x\n"), BundleFile("b.csv", "utf-8", "```\n")),
+    )
+
+    with pytest.raises(ValueError, match=r"^a\.csv: line 1 starts with ``` "):
+        render_bundle(bundle)
+
+
 def _absences_truth(first: dict[str, str], second: dict[str, str]) -> dict[str, object]:
     truth = minimal_dm()
     for index, dialect in enumerate((first, second)):

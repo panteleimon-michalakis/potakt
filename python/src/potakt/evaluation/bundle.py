@@ -66,7 +66,16 @@ def build_bundle(scenario: LoadedScenario) -> Bundle:
 
 def render_bundle(bundle: Bundle) -> str:
     """The ``## Request`` and ``## Data files`` sections of ADR-0007 §7, separated by one blank
-    line; each file's text is shown unchanged in a fenced block."""
+    line; each file's text is shown unchanged in a fenced block.
+
+    Raises ``ValueError`` for the first line of a file (counted from 1) that starts with
+    ```` ``` ````: it would end its fenced block early and make the prompt ambiguous.
+    """
+    for file in bundle.files:
+        for number, line in enumerate(file.text.split("\n"), start=1):
+            if line.startswith(_FENCE):
+                ending = "and would end its fenced block"
+                raise ValueError(f"{file.name}: line {number} starts with {_FENCE} {ending}")
     sections = ["## Request", bundle.request.rstrip("\n"), "## Data files"]
     for file in bundle.files:
         sections.append(f"### {file.name} (encoding: {file.encoding})")
