@@ -1442,6 +1442,16 @@ def test_the_runbook_quotes_the_reconciliation_messages_and_the_new_rules() -> N
         "`" + runner_module.AUDIT_INTERRUPTED + "`",
         "This check never changes the records or the exit code",
         "Do not cancel it yourself and do not run `--yes` again",
+        # TASK-005c3d H15: the current key types (R5).
+        "Create a **personal** API key",
+        "Linked account: yourself",
+        "**restricted to the workspace `potakt-phase0`**",
+        "expiry: **7 days**",
+        "Workspace keys are deprecated",
+        "makes every call fail with a 400 about `anthropic-workspace-id`, and the run stops with "
+        "no batch",
+        "`Authorization: Bearer <key>`, only to `api.anthropic.com`",
+        "<https://platform.claude.com/docs/en/manage-claude/authentication>",
     ):
         assert quoted in text, quoted
     assert "cancel all but the oldest, then run the same command again" in lines
@@ -1452,6 +1462,8 @@ def test_the_runbook_quotes_the_reconciliation_messages_and_the_new_rules() -> N
     # The two-check rule of TASK-005c3b is gone (E3), and no line is wider than 100 (E8).
     assert "twice and a minute apart" not in text
     assert "check 2" not in text
-    widths = [len(line) for line in RUNBOOK.read_text(encoding="utf-8").splitlines()]
-    long_lines = [n for n, width in enumerate(widths, 1) if width > 100]
-    assert long_lines == [40, 48]  # the two verbatim PowerShell lines of §2 only
+    lines = RUNBOOK.read_text(encoding="utf-8").splitlines()
+    long_lines = [line for line in lines if len(line) > 100]
+    # The two verbatim PowerShell lines of §2 only (checked by content, not line number).
+    assert len(long_lines) == 2
+    assert all(line.startswith("$env:POTAKT_") and "PtrToStringBSTR" in line for line in long_lines)

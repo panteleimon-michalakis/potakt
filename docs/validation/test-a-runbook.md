@@ -22,7 +22,18 @@ Rules for the whole runbook:
 1. In the Claude Console, create a workspace `potakt-phase0`.
 2. Set its monthly spend limit to $10 (a non-default workspace: "Spend limits"). When the limit is
    reached the API answers with a 400 error, and the run stops at once with no record.
-3. Create an API key scoped to that workspace.
+3. Create a **personal** API key (Claude Console, API keys, Create key):
+   - Linked account: yourself;
+   - **restricted to the workspace `potakt-phase0`**;
+   - expiry: **7 days**.
+
+   Workspace keys are deprecated (the page calls them legacy); a personal key restricted to one
+   workspace replaces them. A key that is not restricted to a workspace makes every call fail
+   with a 400 about `anthropic-workspace-id`, and the run stops with no batch. An expired key
+   gives a 401 `authentication_error`: create a new one. The run sends the key as
+   `Authorization: Bearer <key>`, only to `api.anthropic.com`. See the Claude authentication
+   page, <https://platform.claude.com/docs/en/manage-claude/authentication> (checked on
+   2026-11-02).
 
 **Gemini**
 1. Create a key in Google AI Studio.
@@ -69,8 +80,8 @@ polls it every 60 seconds until it ends (usually well under an hour), then recor
 prints the summary. While the batch is in progress, the line `batch <id>: in_progress (…)` is
 printed when it changes and again after every 10 polls without a change (every 10 minutes), so the
 window shows that the run is alive. This first batch also confirms the API version
-(`anthropic-version: 2026-10-21`) and the `output_config` field: a 400 here stops the run with no
-charge and no record, and the reason is printed.
+(`anthropic-version: 2026-10-21`), the key (§1) and the `output_config` field: a 400 or a 401
+here stops the run with no charge and no record, and the reason is printed.
 
 If the answer to the batch creation is lost or unclear (no answer, a redirect, a 408 or a 5xx),
 the run may pause about two minutes; this is normal. It first prints
