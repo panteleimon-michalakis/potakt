@@ -37,7 +37,9 @@ the only command that calls the model APIs; the owner runs it by following
   `claude-haiku-5-5` has a complete run, and the same command again resumes, also after an
   interrupted batch creation, which it reconciles before sending anything; a batch whose results
   need the reviewer is held, and every run stops until `--yes --release <id>` after the
-  reviewer's decision; one `--yes` run at a time (the lock file `<runs>/.eval-run.lock`) (exit
+  reviewer's decision; one `--yes` run at a time (the lock file `<runs>/.eval-run.lock`); after
+  a Claude run that called the API it runs a check for unrecorded batches after the run (up to
+  five minutes) and names any batch that no run recorded, without changing the exit code (exit
   code 0 all recorded or plan printed, 1 run stopped, a held batch, missing or invalid key, order
   refused, another run active, a `--release` of a batch that is not held, missing directory, a
   corpus without a scenario, an unexpected error (its type only) or interrupted, 2 usage error,

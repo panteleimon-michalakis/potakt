@@ -87,7 +87,9 @@ __all__ = [
     "RUNS_PATH",
     "USER_AGENT",
     "RunLock",
+    "audit_batches",
     "check_order",
+    "corpus_scenarios",
     "cost_upper_bound",
     "lock_text",
     "pending_scenarios",
@@ -795,6 +797,34 @@ class _AnthropicRun:
             url = f"{BATCHES_URL}?limit={LIST_LIMIT}&after_id={last_id}"
         raise RunStopped(TOO_MANY_BATCHES)
 
+    def audit(self) -> None:
+        """TASK-005c3d H13: the body of ``audit_batches`` (see there)."""
+        batches = _load_state(self.model_dir)
+        if not batches:
+            return
+        started = [cast(datetime, _started(batch.started_at)) for batch in batches]
+        target = max(started) + timedelta(seconds=AUDIT_DELAY_SECONDS)
+        wait = min((target - self.now()).total_seconds(), AUDIT_DELAY_SECONDS)
+        if wait > 0:
+            self.echo(AUDIT_WAITING.format(seconds=math.ceil(wait)))
+            self.sleep(wait)
+        earliest = min(started) - ADOPTION_WINDOW
+        listed = self._list_back_to(earliest)
+        runs_dir = self.model_dir.parent
+        known = _all_batch_ids(runs_dir)
+        pending = _pending_creates(runs_dir)
+        for item in listed:
+            if (
+                item.status.cancelled
+                or item.status.id in known
+                or item.created < earliest
+                or any(_is_candidate(item, entry, _t0(entry, None), known) for entry in pending)
+            ):
+                continue
+            created = server_text(item.status.created_at)  # an RFC 3339 instant (_instant)
+            line = UNRECORDED.format(id=item.status.id, count=item.status.total, created=created)
+            self.echo(line)
+
     # -- poll, download, record (F2 steps 4, 5) --
 
     def _describe(self, response: HttpResponse) -> str:
@@ -985,6 +1015,79 @@ def run_anthropic(
         run.run()
     except RunStopped as error:
         raise RunStopped(redact(str(error), [key])) from None
+
+
+# --- the audit of batches that no run recorded (TASK-005c3d H13) -----------------------------
+
+AUDIT_DELAY_SECONDS = 300
+AUDIT_WAITING = "waiting {seconds} s before checking for batches that no run recorded"
+UNRECORDED = (
+    "warning: batch {id} ({count} requests, created {created}) is recorded by no run: it may be "
+    "a paid duplicate; send this warning to the reviewer, who decides whether to cancel it in the "
+    "Claude Console (Batches)"
+)
+AUDIT_FAILED = (
+    "warning: could not check for batches that no run recorded ({reason}): look in the Claude "
+    "Console (Batches)"
+)
+AUDIT_INTERRUPTED = "audit interrupted: look in the Claude Console (Batches)"
+
+
+def _pending_creates(runs_dir: Path) -> list[_Batch]:
+    """The ``creating`` entries of every model under ``runs_dir``: the next run of that model
+    reconciles each of them and may adopt one of its candidates."""
+    return [
+        batch
+        for model_dir in runs_dir.iterdir()
+        if (model_dir / BATCH_STATE_FILE).is_file()
+        for batch in _load_state(model_dir)
+        if batch.state == "creating"
+    ]
+
+
+def audit_batches(
+    model: str,
+    runs_dir: Path,
+    key: str,
+    transport: Transport,
+    *,
+    sleep: Sleep,
+    now: Callable[[], datetime],
+    echo: Echo,
+) -> None:
+    """TASK-005c3d H13 (ADR-0007 §7 amendment of TASK-005c3d): after a run of a Claude model
+    that called the API and was not interrupted, name every listed batch that no run recorded.
+
+    Nothing if the model's ``batches.json`` has no entry. Otherwise it waits until
+    ``AUDIT_DELAY_SECONDS`` after the latest ``started_at`` (at most that long, announced), lists
+    the batches back to the earliest ``started_at`` minus ``ADOPTION_WINDOW`` (``_list_back_to``)
+    and prints one warning for each batch created since then that is not cancelled, is in no
+    model's ``batches.json`` and is no candidate (``_is_candidate``) of a ``creating`` entry of any
+    model, which the next run reconciles. It never cancels anything and never writes: the records,
+    ``batches.json`` and the caller's exit code stay as they are. A failure prints a warning
+    instead (its reason redacted of ``key``; an unexpected exception by its type only), and a
+    ``KeyboardInterrupt`` ends only the audit. Every line goes to ``echo``.
+    """
+    check_registered(model)
+    run = _AnthropicRun(
+        model=model,
+        corpus_dir=runs_dir,  # unused: the audit reads no scenario
+        model_dir=runs_dir / model_directory_name(model),
+        headers=anthropic_headers(key),
+        transport=transport,
+        sleep=sleep,
+        now=now,
+        poll_seconds=0,
+        echo=echo,
+    )
+    try:
+        run.audit()
+    except RunStopped as error:
+        echo(AUDIT_FAILED.format(reason=redact(str(error), secret_values(run.headers))))
+    except KeyboardInterrupt:
+        echo(AUDIT_INTERRUPTED)
+    except Exception as error:  # never its text: the audit must not change the outcome
+        echo(AUDIT_FAILED.format(reason=type(error).__name__))
 
 
 # --- the Gemini runner (F4) ------------------------------------------------------------------

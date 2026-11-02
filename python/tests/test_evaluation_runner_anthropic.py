@@ -97,7 +97,8 @@ class FakeBatches:
     # "interrupt" raises KeyboardInterrupt before the server sees the call; "interrupt-created"
     # registers the batch, then raises KeyboardInterrupt; "duplicated" registers two batches (a
     # proxy retried the call), the second missing from the list for 60 s more, then raises
-    # TransportError; an HttpResponse is returned as is (no batch); Created(response) registers
+    # TransportError; "duplicated-staggered" the same, the second created 40 s after the first
+    # (TASK-005c3d R4); an HttpResponse is returned as is (no batch); Created(response) registers
     # the batch, then returns the response.
     create_script: list[CreateStep] = field(default_factory=list[CreateStep])
     # Extra listed batches: ``newest`` before the fake's own batches, ``listing`` after them.
@@ -242,6 +243,13 @@ class FakeBatches:
         batch_id = self.post(scenarios)
         if step == "duplicated":
             self.extra_lag[self.post(scenarios)] = 60.0
+            raise TransportError("TimeoutError: no response received")
+        if step == "duplicated-staggered":
+            # R4: the proxy's second batch is created 40 s after the first.
+            later = self.now() + timedelta(seconds=40)
+            twin = self.register(scenarios, created_at=later.isoformat().replace("+00:00", "Z"))
+            self.posted.add(twin)
+            self.posted_at[twin] = later
             raise TransportError("TimeoutError: no response received")
         if isinstance(step, Created):
             return step.response
@@ -2366,3 +2374,181 @@ def test_a_state_with_more_than_21_problems_is_invalid(
     text = str(raised.value)
     assert text.endswith("is not a valid batch state; it was not changed") is not valid
     assert run.server.calls == []
+
+
+# --- TASK-005c3d H13: audit_batches -------------------------------------------------------------
+
+
+def audit(run: Run) -> None:
+    runner_module.audit_batches(
+        HAIKU, run.runs, KEY, run.server, sleep=run.sleeps, now=run.sleeps.now, echo=run.echo
+    )
+
+
+def audit_wait(seconds: int) -> str:
+    return f"waiting {seconds} s before checking for batches that no run recorded"
+
+
+def unrecorded(batch_id: str, count: int, created: str) -> str:
+    return (
+        f"warning: batch {batch_id} ({count} requests, created {created}) is recorded by no run: "
+        "it may be a paid duplicate; send this warning to the reviewer, who decides whether to "
+        "cancel it in the Claude Console (Batches)"
+    )
+
+
+def test_the_audit_does_nothing_without_an_entry(tmp_path: Path) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:1])
+    write_state(run.model_dir)
+
+    audit(run)
+
+    assert run.server.calls == []
+    assert run.echo == []
+
+
+@pytest.mark.parametrize(
+    ("started", "slept"),
+    [
+        (timedelta(minutes=5), 300),
+        (timedelta(0), 300),
+        (-timedelta(seconds=299), 1),
+        (-timedelta(minutes=5), None),
+    ],
+)
+def test_the_audit_waits_until_five_minutes_after_the_last_create_at_most_300_s(
+    tmp_path: Path, started: timedelta, slept: int | None
+) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:1])
+    first = batch_entry("msgbatch_91", ["01-pharmacy"], "done", started_at=iso(-timedelta(hours=1)))
+    last = batch_entry("msgbatch_92", ["01-pharmacy"], "done", started_at=iso(started))
+    write_state(run.model_dir, first, last)
+
+    audit(run)
+
+    assert run.sleeps == ([] if slept is None else [slept])
+    assert run.echo == ([] if slept is None else [audit_wait(slept)])
+    assert run.server.lists == 1
+
+
+def test_the_audit_names_only_unrecorded_live_batches_since_the_first_create(
+    tmp_path: Path,
+) -> None:
+    server = FakeBatches()
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+    started = timedelta(hours=-1)
+    server.listing = [
+        other_batch("msgbatch_new", 2, iso(-timedelta(minutes=1))),  # unrecorded: named
+        cancelled_batch("msgbatch_cancelled", 1, iso(-timedelta(minutes=2))),
+        other_batch("msgbatch_known", 1, iso(-timedelta(minutes=3))),
+        other_batch("msgbatch_edge", 3, iso(started - timedelta(minutes=10))),  # named
+        other_batch("msgbatch_older", 1, iso(started - timedelta(minutes=10, seconds=1))),
+    ]
+    write_state(
+        run.model_dir,
+        batch_entry("msgbatch_known", ["01-pharmacy"], "done", started_at=iso(started)),
+    )
+    before = (run.model_dir / BATCH_STATE_FILE).read_bytes()
+
+    audit(run)
+
+    assert run.echo == [
+        unrecorded("msgbatch_new", 2, iso(-timedelta(minutes=1))),
+        unrecorded("msgbatch_edge", 3, "2026-11-02T08:50:00Z"),
+    ]
+    assert (run.model_dir / BATCH_STATE_FILE).read_bytes() == before  # never changes a record
+
+
+def test_the_audit_spares_the_candidates_of_any_models_pending_create(tmp_path: Path) -> None:
+    server = FakeBatches()
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+    server.listing = [
+        other_batch("msgbatch_haiku", 1, iso(timedelta(seconds=5))),
+        other_batch("msgbatch_opus", 2, iso(timedelta(seconds=5))),
+        other_batch("msgbatch_late", 1, iso(timedelta(minutes=12))),  # beyond the window: named
+    ]
+    write_state(run.model_dir, batch_entry(None, ["01-pharmacy"], "creating"))
+    write_state(run.runs / OPUS, batch_entry(None, ALL_SCENARIOS[:2], "creating"))
+
+    audit(run)
+
+    assert run.echo[1:] == [unrecorded("msgbatch_late", 1, iso(timedelta(minutes=12)))]
+
+
+@pytest.mark.parametrize(
+    ("answer", "reason"),
+    [
+        (
+            HttpResponse(401, {}, json.dumps({"error": {"type": "auth", "message": KEY}}).encode()),
+            "listing batches failed: HTTP 401 (auth: [redacted])",
+        ),
+        (
+            ok({"data": [{"id": "x"}], "has_more": False}),
+            "listing batches failed: unexpected batch object",
+        ),
+    ],
+    ids=["http-401", "bad-object"],
+)
+def test_a_failed_audit_listing_is_a_warning(
+    tmp_path: Path, answer: HttpResponse, reason: str
+) -> None:
+    run = make_run(tmp_path, FakeBatches(list_answer=answer), ALL_SCENARIOS[:1])
+    write_state(run.model_dir, batch_entry("msgbatch_91", ["01-pharmacy"], "done"))
+
+    audit(run)
+
+    assert run.echo[-1] == (
+        f"warning: could not check for batches that no run recorded ({reason}): look in the "
+        "Claude Console (Batches)"
+    )
+
+
+def test_an_unexpected_error_in_the_audit_is_a_warning_with_its_type_only(
+    tmp_path: Path,
+) -> None:
+    class Broken:
+        def send(
+            self, method: str, url: str, headers: dict[str, str], body: bytes | None, timeout: float
+        ) -> HttpResponse:
+            raise RuntimeError(f"text with {KEY}")
+
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:1])
+    write_state(run.model_dir, batch_entry("msgbatch_91", ["01-pharmacy"], "done"))
+    runner_module.audit_batches(
+        HAIKU, run.runs, KEY, Broken(), sleep=run.sleeps, now=run.sleeps.now, echo=run.echo
+    )
+
+    assert run.echo[-1] == (
+        "warning: could not check for batches that no run recorded (RuntimeError): look in the "
+        "Claude Console (Batches)"
+    )
+
+
+def test_an_invalid_state_of_another_model_is_a_warning(tmp_path: Path) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:1])
+    write_state(run.model_dir, batch_entry("msgbatch_91", ["01-pharmacy"], "done"))
+    (run.runs / OPUS).mkdir()
+    (run.runs / OPUS / BATCH_STATE_FILE).write_text("not json", encoding="utf-8")
+
+    audit(run)
+
+    assert run.echo[-1].startswith("warning: could not check for batches that no run recorded (")
+    assert run.echo[-1].endswith(
+        "is not a valid batch state; it was not changed): look in the Claude Console (Batches)"
+    )
+
+
+def test_an_interrupt_during_the_audit_listing_ends_the_audit(tmp_path: Path) -> None:
+    class Interrupting:
+        def send(
+            self, method: str, url: str, headers: dict[str, str], body: bytes | None, timeout: float
+        ) -> HttpResponse:
+            raise KeyboardInterrupt
+
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:1])
+    write_state(run.model_dir, batch_entry("msgbatch_91", ["01-pharmacy"], "done"))
+    runner_module.audit_batches(
+        HAIKU, run.runs, KEY, Interrupting(), sleep=run.sleeps, now=run.sleeps.now, echo=run.echo
+    )
+
+    assert run.echo[-1] == "audit interrupted: look in the Claude Console (Batches)"

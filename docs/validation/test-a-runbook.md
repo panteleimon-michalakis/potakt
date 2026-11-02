@@ -79,6 +79,12 @@ looks the batch up in the Claude batch list once, page by page back to the reque
 it was created, and sends nothing twice. Do not press Ctrl+C during that wait; if you do, the next
 run waits again (up to three minutes) before it sends anything.
 
+After every Claude run that called the API, the run checks once more for batches that no run
+recorded: it prints `waiting <n> s before checking for batches that no run recorded` (at most
+five minutes after the last batch creation), lists the recent batches and only then prints the
+stop message or the summary. This check never changes the records or the exit code. If it
+prints `warning: batch <id> (<n> requests, created <time>) is recorded by no run: …`, see §8.
+
 ## 4. Check the Haiku records
 
 ```powershell
@@ -172,6 +178,19 @@ Push only after the reviewer's check of a fresh clone.
   3. Only if the reviewer says so, run the same command with `--yes --release <id>`. It prints
      `batch <id> released after review` and continues: the scenarios still pending are sent in a
      new batch.
+- **`warning: batch <id> (<n> requests, created <time>) is recorded by no run: it may be a paid
+  duplicate; send this warning to the reviewer, who decides whether to cancel it in the Claude
+  Console (Batches)`**: a batch exists in the workspace that no run recorded, for example a
+  second batch made by a proxy that repeated one create request and that appeared in the list
+  only after the run had adopted the first. Its requests are being paid for. Do not cancel it
+  yourself and do not run `--yes` again: send the warning to the reviewer, who decides whether
+  to cancel it in the Claude Console (Batches). A batch that a still unconfirmed create request
+  may adopt is never named: the next run adopts it.
+- **`warning: could not check for batches that no run recorded (<reason>): look in the Claude
+  Console (Batches)`** or **`audit interrupted: look in the Claude Console (Batches)`**: the
+  check could not finish (it failed, or Ctrl+C during its wait). The run's own outcome stands.
+  Open the Claude Console (Batches), and send the reviewer the list of batches of the last hour
+  with this message.
 - **`batches.json has an entry started at <time>, in the future: the clock or the file is wrong;
   send batches.json to the reviewer`**: the laptop's clock moved back, or `batches.json` was
   edited. Nothing was listed or sent. Check the Windows clock (Settings, Time, "Sync now"), do not

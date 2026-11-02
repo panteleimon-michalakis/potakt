@@ -16,7 +16,11 @@ resumes, after any interruption: a batch whose creation was not confirmed is loo
 list of batches before anything is sent, so no batch is paid for twice. A batch whose results
 need the reviewer is held: every run stops before sending anything until the owner runs
 `--yes --release <id>` after the reviewer's decision. Only one `--yes` run at a time: it holds
-the lock file `runs/test-a/.eval-run.lock` (never committed). Exit code 0: all recorded or the
+the lock file `runs/test-a/.eval-run.lock` (never committed). After a Claude run that called the
+API and was not interrupted, it runs a check for unrecorded batches after the run: up to five
+minutes after the last batch creation it lists the batches again and names each one that no run
+recorded (a paid duplicate the reviewer may cancel); this never changes the records or the exit
+code. Exit code 0: all recorded or the
 plan printed; 1: the run stopped (the reason on stderr), a held batch, a missing or invalid key,
 the order refused, another run active, a `--release` of a batch that is not held, a missing
 directory, a corpus without a scenario, an unexpected error (its type only, never its text) or

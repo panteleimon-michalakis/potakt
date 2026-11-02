@@ -32,6 +32,7 @@ from potakt.evaluation import (
 from potakt.evaluation.records import RESPONSE_FILE
 from potakt.evaluation.runner import (
     RUNS_PATH,
+    audit_batches,
     check_order,
     corpus_scenarios,
     run_anthropic,
@@ -41,7 +42,13 @@ from potakt.evaluation.runner import (
 )
 from potakt.evaluation.summary import model_directory_name
 from potakt.evaluation.test_a import ANTHROPIC_PREFIX, check_registered
-from potakt.evaluation.transport import RunStopped, Transport, UrllibTransport, server_text
+from potakt.evaluation.transport import (
+    HttpResponse,
+    RunStopped,
+    Transport,
+    UrllibTransport,
+    server_text,
+)
 from potakt.model import (
     DecisionModel,
     DecisionModelError,
@@ -405,6 +412,21 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+class _Counting:
+    """A transport that counts the calls it is given (TASK-005c3d H13: no audit without one).
+    A call counts when it is attempted, whatever its outcome: it may have reached the API."""
+
+    def __init__(self, transport: Transport) -> None:
+        self._transport = transport
+        self.calls = 0
+
+    def send(
+        self, method: str, url: str, headers: dict[str, str], body: bytes | None, timeout: float
+    ) -> HttpResponse:
+        self.calls += 1
+        return self._transport.send(method, url, headers, body, timeout)
+
+
 @eval_app.command("run")
 def eval_run(
     model: Annotated[
@@ -469,7 +491,9 @@ def eval_run(
     same command again resumes; a recorded scenario is never sent again. A batch whose results
     need the reviewer is held: every run stops until --yes --release <id> after the reviewer's
     decision. Only one --yes run at a time: it holds the lock file <runs>/.eval-run.lock while
-    it runs.
+    it runs. After a Claude run that called the API and was not interrupted, it runs a check for
+    unrecorded batches after the run (up to 5 minutes later) and names every batch that no run
+    recorded, so a paid duplicate can be cancelled; this check never changes the exit code.
 
     Files: <runs>/<model dir>/<scenario id>/ with request.json, response.json, candidate.txt,
     comparison.json; for Claude models also <runs>/<model dir>/ batches.json and
@@ -520,22 +544,34 @@ def _eval_run(
         if release is not None and not anthropic:
             raise RunStopped(f"{server_text(release)} is not a held batch of {model}")
         key = read_key(ANTHROPIC_KEY_VARIABLE if anthropic else GEMINI_KEY_VARIABLE)
-        transport = make_transport()
+        transport = _Counting(make_transport())
         lock = take_lock(runs, model, utc_now())  # E5: before anything else that writes
         try:
             if anthropic:
-                run_anthropic(
-                    model,
-                    corpus,
-                    runs,
-                    key,
-                    transport,
-                    sleep=time.sleep,
-                    now=utc_now,
-                    poll_seconds=poll_seconds,
-                    echo=typer.echo,
-                    release=release,
-                )
+                stopped: RunStopped | None = None
+                try:
+                    run_anthropic(
+                        model,
+                        corpus,
+                        runs,
+                        key,
+                        transport,
+                        sleep=time.sleep,
+                        now=utc_now,
+                        poll_seconds=poll_seconds,
+                        echo=typer.echo,
+                        release=release,
+                    )
+                except RunStopped as error:
+                    stopped = error
+                # TASK-005c3d H13: after a run that called the API and was not interrupted (an
+                # interrupt skips this), with the lock still held; it never changes the outcome.
+                if transport.calls:
+                    audit_batches(
+                        model, runs, key, transport, sleep=time.sleep, now=utc_now, echo=typer.echo
+                    )
+                if stopped is not None:
+                    raise stopped
             else:
                 run_gemini(model, corpus, runs, key, transport, sleep=time.sleep, echo=typer.echo)
         finally:

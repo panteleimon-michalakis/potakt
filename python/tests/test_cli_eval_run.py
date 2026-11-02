@@ -7,6 +7,7 @@ No test reads a real key or opens a connection: ``--yes`` runs get the fake key 
 import ast
 import json
 import os
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -16,13 +17,14 @@ import typer
 from runner_helpers import (
     ALL_SCENARIOS,
     KEY,
+    NOW,
     Sleeps,
     anthropic_message,
     batch_entry,
     corpus_copy,
     write_state,
 )
-from test_evaluation_runner_anthropic import FakeBatches, succeeded
+from test_evaluation_runner_anthropic import CreateStep, FakeBatches, succeeded
 from test_evaluation_runner_gemini import FakeGemini
 from typer.testing import CliRunner, Result
 
@@ -334,7 +336,9 @@ def test_yes_runs_haiku_and_prints_the_summary(
     summary = summarize(runs / HAIKU, corpus).to_text()
     assert result.stdout.endswith(summary)
     assert "Complete: yes" in summary
-    assert no_real_transport == [10]
+    # The poll, then the audit's wait until started_at + 300 s (TASK-005c3d H13).
+    assert no_real_transport == [10, 290]
+    assert "waiting 290 s before checking for batches that no run recorded\n" in result.stdout
     assert all(call.headers["authorization"] == f"Bearer {KEY}" for call in server.calls)
     assert not any("x-api-key" in call.headers for call in server.calls)
     assert KEY not in result.stdout
@@ -380,7 +384,8 @@ def test_a_stopped_run_exits_1_with_the_reason(
     result = eval_run(tmp_path / "runs", HAIKU, "--yes", corpus=corpus)
 
     assert result.exit_code == 1
-    assert result.stdout == ""
+    # The create was a call, so the audit runs before the stop message (TASK-005c3d H13).
+    assert result.stdout == "waiting 300 s before checking for batches that no run recorded\n"
     assert result.stderr == (
         "creating a batch failed: HTTP 400 (invalid_request_error: [redacted])\n"
     )
@@ -1022,6 +1027,221 @@ def test_no_summary_without_a_model_directory(
     assert result.output == ""
 
 
+# --- TASK-005c3d H13: the audit of batches that no run recorded ---------------------------------
+
+AUDIT_WAIT = "waiting {} s before checking for batches that no run recorded"
+UNRECORDED = (
+    "warning: batch {id} ({count} requests, created {created}) is recorded by no run: it may be "
+    "a paid duplicate; send this warning to the reviewer, who decides whether to cancel it in the "
+    "Claude Console (Batches)"
+)
+
+
+Setup = Callable[[FakeBatches], tuple[Path, Path]]
+
+
+@pytest.fixture
+def haiku_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_real_transport: Sleeps) -> Setup:
+    """Set up a Haiku ``--yes`` run on one scenario against ``server``, which shares the run's
+    clock (it sees the seconds slept)."""
+
+    def setup(server: FakeBatches) -> tuple[Path, Path]:
+        monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
+        server.clock = no_real_transport
+        monkeypatch.setattr(cli, "make_transport", lambda: server)
+        return corpus_copy(tmp_path, ALL_SCENARIOS[:1]), tmp_path / "runs"
+
+    return setup
+
+
+def test_the_audit_names_a_late_duplicate_of_an_adopted_batch(haiku_run: Setup) -> None:
+    # R4: a proxy-duplicated create whose second batch is listed only 130 s after the answer
+    # is still paid twice; the audit names it so that the owner can cancel it.
+    server = FakeBatches(create_script=["duplicated-staggered"], lag=90)
+    corpus, runs = haiku_run(server)
+
+    result = eval_run(runs, HAIKU, "--yes", corpus=corpus)
+
+    assert result.exit_code == 0, result.output
+    lines = result.stdout.splitlines()
+    assert "adopted batch msgbatch_01 created by an earlier create request" in lines
+    assert AUDIT_WAIT.format(120) in lines
+    warning = UNRECORDED.format(id="msgbatch_02", count=1, created="2026-11-02T10:00:40Z")
+    assert warning in lines
+    assert lines.index(warning) < lines.index("Test A summary: claude-haiku-5-5")
+    assert result.stderr == ""
+    state = json.loads((runs / HAIKU / "batches.json").read_bytes())
+    assert [(entry["id"], entry["state"]) for entry in state["batches"]] == [
+        ("msgbatch_01", "done")
+    ]
+    assert server.list_times[-1] == NOW + timedelta(seconds=300)
+
+
+def test_a_clean_run_is_audited_once_without_a_warning(
+    haiku_run: Setup, no_real_transport: Sleeps
+) -> None:
+    server = FakeBatches()
+    corpus, runs = haiku_run(server)
+
+    result = eval_run(runs, HAIKU, "--yes", corpus=corpus)
+
+    assert result.exit_code == 0, result.output
+    assert AUDIT_WAIT.format(240) in result.stdout.splitlines()
+    assert "warning" not in result.output
+    assert server.lists == 1
+    assert no_real_transport == [60, 240]  # the poll, then the audit's wait to started_at + 300 s
+
+
+def test_a_resume_after_an_interrupt_is_audited(
+    monkeypatch: pytest.MonkeyPatch, haiku_run: Setup
+) -> None:
+    server = FakeBatches()
+    corpus, runs = haiku_run(server)
+
+    class InterruptedPoll:
+        def send(
+            self, method: str, url: str, headers: dict[str, str], body: bytes | None, timeout: float
+        ) -> HttpResponse:
+            if method == "GET":
+                raise KeyboardInterrupt
+            return server.send(method, url, headers, body, timeout)
+
+    monkeypatch.setattr(cli, "make_transport", InterruptedPoll)
+    interrupted = eval_run(runs, HAIKU, "--yes", corpus=corpus)
+    monkeypatch.setattr(cli, "make_transport", lambda: server)
+    resumed = eval_run(runs, HAIKU, "--yes", corpus=corpus)
+
+    assert interrupted.exit_code == 1
+    assert "checking for batches" not in interrupted.output  # no audit after an interrupt
+    assert resumed.exit_code == 0, resumed.output
+    assert resumed.stdout.startswith("resuming batch msgbatch_01\n")
+    assert server.lists == 1
+
+
+def test_nothing_to_run_makes_no_audit_call(
+    monkeypatch: pytest.MonkeyPatch, haiku_run: Setup
+) -> None:
+    server = FakeBatches()
+    corpus, runs = haiku_run(server)
+    assert eval_run(runs, HAIKU, "--yes", corpus=corpus).exit_code == 0
+    monkeypatch.setattr(cli, "make_transport", NoTransport)  # any call fails the test
+
+    result = eval_run(runs, HAIKU, "--yes", corpus=corpus)
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.startswith("nothing to run\nTest A summary:")
+
+
+def test_a_held_batch_at_start_makes_no_call_at_all(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)  # NoTransport: any call fails the test
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:2])
+    runs = tmp_path / "runs"
+    held_state(runs)
+
+    result = eval_run(runs, HAIKU, "--yes", corpus=corpus)
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert result.stderr.startswith("batch msgbatch_07 is held for the reviewer: ")
+
+
+def test_a_failed_audit_listing_warns_and_keeps_the_outcome(haiku_run: Setup) -> None:
+    # The clean run makes no list call itself, so the only listing is the audit's.
+    server = FakeBatches(list_answer=HttpResponse(403, {}, b""))
+    corpus, runs = haiku_run(server)
+
+    result = eval_run(runs, HAIKU, "--yes", corpus=corpus)
+
+    assert result.exit_code == 0, result.output
+    assert (
+        "warning: could not check for batches that no run recorded (listing batches failed: "
+        "HTTP 403): look in the Claude Console (Batches)"
+    ) in result.stdout.splitlines()
+    assert "Complete: yes\n" in result.stdout
+
+
+def test_a_stopped_run_is_audited_before_its_stop_message(haiku_run: Setup) -> None:
+    server = FakeBatches(create_script=[HttpResponse(400, {}, b"")])
+    corpus, runs = haiku_run(server)
+
+    result = eval_run(runs, HAIKU, "--yes", corpus=corpus)
+
+    assert result.exit_code == 1
+    assert result.stdout == AUDIT_WAIT.format(300) + "\n"
+    assert result.stderr == "creating a batch failed: HTTP 400\n"
+    assert server.lists == 1
+
+
+def test_another_models_recorded_batch_is_never_named(haiku_run: Setup) -> None:
+    server = FakeBatches()
+    corpus, runs = haiku_run(server)
+    other = server.register(["01-pharmacy"])
+    write_state(runs / OPUS, batch_entry(other, ["01-pharmacy"], "done"))
+
+    result = eval_run(runs, HAIKU, "--yes", corpus=corpus)
+
+    assert result.exit_code == 0, result.output
+    assert "warning" not in result.output
+    assert server.lists == 1
+
+
+def test_the_candidates_of_a_pending_create_are_not_named(haiku_run: Setup) -> None:
+    # The run stops naming two candidates; the next run adopts the one the owner keeps.
+    server = FakeBatches(create_script=["duplicated"])
+    corpus, runs = haiku_run(server)
+
+    result = eval_run(runs, HAIKU, "--yes", corpus=corpus)
+
+    assert result.exit_code == 1
+    assert result.stderr.startswith("2 recent batches could be the one created by an earlier")
+    assert "warning" not in result.output
+    assert result.stdout.splitlines()[-1] == AUDIT_WAIT.format(180)
+    assert server.lists == 2  # the reconciliation's and the audit's
+
+
+@pytest.mark.parametrize("rejected", [False, True], ids=["success", "stop"])
+def test_an_interrupt_in_the_audit_ends_only_the_audit(
+    monkeypatch: pytest.MonkeyPatch, haiku_run: Setup, no_real_transport: Sleeps, rejected: bool
+) -> None:
+    script: list[CreateStep] = [HttpResponse(400, {}, b"")] if rejected else []
+    server = FakeBatches(create_script=script)
+    corpus, runs = haiku_run(server)
+
+    def sleep(seconds: float) -> None:
+        if seconds >= 240:  # the audit's wait (the poll sleeps 60 s)
+            raise KeyboardInterrupt
+        no_real_transport(seconds)
+
+    monkeypatch.setattr(cli.time, "sleep", sleep)
+
+    result = eval_run(runs, HAIKU, "--yes", corpus=corpus)
+
+    assert "audit interrupted: look in the Claude Console (Batches)" in result.stdout.splitlines()
+    assert server.lists == 0
+    assert not (runs / LOCK).exists()
+    if rejected:
+        assert result.exit_code == 1
+        assert result.stderr == "creating a batch failed: HTTP 400\n"
+    else:
+        assert result.exit_code == 0, result.output
+        assert "Complete: yes\n" in result.stdout
+
+
+def test_gemini_runs_are_not_audited(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(GEMINI_VARIABLE, KEY)
+    server = FakeGemini()
+    monkeypatch.setattr(cli, "make_transport", lambda: server)
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:1])
+
+    result = eval_run(tmp_path / "runs", GEMINI, "--yes", corpus=corpus)
+
+    assert result.exit_code == 0, result.output
+    assert "checking for batches" not in result.output
+    assert len(server.calls) == 1
+
+
 # --- the app, the key reader and the help ---------------------------------------------------
 
 
@@ -1119,6 +1339,8 @@ def test_the_run_help_states_the_exit_codes_and_files() -> None:
         in text
     )
     assert "<runs>/.eval-run.lock" in text
+    assert "runs a check for unrecorded batches after the run" in text
+    assert "this check never changes the exit code" in text
     assert "default: the repository's docs/validation/runs/test-a" in text
     assert str(RUNS_PATH) not in text
 
@@ -1213,6 +1435,13 @@ def test_the_runbook_quotes_the_reconciliation_messages_and_the_new_rules() -> N
         # TASK-005c3d H12: the bounded problems.
         "At most 20 problems are kept and shown",
         "`" + runner_module.MORE_PROBLEMS.format(count="<n>", id="<id>") + "`",
+        # TASK-005c3d H13: the audit.
+        "`" + runner_module.AUDIT_WAITING.format(seconds="<n>") + "` (at most five minutes",
+        "`" + runner_module.UNRECORDED.format(id="<id>", count="<n>", created="<time>") + "`",
+        "`" + runner_module.AUDIT_FAILED.format(reason="<reason>") + "`",
+        "`" + runner_module.AUDIT_INTERRUPTED + "`",
+        "This check never changes the records or the exit code",
+        "Do not cancel it yourself and do not run `--yes` again",
     ):
         assert quoted in text, quoted
     assert "cancel all but the oldest, then run the same command again" in lines
