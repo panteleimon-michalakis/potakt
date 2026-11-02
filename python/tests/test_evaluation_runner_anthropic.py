@@ -942,6 +942,85 @@ def test_the_stop_message_is_redacted_of_the_key(tmp_path: Path) -> None:
     )
 
 
+# --- ultrareview findings ----------------------------------------------------------------------
+
+
+def test_a_half_written_record_is_completed_before_anything_is_sent(tmp_path: Path) -> None:
+    # A run interrupted after response.json and before the derived files were written.
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:2])
+    scenario = load_scenario(run.corpus / "01-pharmacy")
+    write_answer(run.model_dir / "01-pharmacy", scenario, HAIKU, anthropic_message(HAIKU))
+    (run.model_dir / "01-pharmacy" / "comparison.json").unlink()
+
+    run()
+
+    assert run.echo[0] == "01-pharmacy: record completed (comparison.json)"
+    assert (run.model_dir / "01-pharmacy" / "comparison.json").is_file()
+    assert run.server.creates() == [["02-hotel-reception"]]
+    assert summarize(run.model_dir, run.corpus).complete
+
+
+def test_a_half_written_record_is_completed_when_nothing_is_pending(tmp_path: Path) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:1])
+    scenario = load_scenario(run.corpus / "01-pharmacy")
+    write_answer(run.model_dir / "01-pharmacy", scenario, HAIKU, anthropic_message(HAIKU))
+    (run.model_dir / "01-pharmacy" / "candidate.txt").unlink()
+    (run.model_dir / "01-pharmacy" / "comparison.json").unlink()
+
+    run()
+
+    assert run.echo == [
+        "01-pharmacy: record completed (candidate.txt, comparison.json)",
+        "nothing to run",
+    ]
+    assert run.server.calls == []
+
+
+def test_an_interrupt_during_the_create_call_points_to_the_console(tmp_path: Path) -> None:
+    # The batch may exist on the server while batches.json does not record it.
+    class Interrupted:
+        def send(
+            self,
+            method: str,
+            url: str,
+            headers: dict[str, str],
+            body: bytes | None,
+            timeout: float,
+        ) -> HttpResponse:
+            raise KeyboardInterrupt
+
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:1])
+
+    with pytest.raises(RunStopped) as raised:
+        run_anthropic(
+            HAIKU, run.corpus, run.runs, KEY, Interrupted(), sleep=run.sleeps, now=lambda: NOW,
+            echo=run.echo,
+        )  # fmt: skip
+
+    assert str(raised.value) == (
+        "interrupted while creating a batch: it may exist without being recorded; before "
+        "running again, cancel every batch created in the last minutes in the Claude Console "
+        "(Batches)"
+    )
+    assert run.batch_ids() == []
+
+
+def test_an_interrupt_while_polling_is_left_to_the_caller(tmp_path: Path) -> None:
+    server = FakeBatches(poll_failure=TransportError("unused"))
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+
+    class Interrupting(Sleeps):
+        def __call__(self, seconds: float) -> None:
+            raise KeyboardInterrupt
+
+    run.sleeps = Interrupting()
+
+    with pytest.raises(KeyboardInterrupt):
+        run()
+
+    assert run.state()["batches"][0]["state"] == "open"
+
+
 # --- review findings (TASK-005c3 self-review) --------------------------------------------------
 
 

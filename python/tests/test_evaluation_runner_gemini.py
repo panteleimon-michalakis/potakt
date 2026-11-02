@@ -256,6 +256,19 @@ def test_a_rerun_sends_only_the_pending_scenarios(tmp_path: Path) -> None:
     assert run.recorded() == list(ALL_SCENARIOS[:4])
 
 
+def test_a_half_written_record_is_completed_and_not_sent_again(tmp_path: Path) -> None:
+    server = FakeGemini()
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:2])
+    scenario = load_scenario(run.corpus / "01-pharmacy")
+    write_answer(run.model_dir / "01-pharmacy", scenario, GEMINI, gemini_response())
+    (run.model_dir / "01-pharmacy" / "comparison.json").unlink()
+
+    run()
+
+    assert run.echo[0] == "01-pharmacy: record completed (comparison.json)"
+    assert server.sent() == ["02-hotel-reception"]
+
+
 def test_nothing_pending_prints_nothing_to_run(tmp_path: Path) -> None:
     run = make_run(tmp_path, FakeGemini(), ALL_SCENARIOS[:1])
     run()

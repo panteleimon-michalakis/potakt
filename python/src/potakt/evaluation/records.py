@@ -38,6 +38,7 @@ __all__ = [
     "rescore_run",
     "score_answer",
     "write_answer",
+    "write_atomic",
     "write_request",
 ]
 
@@ -165,7 +166,7 @@ def write_request(run_dir: Path, payload: dict[str, Any]) -> None:
             raise FileExistsError(f"{path} exists with a different request")
         return
     run_dir.mkdir(parents=True, exist_ok=True)
-    _write_atomic(path, data)
+    write_atomic(path, data)
 
 
 def write_answer(
@@ -181,10 +182,10 @@ def write_answer(
     if path.exists():
         raise FileExistsError(f"{path} exists: a recorded answer is never replaced")
     run_dir.mkdir(parents=True, exist_ok=True)
-    _write_atomic(path, _response_bytes(response))
+    write_atomic(path, _response_bytes(response))
     candidate, comparison = score_answer(scenario, answer_of(model, response))
-    _write_atomic(run_dir / CANDIDATE_FILE, candidate.encode("utf-8"))
-    _write_atomic(run_dir / COMPARISON_FILE, comparison.to_json().encode("utf-8"))
+    write_atomic(run_dir / CANDIDATE_FILE, candidate.encode("utf-8"))
+    write_atomic(run_dir / COMPARISON_FILE, comparison.to_json().encode("utf-8"))
     return comparison
 
 
@@ -209,7 +210,7 @@ def rescore_run(run_dir: Path, scenario: LoadedScenario, model: str) -> tuple[st
     ):
         path = run_dir / name
         if not path.is_file() or path.read_bytes() != data:
-            _write_atomic(path, data)
+            write_atomic(path, data)
             written.append(name)
     return tuple(written)
 
@@ -219,7 +220,8 @@ def _response_bytes(response: object) -> bytes:
     return text.encode("utf-8")
 
 
-def _write_atomic(path: Path, data: bytes) -> None:
+def write_atomic(path: Path, data: bytes) -> None:
+    """Write ``data`` to ``path`` atomically (see the module docstring); also used by the runner."""
     temporary = path.with_name(path.name + _TEMPORARY_SUFFIX)
     temporary.write_bytes(data)
     os.replace(temporary, path)

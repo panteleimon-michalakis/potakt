@@ -13,7 +13,6 @@ redacted of it.
 """
 
 import json
-import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -24,10 +23,14 @@ from typing import cast
 
 from potakt.evaluation.compare import Comparison
 from potakt.evaluation.records import (
+    CANDIDATE_FILE,
+    COMPARISON_FILE,
     REQUEST_FILE,
     RESPONSE_FILE,
     answer_of,
+    rescore_run,
     write_answer,
+    write_atomic,
     write_request,
 )
 from potakt.evaluation.scenario import METADATA_FILE, LoadedScenario, ScenarioError, load_scenario
@@ -94,6 +97,10 @@ GEMINI_TIMEOUT_SECONDS = 600.0
 RUNS_PATH = Path(__file__).resolve().parents[4] / "docs" / "validation" / "runs" / "test-a"
 # ADR-0007 §7 amendment «Order»: the strong model runs only after this one has a complete run.
 FIRST_MODEL = "claude-haiku-5-5"
+INTERRUPTED_CREATE = (
+    "interrupted while creating a batch: it may exist without being recorded; before running "
+    "again, cancel every batch created in the last minutes in the Claude Console (Batches)"
+)
 ADOPTION_WAIT_SECONDS = 10
 ADOPTION_WINDOW = timedelta(minutes=10)
 LIST_LIMIT = 20
@@ -104,20 +111,12 @@ _STATUSES = ("in_progress", "canceling", "ended")
 _COUNTS = ("processing", "succeeded", "errored", "expired", "canceled")
 _RESULT_TYPES = ("succeeded", "errored", "expired", "canceled")
 _ERROR_TYPE = re.compile(r"[a-z_]{1,64}")  # an API error type, safe to echo
-_TEMPORARY_SUFFIX = ".tmp"
 
 Sleep = Callable[[float], object]
 Echo = Callable[[str], object]
 
 
 # --- files -----------------------------------------------------------------------------------
-
-
-def _write_atomic(path: Path, data: bytes) -> None:
-    """Bytes to ``<name>.tmp``, then replace ``<name>`` (like ``records``): LF on every OS."""
-    temporary = path.with_name(path.name + _TEMPORARY_SUFFIX)
-    temporary.write_bytes(data)
-    os.replace(temporary, path)
 
 
 def _results_file(batch_id: str) -> str:
@@ -191,7 +190,7 @@ def _save_state(model_dir: Path, batches: list[_Batch]) -> None:
     }
     text = json.dumps(document, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
     model_dir.mkdir(parents=True, exist_ok=True)
-    _write_atomic(model_dir / BATCH_STATE_FILE, text.encode("utf-8"))
+    write_atomic(model_dir / BATCH_STATE_FILE, text.encode("utf-8"))
 
 
 # --- the corpus ------------------------------------------------------------------------------
@@ -221,6 +220,17 @@ def recorded_scenarios(corpus_dir: Path, model_dir: Path) -> list[str]:
     return [
         name for name in _corpus_names(corpus_dir) if (model_dir / name / RESPONSE_FILE).exists()
     ]
+
+
+def _complete_records(corpus_dir: Path, model_dir: Path, model: str, echo: Echo) -> None:
+    """Derive the missing ``candidate.txt`` / ``comparison.json`` of every recorded scenario
+    (a run interrupted after ``response.json``) with ``rescore_run``; nothing is sent."""
+    for name in recorded_scenarios(corpus_dir, model_dir):
+        run_dir = model_dir / name
+        if (run_dir / CANDIDATE_FILE).is_file() and (run_dir / COMPARISON_FILE).is_file():
+            continue
+        written = rescore_run(run_dir, _load(corpus_dir, name), model)
+        echo(f"{name}: record completed ({', '.join(written)})")
 
 
 def _load(corpus_dir: Path, name: str) -> LoadedScenario:
@@ -340,6 +350,7 @@ class _AnthropicRun:
     echo: Echo
 
     def run(self) -> None:
+        _complete_records(self.corpus_dir, self.model_dir, self.model, self.echo)
         pending = pending_scenarios(self.corpus_dir, self.model_dir)
         if not pending:
             self.echo("nothing to run")
@@ -400,6 +411,9 @@ class _AnthropicRun:
                 )
             except TransportError as error:
                 last, lost = str(error), True
+            except KeyboardInterrupt:
+                # The batch may exist on the server, and batches.json does not record it.
+                raise RunStopped(INTERRUPTED_CREATE) from None
             else:
                 status = _batch_status(_json(response.body)) if response.status == 200 else None
                 if status is not None:
@@ -497,7 +511,7 @@ class _AnthropicRun:
             raise RunStopped(
                 f"downloading the results of batch {batch.id} failed: {self._describe(response)}"
             )
-        _write_atomic(self.model_dir / _results_file(batch.id), response.body)
+        write_atomic(self.model_dir / _results_file(batch.id), response.body)
         problems = self._record_results(batch, response.body)
         batches = _load_state(self.model_dir)
         done = [replace(item, state="done") if item.id == batch.id else item for item in batches]
@@ -643,6 +657,7 @@ def _run_gemini(
     sleep: Sleep,
     echo: Echo,
 ) -> None:
+    _complete_records(corpus_dir, model_dir, model, echo)
     pending = pending_scenarios(corpus_dir, model_dir)
     if not pending:
         echo("nothing to run")

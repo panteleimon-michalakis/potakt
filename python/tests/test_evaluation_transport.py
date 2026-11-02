@@ -253,13 +253,14 @@ class FakeHttps(urllib.request.BaseHandler):
         response = urllib.response.addinfourl(
             io.BytesIO(self.body), self.headers, request.full_url, code=self.status
         )
-        setattr(response, "msg", "fake")  # noqa: B010 (read by HTTPErrorProcessor; not in the stubs)
+        # Read by HTTPErrorProcessor and set by the real HTTPSHandler; not in the type stubs.
+        vars(response)["msg"] = "fake"
         return response
 
 
 def handlers_of(opener: object) -> list[urllib.request.BaseHandler]:
     """The handlers of an ``OpenerDirector`` (an attribute the type stubs do not declare)."""
-    return getattr(opener, "handlers")  # noqa: B009
+    return vars(opener)["handlers"]
 
 
 @contextmanager
@@ -315,14 +316,14 @@ def test_the_opener_verifies_tls() -> None:
     ]
 
     assert len(handlers) == 1
-    context: Any = getattr(handlers[0], "_context")  # noqa: B009 (a private attribute of urllib)
+    context: Any = vars(handlers[0])["_context"]  # a private attribute of urllib
     assert isinstance(context, ssl.SSLContext)
     assert context.verify_mode == ssl.CERT_REQUIRED
     assert context.check_hostname
 
 
 def test_the_default_transport_uses_the_hardened_opener() -> None:
-    opener: Any = getattr(UrllibTransport(), "_opener")  # noqa: B009
+    opener: Any = vars(UrllibTransport())["_opener"]
     kinds = {type(handler) for handler in handlers_of(opener)}
 
     assert urllib.request.HTTPRedirectHandler not in kinds

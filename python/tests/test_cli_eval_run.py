@@ -362,6 +362,37 @@ def test_an_interruption_exits_1_and_says_how_to_resume(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
+    server = FakeBatches()
+
+    class InterruptedPoll:
+        """Creates the batch, then is interrupted at the first poll."""
+
+        def send(
+            self,
+            method: str,
+            url: str,
+            headers: dict[str, str],
+            body: bytes | None,
+            timeout: float,
+        ) -> HttpResponse:
+            if method == "GET":
+                raise KeyboardInterrupt
+            return server.send(method, url, headers, body, timeout)
+
+    monkeypatch.setattr(cli, "make_transport", InterruptedPoll)
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:1])
+
+    result = eval_run(tmp_path / "runs", HAIKU, "--yes", corpus=corpus)
+
+    assert result.exit_code == 1
+    assert result.stderr == "interrupted: run the same command again to resume (nothing is lost)\n"
+
+
+def test_an_interruption_during_the_create_call_points_to_the_console(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # ultrareview finding: "nothing is lost" was wrong while the create call is in flight.
+    monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
 
     class Interrupted:
         def send(
@@ -380,7 +411,9 @@ def test_an_interruption_exits_1_and_says_how_to_resume(
     result = eval_run(tmp_path / "runs", HAIKU, "--yes", corpus=corpus)
 
     assert result.exit_code == 1
-    assert result.stderr == "interrupted: run the same command again to resume (nothing is lost)\n"
+    assert "nothing is lost" not in result.stderr
+    assert result.stderr.startswith("interrupted while creating a batch: ")
+    assert "Claude Console (Batches)" in result.stderr
 
 
 # --- the app, the key reader and the help ---------------------------------------------------

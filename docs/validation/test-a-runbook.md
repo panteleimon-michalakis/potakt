@@ -117,8 +117,16 @@ Push only after the reviewer's check of a fresh clone.
   resumes the open batch or sends only the pending scenarios. Nothing that was recorded is lost.
   One exception: if a Claude run is interrupted after it starts sending a batch but before it
   prints `batch <id> created for N scenarios`, the batch may exist without being recorded, and the
-  next run would create another. In that case, first look at the Claude Console (Batches): cancel
-  any batch created in the last minutes, then run again.
+  next run would create another. Ctrl+C at that moment prints `interrupted while creating a
+  batch: …`; after a closed window or a crash there is no message. In both cases, first look at
+  the Claude Console (Batches): cancel any batch created in the last minutes, then run again.
+- **The same open batch fails on every run** (for example `polling batch <id> failed: HTTP 404`
+  or `downloading the results of batch <id> failed`, because the batch was deleted or its results
+  are no longer kept): do not edit `batches.json`. Send the message and `batches.json` to the
+  reviewer, who decides how to continue.
+- **`<id>: record completed (…)`** at the start of a run means an earlier run was interrupted
+  after saving an answer and before scoring it; the score is derived from the saved answer, and
+  nothing is sent for that scenario.
 - **A malformed results line** stops the run after the other lines are recorded; the raw results
   stay in `batch-<id>.results.jsonl`. Send that file to the reviewer before running again,
   because running again sends the affected scenarios in a new, paid batch.
