@@ -13,6 +13,7 @@ from potakt.checker import check, render_check_result
 from potakt.evaluation import (
     CORPUS_PATH,
     INSTRUCTION_PATH,
+    REGISTERED_MODELS,
     STRONG_MODEL,
     LoadedScenario,
     ScenarioError,
@@ -206,14 +207,18 @@ def _scenario(directory: Path) -> LoadedScenario:
 @eval_app.command("prompt")
 def eval_prompt(
     scenario: Annotated[Path, typer.Argument(help="Scenario directory.", show_default=False)],
-    model: Annotated[str, typer.Option("--model", help="Model id.")] = STRONG_MODEL,
+    model: Annotated[
+        str,
+        typer.Option("--model", help=f"Model id: {', '.join(REGISTERED_MODELS)}."),
+    ] = STRONG_MODEL,
 ) -> None:
     """Print the exact JSON request payload of the Test A request for one scenario (ADR-0007 §7),
     with no credentials; nothing is sent.
 
-    Claude ids get the Anthropic Messages API body, every other id the Gemini generateContent
-    body. Exit code 0: payload printed; 1: invalid scenario; 2: usage error (also a Claude model
-    without pre-registered settings).
+    The registered models are claude-haiku-5-5, gemini-3.8-flash, claude-opus-5-5 (in run
+    order); the Claude ones get the Anthropic Messages API body, gemini-3.8-flash the Gemini
+    generateContent body. Exit code 0: payload printed; 1: invalid scenario; 2: usage error
+    (also an unregistered model id).
     """
     loaded = _scenario(scenario)
     try:
@@ -276,7 +281,8 @@ def eval_summary(
     as_json: Annotated[bool, typer.Option("--json", help="Print the summary as JSON.")] = False,
 ) -> None:
     """Summarize one model's recorded Test A runs: recall, merged recall, precision, validity,
-    breakdowns, diagnostics, usage and cost (ADR-0007 §7 «Records»).
+    completeness (the corpus scenarios still missing), breakdowns, diagnostics, how the answers
+    stopped, usage and cost at the batch prices (ADR-0007 §7 «Records» and its amendment).
 
     Exit code 0: summary printed; 1: missing directory; 2: usage error.
     """

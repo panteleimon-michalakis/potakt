@@ -58,12 +58,16 @@ def test_prompt_for_gemini_uses_the_gemini_shape() -> None:
     assert payload["generationConfig"] == {"maxOutputTokens": 32000}
 
 
-def test_prompt_refuses_a_claude_model_without_settings_as_a_usage_error() -> None:
-    result = runner.invoke(app, ["eval", "prompt", str(HOTEL), "--model", "claude-sonnet-5-5"])
+@pytest.mark.parametrize("model", ["claude-sonnet-5-5", "gemini-2.5-flash"])
+def test_prompt_refuses_an_unregistered_model_as_a_usage_error(model: str) -> None:
+    result = runner.invoke(app, ["eval", "prompt", str(HOTEL), "--model", model])
 
     assert result.exit_code == 2
     assert result.stdout == ""
-    assert "no pre-registered Test A settings" in result.stderr
+    assert result.stderr == (
+        f"no pre-registered Test A settings for {model!r}; "
+        "use claude-haiku-5-5, gemini-3.8-flash or claude-opus-5-5\n"
+    )
 
 
 def test_prompt_reports_an_invalid_scenario_and_exits_1(tmp_path: Path) -> None:
@@ -120,6 +124,8 @@ def test_prompt_help_states_the_exit_codes() -> None:
     text = help_text("eval", "prompt")
 
     assert "Exit code 0: payload printed; 1: invalid scenario; 2: usage error" in text
+    assert "also an unregistered model id" in text
+    assert "claude-haiku-5-5, gemini-3.8-flash, claude-opus-5-5" in text
     assert "no credentials" in text
 
 

@@ -1,5 +1,6 @@
 Test A summary: claude-opus-5-5
 Scenarios: 3 scored, 2 valid
+Complete: no (missing: 02-hotel-reception, 05-supermarket-checkouts, 06-ambulance-crews, 07-security-guards, 08-warehouse, 09-care-home, 10-municipal-nursery)
 Recall: 0.400 (10/25)
 Merged recall: 0.400 (10/25)
 Precision: 0.769 (10/13)
@@ -18,5 +19,6 @@ Recall by template:
   together 0.000 (0/2)
   unavailable 0.500 (1/2)
 Diagnostics: missing 13, wrong_hardness 1, wrong_parameters 1, wrong_scope 0
+Stops: end_turn 2, refusal 1
 Usage: 36000 input tokens, 18000 output tokens
-Cost: $0.5040 (prices pinned on 2026-11-02)
+Cost: $0.2520 (batch prices pinned on 2026-11-02)

@@ -1,4 +1,5 @@
-"""Phase 0 evaluation (ADR-0007): the scenario corpus and the Test A comparison metric.
+"""Phase 0 evaluation (ADR-0007): the scenario corpus, the Test A comparison metric, answers,
+run records and their summary.
 
 Library code only: no LLM, no network. Depends on ``potakt.model``, ``potakt.checker``, Pydantic
 and the standard library; neither of those core packages imports this one.
@@ -19,6 +20,15 @@ from potakt.evaluation.compare import (
     denote,
     load_model,
 )
+from potakt.evaluation.records import (
+    REGISTERED_MODELS,
+    Answer,
+    answer_of,
+    rescore_run,
+    score_answer,
+    write_answer,
+    write_request,
+)
 from potakt.evaluation.scenario import (
     SCENARIO_TAGS,
     Disruption,
@@ -33,6 +43,7 @@ from potakt.evaluation.scenario import (
 )
 from potakt.evaluation.summary import (
     CORPUS_PATH,
+    LONG_PROMPT_PRICES_USD_PER_MILLION,
     PRICES_USD_PER_MILLION,
     Summary,
     model_directory_name,
@@ -55,9 +66,12 @@ __all__ = [
     "CATEGORIES",
     "CORPUS_PATH",
     "INSTRUCTION_PATH",
+    "LONG_PROMPT_PRICES_USD_PER_MILLION",
     "PRICES_USD_PER_MILLION",
+    "REGISTERED_MODELS",
     "SCENARIO_TAGS",
     "STRONG_MODEL",
+    "Answer",
     "Bundle",
     "BundleFile",
     "Category",
@@ -79,6 +93,7 @@ __all__ = [
     "UnmatchedCandidate",
     "UnmatchedTruth",
     "UnsupportedRequest",
+    "answer_of",
     "build_bundle",
     "compare_models",
     "denote",
@@ -92,5 +107,9 @@ __all__ = [
     "render_payload",
     "render_test_a",
     "request_payload",
+    "rescore_run",
+    "score_answer",
     "summarize",
+    "write_answer",
+    "write_request",
 ]

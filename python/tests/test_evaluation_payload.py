@@ -45,20 +45,28 @@ def test_haiku_payload_has_its_own_limit_and_the_documented_effort() -> None:
     }
 
 
-@pytest.mark.parametrize("model", ["gemini-3.8-flash", "gemini-2.5-flash", "any-other-id"])
-def test_every_other_model_gets_the_gemini_payload(model: str) -> None:
+def test_gemini_gets_the_gemini_payload() -> None:
     # The Gemini model is part of the URL, not of the body.
-    assert request_payload(PROMPT, model) == {
+    assert request_payload(PROMPT, "gemini-3.8-flash") == {
         "systemInstruction": {"parts": [{"text": PROMPT.system}]},
         "contents": [{"role": "user", "parts": [{"text": PROMPT.user}]}],
         "generationConfig": {"maxOutputTokens": 32000},
     }
 
 
-@pytest.mark.parametrize("model", ["claude-sonnet-5-5", "claude-opus-5", "claude-"])
-def test_a_claude_model_without_pre_registered_settings_is_refused(model: str) -> None:
-    with pytest.raises(UnknownModelError, match="no pre-registered Test A settings"):
+@pytest.mark.parametrize(
+    "model",
+    ["claude-sonnet-5-5", "claude-opus-5", "claude-", "gemini-2.5-flash", "any-other-id", ""],
+)
+def test_a_model_that_is_not_registered_is_refused(model: str) -> None:
+    # TASK-005c2 E3: only the three pre-registered ids, listed in run order in the message.
+    with pytest.raises(UnknownModelError) as caught:
         request_payload(PROMPT, model)
+
+    assert str(caught.value) == (
+        f"no pre-registered Test A settings for {model!r}; "
+        "use claude-haiku-5-5, gemini-3.8-flash or claude-opus-5-5"
+    )
 
 
 @pytest.mark.parametrize("model", ["claude-opus-5-5", "claude-haiku-5-5", "gemini-3.8-flash"])

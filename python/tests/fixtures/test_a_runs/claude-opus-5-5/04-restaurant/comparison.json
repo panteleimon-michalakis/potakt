@@ -8,7 +8,7 @@
   },
   "issues": [
     {
-      "message": "invalid JSON at line 1, column 1: Expecting value",
+      "message": "the answer did not end normally (stop: refusal)",
       "path": "/"
     }
   ],

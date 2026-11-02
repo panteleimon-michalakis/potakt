@@ -41,16 +41,26 @@ _FENCE = "```"
 _OPENERS = ("```json\n", "```\n")
 _CLOSER = "\n```"
 
-# The models and settings of ADR-0007 §7 «Models», «Settings».
+# The models and settings of ADR-0007 §7 «Models», «Settings». ``REGISTERED_MODELS`` is in the
+# run order of the amendment «Order» (re-exported by ``records``, which builds on this module).
+REGISTERED_MODELS = ("claude-haiku-5-5", "gemini-3.8-flash", "claude-opus-5-5")
 STRONG_MODEL = "claude-opus-5-5"
 EFFORT = "high"  # documented for both Claude models (sent to Haiku too, ADR §7)
 ANTHROPIC_MAX_TOKENS: dict[str, int] = {"claude-opus-5-5": 64000, "claude-haiku-5-5": 32000}
 GEMINI_MAX_OUTPUT_TOKENS = 32000
-_ANTHROPIC_PREFIX = "claude-"
+ANTHROPIC_PREFIX = "claude-"
 
 
 class UnknownModelError(ValueError):
-    """A Claude model for which ADR-0007 §7 fixes no settings."""
+    """A model id that is not in ``REGISTERED_MODELS``: ADR-0007 §7 fixes no settings for it."""
+
+
+def check_registered(model: str) -> None:
+    """Raise ``UnknownModelError`` unless ``model`` is one of ``REGISTERED_MODELS``."""
+    if model not in REGISTERED_MODELS:
+        *first, last = REGISTERED_MODELS
+        known = f"{', '.join(first)} or {last}"
+        raise UnknownModelError(f"no pre-registered Test A settings for {model!r}; use {known}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,15 +87,13 @@ def render_test_a(scenario: LoadedScenario) -> Prompt:
 def request_payload(prompt: Prompt, model: str) -> dict[str, Any]:
     """The JSON body of the one Test A request for ``model`` (ADR-0007 §7), without credentials.
 
-    ``claude-*`` ids get the Anthropic Messages API body (only the pre-registered models; any
-    other Claude id raises ``UnknownModelError``); every other id gets the Gemini
+    Only ``REGISTERED_MODELS`` are accepted; any other id raises ``UnknownModelError``. The
+    Claude models get the Anthropic Messages API body, ``gemini-3.8-flash`` the Gemini
     ``generateContent`` body, whose model is part of the URL. No tools, no sampling parameters,
     thinking left to the API default.
     """
-    if model.startswith(_ANTHROPIC_PREFIX):
-        if model not in ANTHROPIC_MAX_TOKENS:
-            known = ", ".join(sorted(ANTHROPIC_MAX_TOKENS))
-            raise UnknownModelError(f"no pre-registered Test A settings for {model}; use {known}")
+    check_registered(model)
+    if model.startswith(ANTHROPIC_PREFIX):
         return {
             "model": model,
             "max_tokens": ANTHROPIC_MAX_TOKENS[model],

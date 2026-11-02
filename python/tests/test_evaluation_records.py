@@ -1,0 +1,412 @@
+"""Answers, run records and offline rescoring (ADR-0007 §7 and its amendment; TASK-005c2 E3).
+
+Response shapes follow the official references, looked up on 2026-11-02: Anthropic Messages
+(``content`` blocks of type ``text`` / ``thinking``, ``stop_reason`` values from «Handling stop
+reasons») and Gemini ``generateContent`` (``candidates[].content.parts[]`` with ``text`` and
+``thought``, ``finishReason``, ``promptFeedback.blockReason``).
+"""
+
+import json
+from collections.abc import Iterator
+from pathlib import Path
+
+import pytest
+
+import potakt.evaluation.records as records_module
+from potakt.evaluation import (
+    REGISTERED_MODELS,
+    Answer,
+    Comparison,
+    LoadedScenario,
+    UnknownModelError,
+    answer_of,
+    evaluate_candidate,
+    load_scenario,
+    render_payload,
+    render_test_a,
+    request_payload,
+    rescore_run,
+    score_answer,
+    write_answer,
+    write_request,
+)
+
+REPO = Path(__file__).resolve().parents[2]
+CORPUS = REPO / "docs" / "validation" / "scenarios"
+PHARMACY = CORPUS / "01-pharmacy"
+TRUTH_01 = (PHARMACY / "truth.json").read_text(encoding="utf-8")
+FENCED_01 = "```json\n" + TRUTH_01 + "\n```"
+OPUS, HAIKU, GEMINI = "claude-opus-5-5", "claude-haiku-5-5", "gemini-3.8-flash"
+
+
+@pytest.fixture(scope="module")
+def pharmacy() -> LoadedScenario:
+    return load_scenario(PHARMACY)
+
+
+@pytest.fixture(autouse=True)
+def no_temporary_files_are_left(tmp_path: Path) -> Iterator[None]:
+    yield
+    assert sorted(tmp_path.rglob("*.tmp")) == []
+
+
+def anthropic(*blocks: dict[str, object], stop: str = "end_turn") -> dict[str, object]:
+    return {
+        "id": "msg_test",
+        "type": "message",
+        "role": "assistant",
+        "model": OPUS,
+        "content": list(blocks),
+        "stop_reason": stop,
+        "stop_sequence": None,
+        "usage": {"input_tokens": 10, "output_tokens": 5},
+    }
+
+
+def text_block(text: str) -> dict[str, object]:
+    return {"type": "text", "text": text}
+
+
+def gemini(*parts: dict[str, object], finish: str = "STOP") -> dict[str, object]:
+    return {
+        "candidates": [
+            {"content": {"role": "model", "parts": list(parts)}, "finishReason": finish}
+        ],
+        "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 5},
+    }
+
+
+# --- registered models -----------------------------------------------------------------------
+
+
+def test_registered_models_in_run_order() -> None:
+    assert REGISTERED_MODELS == ("claude-haiku-5-5", "gemini-3.8-flash", "claude-opus-5-5")
+
+
+# --- Anthropic answers -----------------------------------------------------------------------
+
+
+def test_anthropic_end_turn_with_one_fenced_text_block() -> None:
+    answer = answer_of(OPUS, anthropic(text_block(FENCED_01)))
+
+    assert answer == Answer(FENCED_01, "end_turn", True)
+
+
+def test_anthropic_text_blocks_are_joined_without_a_separator_and_thinking_is_ignored() -> None:
+    response = anthropic(
+        {"type": "thinking", "thinking": "Let me think.", "signature": "abc"},
+        {"type": "redacted_thinking", "data": "xyz"},
+        text_block('{"a":'),
+        text_block(" 1}"),
+    )
+
+    assert answer_of(HAIKU, response) == Answer('{"a": 1}', "end_turn", True)
+
+
+@pytest.mark.parametrize("stop", ["refusal", "max_tokens", "model_context_window_exceeded"])
+def test_anthropic_other_stops_are_not_a_normal_end(stop: str) -> None:
+    answer = answer_of(OPUS, anthropic(text_block("partial"), stop=stop))
+
+    assert answer == Answer("partial", stop, False)
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"content": "text", "stop_reason": "end_turn"},
+        {"content": [text_block("x")]},
+        {"content": [text_block("x")], "stop_reason": None},
+        {"content": [{"type": "text", "text": 5}], "stop_reason": "end_turn"},
+        {"content": [{"text": "x"}], "stop_reason": "end_turn"},
+        {"content": ["x"], "stop_reason": "end_turn"},
+        [],
+        None,
+    ],
+    ids=[
+        "content-not-a-list",
+        "stop-reason-missing",
+        "stop-reason-null",
+        "text-not-a-string",
+        "block-without-type",
+        "block-not-an-object",
+        "not-an-object",
+        "null",
+    ],
+)
+def test_a_malformed_anthropic_response(response: object) -> None:
+    assert answer_of(OPUS, response) == Answer("", "malformed", False)
+
+
+# --- Gemini answers --------------------------------------------------------------------------
+
+
+def test_gemini_stop_with_a_thought_part_then_text_parts() -> None:
+    response = gemini(
+        {"text": "I should answer in JSON.", "thought": True},
+        {"text": '{"a":', "thought": False},
+        {"text": " 1}"},
+        {"functionCall": {"name": "ignored"}},  # a part without text is skipped
+    )
+
+    assert answer_of(GEMINI, response) == Answer('{"a": 1}', "STOP", True)
+
+
+@pytest.mark.parametrize("finish", ["MAX_TOKENS", "SAFETY", "RECITATION"])
+def test_gemini_other_finish_reasons_are_not_a_normal_end(finish: str) -> None:
+    assert answer_of(GEMINI, gemini({"text": "par"}, finish=finish)) == Answer("par", finish, False)
+
+
+def test_gemini_a_candidate_without_content_has_no_text() -> None:
+    response = {"candidates": [{"finishReason": "SAFETY", "index": 0}]}
+
+    assert answer_of(GEMINI, response) == Answer("", "SAFETY", False)
+
+
+def test_gemini_a_blocked_prompt() -> None:
+    response = {"promptFeedback": {"blockReason": "PROHIBITED_CONTENT"}, "usageMetadata": {}}
+
+    assert answer_of(GEMINI, response) == Answer("", "blocked:PROHIBITED_CONTENT", False)
+
+
+@pytest.mark.parametrize(
+    "response",
+    [{}, {"candidates": []}, {"candidates": [], "promptFeedback": {"safetyRatings": []}}],
+    ids=["absent", "empty", "feedback-without-block-reason"],
+)
+def test_gemini_no_candidate(response: object) -> None:
+    assert answer_of(GEMINI, response) == Answer("", "no-candidate", False)
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"candidates": {"content": {}}},
+        {"candidates": ["x"]},
+        {"candidates": [{"content": {"parts": [{"text": "x"}]}}]},
+        {"candidates": [{"content": "x", "finishReason": "STOP"}]},
+        {"candidates": [{"content": {"parts": "x"}, "finishReason": "STOP"}]},
+        {"candidates": [{"content": {"parts": ["x"]}, "finishReason": "STOP"}]},
+        {"candidates": [{"content": {"parts": [{"text": 5}]}, "finishReason": "STOP"}]},
+        gemini({"text": "x", "thought": "yes"}),
+        {"promptFeedback": "blocked"},
+        {"promptFeedback": {"blockReason": 3}},
+        "text",
+    ],
+    ids=[
+        "candidates-not-a-list",
+        "candidate-not-an-object",
+        "finish-reason-missing",
+        "content-not-an-object",
+        "parts-not-a-list",
+        "part-not-an-object",
+        "text-not-a-string",
+        "thought-not-a-boolean",
+        "feedback-not-an-object",
+        "block-reason-not-a-string",
+        "not-an-object",
+    ],
+)
+def test_a_malformed_gemini_response(response: object) -> None:
+    assert answer_of(GEMINI, response) == Answer("", "malformed", False)
+
+
+@pytest.mark.parametrize("model", ["claude-sonnet-5-5", "gemini-2.5-flash", ""])
+def test_answer_of_an_unregistered_model_is_refused(model: str) -> None:
+    with pytest.raises(UnknownModelError, match=r"claude-haiku-5-5, gemini-3\.8-flash or "):
+        answer_of(model, anthropic(text_block("x")))
+
+
+# --- scoring ---------------------------------------------------------------------------------
+
+
+def test_a_normal_answer_is_scored_by_evaluate_candidate(pharmacy: LoadedScenario) -> None:
+    candidate, comparison = score_answer(pharmacy, Answer(FENCED_01, "end_turn", True))
+
+    assert candidate == TRUTH_01
+    assert comparison == evaluate_candidate(pharmacy, TRUTH_01)
+    assert (comparison.recall, comparison.precision) == (1.0, 1.0)
+
+
+def test_an_answer_that_did_not_end_normally_is_invalid(pharmacy: LoadedScenario) -> None:
+    # Even a complete DM counts as nothing when the answer was cut off (ADR-0007 §7 «Answer»).
+    candidate, comparison = score_answer(pharmacy, Answer(FENCED_01, "max_tokens", False))
+
+    assert candidate == TRUTH_01
+    assert not comparison.valid
+    assert comparison.recall == 0.0
+    assert [(i.path, i.message) for i in comparison.issues] == [
+        ("/", "the answer did not end normally (stop: max_tokens)")
+    ]
+
+
+# --- records ---------------------------------------------------------------------------------
+
+
+def opus_payload(scenario: LoadedScenario) -> dict[str, object]:
+    return request_payload(render_test_a(scenario), OPUS)
+
+
+def test_write_request_writes_the_rendered_payload(
+    tmp_path: Path, pharmacy: LoadedScenario
+) -> None:
+    run = tmp_path / OPUS / "01-pharmacy"
+    payload = opus_payload(pharmacy)
+
+    write_request(run, payload)
+    write_request(run, payload)  # the same bytes again: accepted, nothing changes
+
+    assert (run / "request.json").read_bytes() == render_payload(payload).encode("utf-8")
+
+
+def test_write_request_refuses_to_replace_a_different_request(
+    tmp_path: Path, pharmacy: LoadedScenario
+) -> None:
+    run = tmp_path / "01-pharmacy"
+    write_request(run, opus_payload(pharmacy))
+    before = (run / "request.json").read_bytes()
+
+    with pytest.raises(FileExistsError):
+        write_request(run, request_payload(render_test_a(pharmacy), HAIKU))
+
+    assert (run / "request.json").read_bytes() == before
+
+
+def test_write_answer_writes_the_four_files_as_specified(
+    tmp_path: Path, pharmacy: LoadedScenario
+) -> None:
+    run = tmp_path / OPUS / "01-pharmacy"
+    response = anthropic(text_block(FENCED_01), text_block(""))
+    write_request(run, opus_payload(pharmacy))
+
+    comparison = write_answer(run, pharmacy, OPUS, response)
+
+    assert sorted(path.name for path in run.iterdir()) == [
+        "candidate.txt",
+        "comparison.json",
+        "request.json",
+        "response.json",
+    ]
+    assert (run / "response.json").read_bytes() == (
+        json.dumps(response, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    assert (run / "candidate.txt").read_bytes() == TRUTH_01.encode("utf-8")
+    assert (run / "comparison.json").read_bytes() == comparison.to_json().encode("utf-8")
+    assert comparison == evaluate_candidate(pharmacy, TRUTH_01)
+    assert b"\r\n" not in b"".join(path.read_bytes() for path in run.iterdir())
+
+
+def test_write_answer_refuses_a_second_call(tmp_path: Path, pharmacy: LoadedScenario) -> None:
+    run = tmp_path / "01-pharmacy"
+    write_answer(run, pharmacy, OPUS, anthropic(text_block(FENCED_01)))
+    before = {path.name: path.read_bytes() for path in run.iterdir()}
+
+    with pytest.raises(FileExistsError):
+        write_answer(run, pharmacy, OPUS, anthropic(text_block("other"), stop="refusal"))
+
+    assert {path.name: path.read_bytes() for path in run.iterdir()} == before
+
+
+def test_response_json_survives_a_failure_of_the_derived_writes_and_rescore_completes_it(
+    tmp_path: Path, pharmacy: LoadedScenario, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = tmp_path / "01-pharmacy"
+    response = anthropic(text_block(FENCED_01))
+
+    def broken(scenario: LoadedScenario, text: str) -> Comparison:
+        raise RuntimeError("a harness bug")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(records_module, "evaluate_candidate", broken)
+        with pytest.raises(RuntimeError, match="a harness bug"):
+            write_answer(run, pharmacy, OPUS, response)
+
+    assert sorted(path.name for path in run.iterdir()) == ["response.json"]
+    assert json.loads((run / "response.json").read_bytes()) == response
+
+    assert rescore_run(run, pharmacy, OPUS) == ("candidate.txt", "comparison.json")
+    assert (run / "candidate.txt").read_bytes() == TRUTH_01.encode("utf-8")
+    expected = evaluate_candidate(pharmacy, TRUTH_01).to_json().encode("utf-8")
+    assert (run / "comparison.json").read_bytes() == expected
+
+
+def recorded_run(tmp_path: Path, pharmacy: LoadedScenario) -> Path:
+    run = tmp_path / "01-pharmacy"
+    write_request(run, opus_payload(pharmacy))
+    write_answer(run, pharmacy, OPUS, anthropic(text_block(FENCED_01)))
+    return run
+
+
+def test_rescore_reports_nothing_for_an_unchanged_run(
+    tmp_path: Path, pharmacy: LoadedScenario
+) -> None:
+    run = recorded_run(tmp_path, pharmacy)
+    before = {path.name: (path.read_bytes(), path.stat().st_mtime_ns) for path in run.iterdir()}
+
+    assert rescore_run(run, pharmacy, OPUS) == ()
+    assert {
+        path.name: (path.read_bytes(), path.stat().st_mtime_ns) for path in run.iterdir()
+    } == before
+
+
+def test_rescore_repairs_a_deleted_comparison(tmp_path: Path, pharmacy: LoadedScenario) -> None:
+    run = recorded_run(tmp_path, pharmacy)
+    expected = (run / "comparison.json").read_bytes()
+    (run / "comparison.json").unlink()
+
+    assert rescore_run(run, pharmacy, OPUS) == ("comparison.json",)
+    assert (run / "comparison.json").read_bytes() == expected
+
+
+def test_rescore_restores_an_edited_candidate_and_never_touches_the_raw_files(
+    tmp_path: Path, pharmacy: LoadedScenario
+) -> None:
+    run = recorded_run(tmp_path, pharmacy)
+    raw = {name: (run / name).read_bytes() for name in ("request.json", "response.json")}
+    (run / "candidate.txt").write_bytes(b"{}")
+
+    assert rescore_run(run, pharmacy, OPUS) == ("candidate.txt",)
+    assert (run / "candidate.txt").read_bytes() == TRUTH_01.encode("utf-8")
+    assert {name: (run / name).read_bytes() for name in raw} == raw
+
+
+def test_rescore_follows_a_changed_rule_without_a_new_response(
+    tmp_path: Path, pharmacy: LoadedScenario
+) -> None:
+    # A recorded answer that did not end normally is rescored as invalid, from response.json alone.
+    run = tmp_path / "01-pharmacy"
+    write_answer(run, pharmacy, OPUS, anthropic(text_block(FENCED_01), stop="max_tokens"))
+    (run / "comparison.json").write_bytes(evaluate_candidate(pharmacy, TRUTH_01).to_json().encode())
+
+    assert rescore_run(run, pharmacy, OPUS) == ("comparison.json",)
+    assert json.loads((run / "comparison.json").read_bytes())["valid"] is False
+
+
+def test_a_response_json_that_is_not_json_is_rescored_as_malformed(
+    tmp_path: Path, pharmacy: LoadedScenario
+) -> None:
+    run = tmp_path / "01-pharmacy"
+    run.mkdir()
+    (run / "response.json").write_bytes(b"{not json")
+
+    assert rescore_run(run, pharmacy, OPUS) == ("candidate.txt", "comparison.json")
+    document = json.loads((run / "comparison.json").read_bytes())
+    assert document["issues"] == [
+        {"path": "/", "message": "the answer did not end normally (stop: malformed)"}
+    ]
+    assert (run / "candidate.txt").read_bytes() == b""
+
+
+def test_rescore_without_a_response_raises(tmp_path: Path, pharmacy: LoadedScenario) -> None:
+    with pytest.raises(FileNotFoundError):
+        rescore_run(tmp_path, pharmacy, OPUS)
+
+
+def test_a_leftover_temporary_file_is_overwritten(tmp_path: Path, pharmacy: LoadedScenario) -> None:
+    run = tmp_path / "01-pharmacy"
+    run.mkdir()
+    (run / "candidate.txt.tmp").write_bytes(b"left over by a crash")
+
+    write_answer(run, pharmacy, OPUS, anthropic(text_block(FENCED_01)))
+
+    assert (run / "candidate.txt").read_bytes() == TRUTH_01.encode("utf-8")
+    assert not (run / "candidate.txt.tmp").exists()
