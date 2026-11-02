@@ -12,14 +12,16 @@ bound and sends nothing; with `--yes` it reads the key from `POTAKT_ANTHROPIC_AP
 `POTAKT_GEMINI_API_KEY`, sends every scenario without a recorded answer (Claude models in one
 Message Batch, Gemini one request at a time), records the answers and prints the summary.
 `claude-opus-5-5` runs only after `claude-haiku-5-5` has a complete run; the same command again
-resumes. Exit code 0: all recorded or the plan printed; 1: the run stopped (the reason on stderr),
+resumes, after any interruption: a batch whose creation was not confirmed is looked up in the
+list of batches before anything is sent, so no batch is paid for twice. Exit code 0: all recorded or the plan printed; 1: the run stopped (the reason on stderr),
 a missing or invalid key, the order refused, a missing directory or an interruption; 2: usage
 error, also for an unregistered model id.
 
 Test A records go to `runs/test-a/<model>/<scenario id>/` (ADR-0007 §7 and its amendment):
 `request.json`, `response.json` (the raw answer, written first and never overwritten),
 `candidate.txt` and `comparison.json`. For a Claude model, `runs/test-a/<model>/` also holds
-`batches.json` (each batch's id, scenarios, creation time and state) and
+`batches.json` (one entry per batch creation: the batch id, the scenarios, when the create request
+was sent, the batch's creation time and the state `creating`, `open`, `done` or `failed`) and
 `batch-<id>.results.jsonl` (the raw batch results); the summary and `eval rescore` ignore these
 files. `candidate.txt` and `comparison.json` are derived from `response.json` alone, so
 `uv run potakt eval rescore ../docs/validation/runs/test-a/<model>` recomputes them offline after

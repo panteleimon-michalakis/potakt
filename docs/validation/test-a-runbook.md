@@ -11,6 +11,10 @@ Rules for the whole runbook:
   sends nothing and reads no key. Always run it first.
 - A scenario with a recorded answer (`response.json`) is never sent again; running the same
   command again resumes where it stopped.
+- One run at a time: never run `potakt eval run` in two windows at once, not even for two
+  different models.
+- Keep the laptop awake and plugged in while a batch runs. If it sleeps anyway, run the same
+  command again.
 
 ## 1. Keys
 
@@ -62,7 +66,9 @@ uv run potakt eval run --model claude-haiku-5-5 --yes
 
 The first command prints the plan and the cost upper bound. The second sends one Message Batch and
 polls it every 60 seconds until it ends (usually well under an hour), then records the answers and
-prints the summary. This first batch also confirms the API version (`anthropic-version:
+prints the summary. While the batch is in progress, the line `batch <id>: in_progress (…)` is
+printed when it changes and again after every 10 polls without a change (every 10 minutes), so the
+window shows that the run is alive. This first batch also confirms the API version (`anthropic-version:
 2026-10-21`) and the `output_config` field: a 400 here stops the run with no charge and no record,
 and the reason is printed.
 
@@ -113,13 +119,33 @@ Push only after the reviewer's check of a fresh clone.
 
 ## 8. If something goes wrong
 
-- **Interrupted run** (Ctrl+C, a closed window, a lost connection): run the same command again; it
-  resumes the open batch or sends only the pending scenarios. Nothing that was recorded is lost.
-  One exception: if a Claude run is interrupted after it starts sending a batch but before it
-  prints `batch <id> created for N scenarios`, the batch may exist without being recorded, and the
-  next run would create another. Ctrl+C at that moment prints `interrupted while creating a
-  batch: …`; after a closed window or a crash there is no message. In both cases, first look at
-  the Claude Console (Batches): cancel any batch created in the last minutes, then run again.
+- **Interrupted run** (Ctrl+C, a closed window, a lost connection, a crash, the laptop sleeping):
+  run the same command again; it resumes the open batch or sends only the pending scenarios.
+  Nothing that was recorded is lost, and no batch is paid for twice: before a Claude run sends a
+  batch it records an unconfirmed create request in `batches.json`, and the next run first looks
+  for that batch in the Claude batch list.
+- **What these lines mean:**
+  - `adopted batch <id> created by an earlier create request`: an earlier create request (in
+    this run, when its answer was lost or was a 5xx, or in an interrupted run) did create a
+    batch; the run polls that batch and records its answers instead of sending a new one.
+  - `no batch was created by the earlier create request (started <time>)`: the batch list was
+    checked, twice and a minute apart unless the request is old, and no batch was found; the run
+    continues and sends the pending scenarios.
+  - `Unconfirmed create request: started <time> (<n> scenarios); --yes checks for its batch
+    before sending anything` (dry run): an earlier run was interrupted while creating a batch.
+    The dry run itself sends nothing; the next `--yes` run does the check above first.
+- **Several batches could be the one created by an earlier create request** (the run stops and
+  names them; for example after two windows ran at once): in the Claude Console (Batches) cancel
+  all of them but the oldest, then run the same command again; it adopts the one left. Requests
+  that a cancelled batch already processed are billed, the others are not.
+- **`<scenario>: invalid_request_error: …; do not run again: send this message to the
+  reviewer`**: the API refused that request itself, and running again would send the same
+  request. Send the message to the reviewer; do not run again.
+- **`batch <id>: no result for <scenario>`** or **a malformed results line** (both end with
+  `send batch-<id>.results.jsonl to the reviewer before running again`): the run stops after the
+  other lines are recorded, and the raw results stay in `batch-<id>.results.jsonl`. Send that file
+  to the reviewer before running again, because running again sends the affected scenarios in a
+  new, paid batch.
 - **The same open batch fails on every run** (for example `polling batch <id> failed: HTTP 404`
   or `downloading the results of batch <id> failed`, because the batch was deleted or its results
   are no longer kept): do not edit `batches.json`. Send the message and `batches.json` to the
@@ -127,12 +153,4 @@ Push only after the reviewer's check of a fresh clone.
 - **`<id>: record completed (…)`** at the start of a run means an earlier run was interrupted
   after saving an answer and before scoring it; the score is derived from the saved answer, and
   nothing is sent for that scenario.
-- **A malformed results line** stops the run after the other lines are recorded; the raw results
-  stay in `batch-<id>.results.jsonl`. Send that file to the reviewer before running again,
-  because running again sends the affected scenarios in a new, paid batch.
-- **Several batches could be the one a lost request created** (the run stops and names them):
-  none of them is recorded in `batches.json`, so the next run would not use them. Cancel every
-  batch the message names in the Claude Console (Batches), then run the same command again; it
-  sends one new batch. Requests that a cancelled batch already processed are billed, the others
-  are not.
 - **After Phase 0:** delete both keys (Claude Console and Google AI Studio).

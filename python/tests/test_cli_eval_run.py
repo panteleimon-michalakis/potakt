@@ -571,3 +571,30 @@ def test_the_runbook_steps_are_in_order_and_hold_no_personal_path() -> None:
     assert 'git commit -m "docs(validation): record Test A runs (<model>)"' in text
     assert "C:\\Users" not in text
     assert KEY not in text
+
+
+def test_the_runbook_quotes_the_reconciliation_messages_and_the_new_rules() -> None:
+    # TASK-005c3b D9: the runbook names the runner's messages as they are printed.
+    text = " ".join(RUNBOOK.read_text(encoding="utf-8").split())
+    lines = runner_module.SEVERAL_CANDIDATES.format(count=2, ids="<ids>")
+
+    for quoted in (
+        "`adopted batch <id> created by an earlier create request`",
+        "`no batch was created by the earlier create request (started <time>)`",
+        "`Unconfirmed create request: started <time> (<n> scenarios); --yes checks for its batch "
+        "before sending anything`",
+        f"`<scenario>: invalid_request_error: …{runner_module.DO_NOT_RUN_AGAIN}`",
+        runner_module.TO_THE_REVIEWER.format(name="batch-<id>.results.jsonl")[2:],
+        "**`batch <id>: no result for <scenario>`**",
+        "cancel all of them but the oldest, then run the same command again; it adopts the one "
+        "left",
+        "One run at a time: never run `potakt eval run` in two windows at once",
+        "Keep the laptop awake and plugged in while a batch runs",
+        "again after every 10 polls without a change (every 10 minutes)",
+    ):
+        assert quoted in text, quoted
+    assert "cancel all but the oldest, then run the same command again" in lines
+    # The old exception (an interrupted create needed the Console) is gone.
+    assert "interrupted while creating a batch:" not in text
+    assert "cancel any batch created in the last minutes" not in text
+    assert "a crash" in text

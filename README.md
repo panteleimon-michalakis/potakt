@@ -26,13 +26,14 @@ its comparison metric exist under [`docs/validation/`](docs/validation/) and in
 the only command that calls the model APIs; the owner runs it by following
 [`docs/validation/test-a-runbook.md`](docs/validation/test-a-runbook.md):
 - `potakt eval run --model ID [--runs DIR] [--corpus DIR] [--poll-seconds N] [--yes]` without
-  `--yes` prints the plan (pending and recorded scenarios, an open batch, the cost upper bound) and
-  sends nothing; with `--yes` it reads the key from `POTAKT_ANTHROPIC_API_KEY` (Claude models,
+  `--yes` prints the plan (pending and recorded scenarios, an open batch or an unconfirmed create
+  request, the cost upper bound) and sends nothing; with `--yes` it reads the key from `POTAKT_ANTHROPIC_API_KEY` (Claude models,
   Message Batches API) or `POTAKT_GEMINI_API_KEY` (`gemini-3.8-flash`), records every pending
   scenario under `docs/validation/runs/test-a/<model>/` (`request.json`, `response.json`,
   `candidate.txt`, `comparison.json`, and for Claude models `batches.json` and
   `batch-<id>.results.jsonl`) and prints the summary; `claude-opus-5-5` runs only after
-  `claude-haiku-5-5` has a complete run, and the same command again resumes (exit code 0 all
+  `claude-haiku-5-5` has a complete run, and the same command again resumes, also after an
+  interrupted batch creation, which it reconciles before sending anything (exit code 0 all
   recorded or plan printed, 1 run stopped, missing or invalid key, order refused, missing
   directory or interrupted, 2 usage error, also for an unregistered model id).
 
