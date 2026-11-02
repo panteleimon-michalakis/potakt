@@ -2310,3 +2310,59 @@ def test_a_record_that_cannot_be_completed_stops_before_any_call(
         "the reviewer"
     )
     assert run.server.calls == []
+
+
+# --- TASK-005c3d H12: a held batch keeps at most 20 problems -------------------------------------
+
+
+def malformed_results(count: int) -> bytes:
+    return b"not json\n" * count
+
+
+@pytest.mark.parametrize(("lines", "stored"), [(19, 20), (20, 21), (50, 21)])
+def test_a_held_batch_stores_and_prints_at_most_20_problems(
+    tmp_path: Path, lines: int, stored: int
+) -> None:
+    # R2: a 10 000-line damaged file gave 10 000 problems in batches.json and in one message.
+    server = FakeBatches()
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+    server.raw_results["msgbatch_01"] = malformed_results(lines)
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    problems = problems_of(run)
+    total = lines + 1  # every line, and no result for 01-pharmacy
+    assert len(problems) == stored
+    assert problems[0] == "batch msgbatch_01: results line 1 is not a JSON object"
+    if total > 20:
+        assert problems[19] == "batch msgbatch_01: results line 20 is not a JSON object"
+        assert problems[20] == (
+            f"\N{HORIZONTAL ELLIPSIS} and {total - 20} more problems "
+            "(see batch-msgbatch_01.results.jsonl)"
+        )
+    else:
+        assert problems[-1] == "batch msgbatch_01: no result for 01-pharmacy"
+    assert str(raised.value) == "; ".join(problems) + HELD
+    # The held stop of the next run prints the same bounded list.
+    with pytest.raises(RunStopped) as again:
+        run()
+    assert str(again.value).count("; batch msgbatch_01: results line") == min(lines, 20) - 1
+
+
+@pytest.mark.parametrize(("count", "valid"), [(21, True), (22, False)])
+def test_a_state_with_more_than_21_problems_is_invalid(
+    tmp_path: Path, count: int, valid: bool
+) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:1])
+    problems = [f"p{n}" for n in range(count)]
+    write_state(
+        run.model_dir, batch_entry("msgbatch_01", ["01-pharmacy"], "held", problems=problems)
+    )
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    text = str(raised.value)
+    assert text.endswith("is not a valid batch state; it was not changed") is not valid
+    assert run.server.calls == []

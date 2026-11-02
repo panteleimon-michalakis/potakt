@@ -5,12 +5,14 @@ comparison are derived from ``response.json`` alone, so a run can be rescored of
 harness fix without a new request. Library code only: no network, no credentials.
 
 Every write is atomic: the bytes go to ``<name>.tmp`` in the same directory, which then replaces
-``<name>`` (``os.replace``). Bytes, not text mode, so line endings are LF on every OS; a leftover
-``*.tmp`` is simply overwritten by the next write.
+``<name>`` (``os.replace``); the file and, where possible, the directory are synced to disk
+(``os.fsync``). Bytes, not text mode, so line endings are LF on every OS; a leftover ``*.tmp`` is
+simply overwritten by the next write.
 """
 
 import json
 import os
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -236,7 +238,38 @@ def _response_bytes(response: object) -> bytes:
 
 
 def write_atomic(path: Path, data: bytes) -> None:
-    """Write ``data`` to ``path`` atomically (see the module docstring); also used by the runner."""
+    """Write ``data`` to ``path`` atomically and durably (see the module docstring); also used by
+    the runner.
+
+    TASK-005c3d H11: the temporary file is written, flushed, ``os.fsync``-ed and closed before
+    ``os.replace``; then the directory is synced where the OS allows it. A failure before the
+    replace (the file fsync included) removes the temporary file and is raised: a write that may
+    not be durable is never reported as done.
+    """
     temporary = path.with_name(path.name + _TEMPORARY_SUFFIX)
-    temporary.write_bytes(data)
+    try:
+        with temporary.open("wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        with suppress(OSError):
+            temporary.unlink(missing_ok=True)
+        raise
     os.replace(temporary, path)
+    _sync_directory(path.parent)
+
+
+def _sync_directory(directory: Path) -> None:
+    """Make a replace in ``directory`` durable: ``os.fsync`` of the directory itself (POSIX).
+    Any ``OSError`` is ignored: Windows cannot open a directory this way, and its ``os.replace``
+    is a single file-system operation."""
+    try:
+        descriptor = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        with suppress(OSError):
+            os.fsync(descriptor)
+    finally:
+        os.close(descriptor)

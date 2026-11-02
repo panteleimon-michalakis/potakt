@@ -164,7 +164,9 @@ Push only after the reviewer's check of a fresh clone.
   `batch <id> is held: send batch-<id>.results.jsonl and this message to the reviewer`. The batch
   is now **held**: no scenario of it is sent again, and every run, also the same command, stops
   at once with `batch <id> is held for the reviewer: <problems>; after the reviewer's decision,
-  run the same command with --release <id>`, sending nothing. Step by step:
+  run the same command with --release <id>`, sending nothing. At most 20 problems are kept and
+  shown; any others are counted in a last line `… and <n> more problems (see
+  batch-<id>.results.jsonl)`. Step by step:
   1. Send `batch-<id>.results.jsonl` and the message to the reviewer.
   2. Wait for the reviewer's decision.
   3. Only if the reviewer says so, run the same command with `--yes --release <id>`. It prints

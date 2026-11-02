@@ -6,7 +6,8 @@ No test reads a real key or opens a connection: ``--yes`` runs get the fake key 
 
 import ast
 import json
-from datetime import timedelta
+import os
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -691,6 +692,24 @@ def test_a_lock_that_cannot_be_created_says_so(
     assert result.stderr == f"cannot create {runs / LOCK}: Permission denied\n"
 
 
+def test_the_lock_line_is_synced_before_the_lock_is_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # TASK-005c3d H11: take_lock fsyncs its line, like every write of the runner.
+    runs = tmp_path / "runs"
+    synced: list[str] = []
+
+    def fsync(fd: int) -> None:
+        synced.append(lock_text(runs))  # the line is flushed and the file still open
+
+    monkeypatch.setattr(os, "fsync", fsync)
+
+    lock = runner_module.take_lock(runs, HAIKU, datetime(2026, 11, 2, 10, tzinfo=UTC))
+
+    assert synced == ["claude-haiku-5-5 2026-11-02T10:00:00Z\n"]
+    assert lock.release() is None
+
+
 # -- E9 review findings (Minor 4): the lock's edge cases --
 
 
@@ -1191,6 +1210,9 @@ def test_the_runbook_quotes_the_reconciliation_messages_and_the_new_rules() -> N
         "`no scenario in <corpus>`",
         "`" + cli.UNEXPECTED.format(kind="<type>") + "`",
         "`malformed` in the summary's `Stops` line",
+        # TASK-005c3d H12: the bounded problems.
+        "At most 20 problems are kept and shown",
+        "`" + runner_module.MORE_PROBLEMS.format(count="<n>", id="<id>") + "`",
     ):
         assert quoted in text, quoted
     assert "cancel all but the oldest, then run the same command again" in lines

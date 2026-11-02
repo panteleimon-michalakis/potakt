@@ -18,6 +18,7 @@ A batch the runner never polls still counts as paid: on the real API it runs any
 """
 
 import json
+import os
 import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -248,6 +249,21 @@ def schema_rendered_once() -> Iterator[None]:
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(test_a_module, "render_json_schema", lambda: schema)
         yield
+
+
+FSYNCS: list[int] = []  # the descriptors the counting no-op was given
+
+
+@pytest.fixture(scope="module", autouse=True)
+def fsync_counted() -> Iterator[None]:
+    """Speed only, like ``schema_rendered_once``: ``os.fsync`` (TASK-005c3d H11) made this test
+    75 % slower on Windows, so here it only counts its calls. What reaches the disk is unchanged;
+    the real ordering (file fsync before ``os.replace``, then the directory) is checked by the
+    unit tests of ``write_atomic`` and ``take_lock``, and the rehearsal uses the real fsync."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(os, "fsync", FSYNCS.append)
+        yield
+    assert FSYNCS, "the runner synced nothing"
 
 
 @pytest.fixture(scope="module")

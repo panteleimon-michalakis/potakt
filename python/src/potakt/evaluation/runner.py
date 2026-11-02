@@ -20,6 +20,7 @@ answer, before anything else is sent; the next run starts with that reconciliati
 
 import json
 import math
+import os
 import re
 from collections.abc import Callable
 from contextlib import suppress
@@ -139,6 +140,9 @@ HELD_STOP = (
     "batch {id} is held for the reviewer: {problems}; after the reviewer's decision, run the "
     "same command with --release {id}"
 )
+# TASK-005c3d H12: a held batch stores and prints at most this many problems, then one more line.
+MAX_PROBLEMS = 20
+MORE_PROBLEMS = "\N{HORIZONTAL ELLIPSIS} and {count} more problems (see batch-{id}.results.jsonl)"
 # TASK-005c3c E5: the lock file of ``eval run --yes`` in the runs directory of all models.
 LOCK_FILE = ".eval-run.lock"
 _LOCK_SHOWN = 120  # characters of a lock file shown in a message
@@ -229,8 +233,11 @@ def _entry(item: object) -> _Batch | None:
     ):
         return None
     texts = tuple(cast(list[str], problems))
-    # E4: problems only on a held batch (never empty) or on a done one (held, then released).
+    # E4: problems only on a held batch (never empty) or on a done one (held, then released);
+    # H12: at most MAX_PROBLEMS and the line that counts the others.
     if (state == "held" and not texts) or (texts and state not in ("held", "done")):
+        return None
+    if len(texts) > MAX_PROBLEMS + 1:
         return None
     if state in _WITH_BATCH:
         if not (
@@ -836,6 +843,9 @@ class _AnthropicRun:
             )
         write_atomic(self.model_dir / _results_file(batch_id), response.body)
         problems = self._record_results(batch, batch_id, response.body)
+        if len(problems) > MAX_PROBLEMS:  # H12: bounded in batches.json and in every message
+            more = MORE_PROBLEMS.format(count=len(problems) - MAX_PROBLEMS, id=batch_id)
+            problems = [*problems[:MAX_PROBLEMS], more]
         # E4: a problem holds the batch, so no run sends its scenarios again (a new, paid batch)
         # until the owner releases it after the reviewer's decision.
         state = "held" if problems else "done"
@@ -1143,6 +1153,8 @@ def take_lock(runs_dir: Path, model: str, now: datetime) -> RunLock:
     try:
         with handle:
             handle.write(line)
+            handle.flush()
+            os.fsync(handle.fileno())  # TASK-005c3d H11: durable before the run goes on
     except OSError as error:
         with suppress(OSError):
             path.unlink(missing_ok=True)  # an empty or partial lock would block the next run
