@@ -2,9 +2,12 @@
 
 One test follows the owner's runbook (``docs/validation/test-a-runbook.md``) in its order, over a
 copy of the full ten-scenario corpus, with fake keys, fake transports and a fake clock: the dry
-runs, Haiku, the checks of the Haiku records, Gemini in two invocations, then Opus with a lost
-create response whose adopted batch misses one result: the batch is held, the plain re-run sends
-nothing, and ``--release`` after the reviewer's decision completes the run. At the end, the runs
+runs, Haiku (one answer is not valid Unicode: recorded as malformed, TASK-005c3d H8), the checks
+of the Haiku records, Gemini in two invocations, then Opus with a lost create response whose
+adopted batch misses one result: the batch is held, the plain re-run sends nothing, and
+``--release`` after the reviewer's decision completes the run. Every invocation that called the
+batch API is audited for unrecorded batches (H13), and every request carries only its own API's
+key header (H7). At the end, the runs
 directory holds exactly the expected files (no lock), the fake keys are in no file and no output,
 and every ``request.json`` is the ``eval prompt`` payload.
 """
@@ -45,15 +48,20 @@ def fenced(name: str) -> str:
     return "```json\n" + truth_text(name).rstrip("\n") + "\n```"
 
 
+SURROGATE_SCENARIO = "05-supermarket-checkouts"  # TASK-005c3d H14: Haiku answers "\ud83d"
+
+
 def claude_outcome(number: int, scenario: str) -> dict[str, Any]:
-    """Batch 1 is Haiku's (04 hits the output limit), batch 2 Opus's."""
+    """Batch 1 is Haiku's (04 hits the output limit, 05 is not valid Unicode), batch 2 Opus's."""
     model = HAIKU if number == 1 else OPUS
     stop = "max_tokens" if number == 1 and scenario == "04-restaurant" else "end_turn"
-    return {"type": "succeeded", "message": anthropic_message(model, fenced(scenario), stop)}
+    text = "\ud83d" if number == 1 and scenario == SURROGATE_SCENARIO else fenced(scenario)
+    return {"type": "succeeded", "message": anthropic_message(model, text, stop)}
 
 
 class Router:
-    """The one transport of every run: the Message Batches fake or the Gemini fake."""
+    """The one transport of every run: the Message Batches fake or the Gemini fake. Each request
+    carries exactly its own API's key header (TASK-005c3d H7)."""
 
     def __init__(self, batches: FakeBatches, gemini: FakeGemini) -> None:
         self.batches = batches
@@ -62,8 +70,13 @@ class Router:
     def send(
         self, method: str, url: str, headers: dict[str, str], body: bytes | None, timeout: float
     ) -> HttpResponse:
-        target = self.batches if url.startswith(BATCHES_URL) else self.gemini
-        return target.send(method, url, headers, body, timeout)
+        if url.startswith(BATCHES_URL):
+            assert headers["authorization"] == f"Bearer {KEY}"
+            assert "x-api-key" not in headers and "x-goog-api-key" not in headers
+            return self.batches.send(method, url, headers, body, timeout)
+        assert headers["x-goog-api-key"] == GEMINI_KEY
+        assert "authorization" not in headers and "x-api-key" not in headers
+        return self.gemini.send(method, url, headers, body, timeout)
 
 
 def test_the_runbook_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -87,6 +100,12 @@ def test_the_runbook_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     def eval_run(model: str, *extra: str) -> Result:
         return potakt("eval", "run", "--model", model, "--runs", runs, "--corpus", corpus, *extra)
 
+    def audited(result: Result, lists_before: int, run_lists: int) -> None:
+        """TASK-005c3d H13: an invocation that called the batch API lists the batches once more
+        after its own ``run_lists`` listings, and names no batch (every one is recorded)."""
+        assert batches.lists - lists_before == run_lists + 1
+        assert "warning" not in result.output
+
     def shown(text: str) -> str:
         return text.replace(str(runs), "<runs>").replace("\\", "/")
 
@@ -103,12 +122,20 @@ def test_the_runbook_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
         "claude-opus-5-5 runs only after claude-haiku-5-5 has a complete run"
     )
 
-    # 2. Haiku --yes: one batch; 04 stops at max_tokens.
+    # 2. Haiku --yes: one batch; 04 stops at max_tokens; 05's answer is not valid Unicode, so it
+    # is recorded as malformed (an invalid candidate) and the run goes on (TASK-005c3d H8).
+    lists = batches.lists
     haiku = eval_run(HAIKU, "--yes")
     assert haiku.exit_code == 0, haiku.stderr
     assert haiku.stdout.startswith("batch msgbatch_01 created for 10 scenarios\n")
+    assert f"{SURROGATE_SCENARIO}: recorded (malformed, invalid, recall 0.000)\n" in haiku.stdout
     assert "Complete: yes\n" in haiku.stdout
-    assert "Stops: end_turn 9, max_tokens 1\n" in haiku.stdout
+    assert "Stops: end_turn 8, malformed 1, max_tokens 1\n" in haiku.stdout
+    assert "waiting 240 s before checking for batches that no run recorded\n" in haiku.stdout
+    audited(haiku, lists, 0)
+    raw = (runs / HAIKU / SURROGATE_SCENARIO / "response.json").read_bytes()
+    assert raw.isascii()
+    assert b"\\ud83d" in raw
 
     # 3. The checks of the Haiku records.
     rescored = potakt("eval", "rescore", runs / HAIKU, "--corpus", corpus)
@@ -150,7 +177,9 @@ def test_the_runbook_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
         for name in ALL_SCENARIOS
         if name != missing
     ).encode("utf-8")
+    lists = batches.lists
     held = eval_run(OPUS, "--yes")
+    audited(held, lists, 1)  # the reconciliation's listing, then the audit's
     assert held.exit_code == 1
     assert held.stdout.startswith(
         "waiting 120 s before looking for a batch the create request may have made\n"
@@ -168,9 +197,12 @@ def test_the_runbook_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
         f"batch msgbatch_02 is held for the reviewer: batch msgbatch_02: no result for {missing}; "
         "after the reviewer's decision, run the same command with --release msgbatch_02\n"
     )
-    assert len(batches.calls) == calls
+    assert len(batches.calls) == calls  # no call, so no audit either
+    assert "checking for batches" not in again.output
     # After the reviewer's decision: the release sends the missing scenario in a new batch.
+    lists = batches.lists
     opus = eval_run(OPUS, "--yes", "--release", "msgbatch_02")
+    audited(opus, lists, 0)
     assert opus.exit_code == 0, opus.stderr
     assert opus.stdout.startswith(
         "batch msgbatch_02 released after review\nbatch msgbatch_03 created for 1 scenarios\n"
