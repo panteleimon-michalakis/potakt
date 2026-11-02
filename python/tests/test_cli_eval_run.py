@@ -431,6 +431,7 @@ def test_an_interruption_during_the_create_call_is_resumed_by_the_same_command(
     )
     assert resumed.exit_code == 0, resumed.stderr
     assert resumed.stdout.startswith(
+        "waiting 180 s before looking for a batch the create request may have made\n"
         "adopted batch msgbatch_01 created by an earlier create request\n"
     )
     assert len(server.creates()) == 1
@@ -1012,6 +1013,12 @@ def test_the_runbook_quotes_the_reconciliation_messages_and_the_new_rules() -> N
         "One run at a time: never run `potakt eval run` in two windows at once",
         "Keep the laptop awake and plugged in while a batch runs",
         "again after every 10 polls without a change (every 10 minutes)",
+        # TASK-005c3d H3-H6: the announced wait, the future started_at, the page cap.
+        "`" + runner_module.WAITING.format(seconds="<n>") + "` (at most 180 s)",
+        "three minutes after the request, for a request of an interrupted run",
+        "`" + runner_module.FUTURE_STOP.format(started_at="<time>") + "`",
+        "`" + runner_module.TOO_MANY_BATCHES + "`",
+        "page by page back to the request",
     ):
         assert quoted in text, quoted
     assert "cancel all but the oldest, then run the same command again" in lines

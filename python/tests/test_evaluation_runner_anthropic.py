@@ -7,6 +7,8 @@ run is its ``Sleeps``: ``now()`` moves only by the seconds slept (TASK-005c3b D2
 """
 
 import json
+import math
+import urllib.parse
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -98,7 +100,10 @@ class FakeBatches:
     # TransportError; an HttpResponse is returned as is (no batch); Created(response) registers
     # the batch, then returns the response.
     create_script: list[CreateStep] = field(default_factory=list[CreateStep])
+    # Extra listed batches: ``newest`` before the fake's own batches, ``listing`` after them.
+    newest: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
     listing: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
+    list_pages: list[HttpResponse] = field(default_factory=list[HttpResponse])  # answered first
     # A batch created by a create call is missing from the list for ``lag`` seconds of the clock
     # (plus its entry in ``extra_lag``).
     lag: float = 0.0
@@ -182,23 +187,29 @@ class FakeBatches:
         self.calls.append(Call(method, url, headers, body, timeout))
         if method == "POST" and url == BATCHES_URL:
             return self._create(body)
-        if method == "GET" and url == LIST_URL:
+        if method == "GET" and url.startswith(LIST_URL):
             if self.list_failures:
                 raise self.list_failures.pop(0)
             self.lists += 1
             now = self.now()
             self.list_times.append(now)
+            if self.list_pages:
+                return self.list_pages.pop(0)
             if self.list_answer is not None:
                 return self.list_answer
-            data = [
-                self.batch(batch_id)
-                for batch_id in reversed(self.batches)
-                if batch_id not in self.posted
-                or now
-                >= self.posted_at[batch_id]
-                + timedelta(seconds=self.lag + self.extra_lag.get(batch_id, 0.0))
-            ] + self.listing
-            return ok({"data": data, "has_more": False, "first_id": None, "last_id": None})
+            data = (
+                self.newest
+                + [
+                    self.batch(batch_id)
+                    for batch_id in reversed(self.batches)
+                    if batch_id not in self.posted
+                    or now
+                    >= self.posted_at[batch_id]
+                    + timedelta(seconds=self.lag + self.extra_lag.get(batch_id, 0.0))
+                ]
+                + self.listing
+            )
+            return ok(page_of(data, url))
         if method == "GET" and url.endswith("/results"):
             if self.results_answer is not None:
                 return self.results_answer
@@ -263,6 +274,22 @@ def ok(document: object) -> HttpResponse:
     return HttpResponse(200, {"content-type": "application/json"}, json.dumps(document).encode())
 
 
+def page_of(data: list[dict[str, Any]], url: str) -> dict[str, Any]:
+    """One page of a list call, as the documented API answers it (TASK-005c3d H6): ``limit``
+    (default 20) items after ``after_id``, with ``has_more``, ``first_id`` and ``last_id``."""
+    query = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query))
+    limit = int(query.get("limit", "20"))
+    after = query.get("after_id")
+    start = 0 if after is None else [item["id"] for item in data].index(after) + 1
+    chunk = data[start : start + limit]
+    return {
+        "data": chunk,
+        "has_more": start + limit < len(data),
+        "first_id": chunk[0]["id"] if chunk else None,
+        "last_id": chunk[-1]["id"] if chunk else None,
+    }
+
+
 @dataclass
 class Run:
     corpus: Path
@@ -297,7 +324,12 @@ class Run:
         return [batch["state"] for batch in self.state()["batches"]]
 
     def lists(self) -> int:
+        """The listings: list calls without ``after_id`` (the first page)."""
         return sum(call.url == LIST_URL for call in self.server.calls)
+
+    def pages(self) -> int:
+        """Every list call, the later pages included."""
+        return sum(call.url.startswith(LIST_URL) for call in self.server.calls)
 
     def batch_ids(self) -> list[str | None]:
         """The batch ids in ``batches.json``; none if the file was never written."""
@@ -1352,7 +1384,10 @@ def test_a_gateway_error_after_the_batch_was_created_adopts_it(tmp_path: Path, c
     run()
 
     assert len(server.creates()) == 1
-    assert run.echo[0] == "adopted batch msgbatch_01 created by an earlier create request"
+    assert run.echo[:2] == [
+        waiting(120),
+        "adopted batch msgbatch_01 created by an earlier create request",
+    ]
     assert run.recorded() == list(ALL_SCENARIOS[:2])
     assert run.sleeps == [120, 60]
 
@@ -1387,7 +1422,10 @@ def test_an_unclear_status_after_the_batch_was_created_adopts_it(tmp_path: Path,
     run()
 
     assert len(server.creates()) == 1
-    assert run.echo[0] == "adopted batch msgbatch_01 created by an earlier create request"
+    assert run.echo[:2] == [
+        waiting(120),
+        "adopted batch msgbatch_01 created by an earlier create request",
+    ]
     assert run.recorded() == list(ALL_SCENARIOS[:2])
     assert server.list_times == [NOW + timedelta(seconds=120)]
     assert not any("evil" in call.url for call in server.calls)
@@ -1551,7 +1589,12 @@ def test_an_interrupted_create_that_made_a_batch_is_adopted_by_the_next_run(
 
     run()
 
-    assert run.echo[0] == "adopted batch msgbatch_01 created by an earlier create request"
+    # TASK-005c3d H3: a leftover entry waits until started_at + 60 s + 120 s.
+    assert run.echo[:2] == [
+        waiting(180),
+        "adopted batch msgbatch_01 created by an earlier create request",
+    ]
+    assert run.sleeps == [180, 60]
     assert len(server.creates()) == 1
     assert run.recorded() == list(ALL_SCENARIOS[:2])
     assert run.state()["batches"] == [batch_entry("msgbatch_01", ALL_SCENARIOS[:2], "done")]
@@ -1567,11 +1610,12 @@ def test_an_interrupted_create_without_a_batch_is_marked_failed_and_sent_again(
 
     run()
 
-    assert run.echo[0] == (
-        "no batch was created by the earlier create request (started 2026-11-02T10:00:00Z)"
-    )
-    assert run.echo[1] == "batch msgbatch_01 created for 2 scenarios"
-    assert run.sleeps == [120, 60]
+    assert run.echo[:3] == [
+        waiting(180),
+        "no batch was created by the earlier create request (started 2026-11-02T10:00:00Z)",
+        "batch msgbatch_01 created for 2 scenarios",
+    ]
+    assert run.sleeps == [180, 60]
     assert run.lists() == 1
     assert run.states() == ["failed", "done"]
     assert run.recorded() == list(ALL_SCENARIOS[:2])
@@ -1603,7 +1647,10 @@ def test_a_creating_entry_is_reconciled_even_when_nothing_is_pending(tmp_path: P
 
     run()
 
-    assert run.echo[0] == "adopted batch msgbatch_01 created by an earlier create request"
+    assert run.echo[:2] == [
+        waiting(180),
+        "adopted batch msgbatch_01 created by an earlier create request",
+    ]
     assert f"{ALL_SCENARIOS[0]}: already recorded" in run.echo
     assert run.server.creates() == []
     assert run.states() == ["done"]
@@ -1794,3 +1841,319 @@ def test_an_open_batch_with_nothing_pending_is_resumed_and_closed(tmp_path: Path
     assert server.polled == {"msgbatch_01": 2}
     assert run.states() == ["done"]
     assert server.creates() == []
+
+
+# --- TASK-005c3d H2: a closed adoption window ----------------------------------------------------
+
+
+def waiting(seconds: int) -> str:
+    return f"waiting {seconds} s before looking for a batch the create request may have made"
+
+
+def test_a_leftover_entry_does_not_adopt_a_batch_created_days_later(tmp_path: Path) -> None:
+    # U1: the window had no upper bound, so a same-size batch of another checkout was adopted.
+    server = FakeBatches()
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+    server.register(list(ALL_SCENARIOS[:1]), created_at=iso(-timedelta(days=1)))
+    leftover = batch_entry(None, ALL_SCENARIOS[:1], "creating", started_at="2026-10-30T10:00:00Z")
+    write_state(run.model_dir, leftover)
+
+    run()
+
+    assert run.echo[0] == (
+        "no batch was created by the earlier create request (started 2026-10-30T10:00:00Z)"
+    )
+    assert not any("adopted" in line for line in run.echo)
+    assert run.states() == ["failed", "done"]
+    assert run.batch_ids() == [None, "msgbatch_02"]
+
+
+@pytest.mark.parametrize(
+    ("minutes", "adopted"),
+    [(9, True), (10, True), (11, False), (-9, True), (-10, True), (-11, False)],
+)
+def test_the_in_run_window_ends_ten_minutes_after_the_unclear_answer(
+    tmp_path: Path, minutes: int, adopted: bool
+) -> None:
+    # t_end is the instant the unclear answer arrived (here NOW, as started_at).
+    server = FakeBatches(create_script=["lost-none"])
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+    edge = server.register(list(ALL_SCENARIOS[:1]), created_at=iso(timedelta(minutes=minutes)))
+
+    run()
+
+    assert (f"adopted batch {edge} created by an earlier create request" in run.echo) is adopted
+    assert len(server.creates()) == (1 if adopted else 2)
+
+
+def test_the_in_run_window_ends_after_a_slow_answer(tmp_path: Path) -> None:
+    # The answer arrives 90 s after the request: the window ends 10 minutes after the answer.
+    server = FakeBatches(create_script=[HttpResponse(504, {}, b"")], create_seconds=90)
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+    server.register(list(ALL_SCENARIOS[:1]), created_at=iso(timedelta(seconds=90 + 599)))
+
+    run()
+
+    assert "adopted batch msgbatch_01 created by an earlier create request" in run.echo
+
+
+@pytest.mark.parametrize(("seconds", "adopted"), [(660, True), (661, False)])
+def test_the_leftover_window_ends_ten_minutes_after_the_call_timeout(
+    tmp_path: Path, seconds: int, adopted: bool
+) -> None:
+    # A leftover entry has no known answer: t_end = started_at + CALL_TIMEOUT_SECONDS (60 s).
+    server = FakeBatches()
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+    started = timedelta(hours=-1)
+    server.register(list(ALL_SCENARIOS[:1]), created_at=iso(started + timedelta(seconds=seconds)))
+    write_state(
+        run.model_dir, batch_entry(None, ALL_SCENARIOS[:1], "creating", started_at=iso(started))
+    )
+
+    run()
+
+    assert ("adopted batch msgbatch_01 created by an earlier create request" in run.echo) is adopted
+    assert run.states() == (["done"] if adopted else ["failed", "done"])
+
+
+# --- TASK-005c3d H3, H4, H5: the leftover t0, capped waits, the waiting line ----------------------
+
+
+def test_a_leftover_entry_counts_from_the_end_of_its_call_timeout(tmp_path: Path) -> None:
+    # R1: t0 was started_at, although the create call may have run for up to 60 s.
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:1])
+    leftover = batch_entry(
+        None, ALL_SCENARIOS[:1], "creating", started_at=iso(-timedelta(seconds=30))
+    )
+    write_state(run.model_dir, leftover)
+
+    run()
+
+    assert run.sleeps == [150, 60]  # the reconcile wait, then the poll of the new batch
+    assert run.lists() == 1
+    assert run.server.list_times == [NOW + timedelta(seconds=150)]
+    assert run.echo[0] == waiting(150)
+
+
+@pytest.mark.parametrize("minutes", [5, 10])
+def test_a_leftover_started_at_in_the_near_future_is_capped_at_180_seconds(
+    tmp_path: Path, minutes: int
+) -> None:
+    # U7: the wait had no cap; within the skew window it is capped, beyond it the run stops.
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:1])
+    future = batch_entry(
+        None, ALL_SCENARIOS[:1], "creating", started_at=iso(timedelta(minutes=minutes))
+    )
+    write_state(run.model_dir, future)
+
+    run()
+
+    assert run.sleeps[0] == 180
+    assert run.echo[0] == waiting(180)
+    assert run.lists() == 1
+
+
+@pytest.mark.parametrize("state", ["creating", "done", "failed"])
+def test_an_entry_started_more_than_ten_minutes_in_the_future_stops_before_any_call(
+    tmp_path: Path, state: str
+) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:1])
+    started_at = "2026-11-02T10:10:01Z"  # NOW + 10 min + 1 s
+    write_state(
+        run.model_dir, batch_entry("msgbatch_91", ["01-pharmacy"], state, started_at=started_at)
+    )
+    before = (run.model_dir / BATCH_STATE_FILE).read_bytes()
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == (
+        "batches.json has an entry started at 2026-11-02T10:10:01Z, in the future: the clock or "
+        "the file is wrong; send batches.json to the reviewer"
+    )
+    assert run.server.calls == []
+    assert run.sleeps == []
+    assert (run.model_dir / BATCH_STATE_FILE).read_bytes() == before
+
+
+def test_the_future_check_comes_after_the_held_check(tmp_path: Path) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:2])
+    write_state(
+        run.model_dir,
+        batch_entry("msgbatch_01", ["01-pharmacy"], "held", problems=["p1"]),
+        batch_entry(
+            "msgbatch_02", ["02-hotel-reception"], "done", started_at="2026-11-03T10:00:00Z"
+        ),
+    )
+
+    with pytest.raises(RunStopped, match=r"^batch msgbatch_01 is held for the reviewer: p1; "):
+        run()
+
+
+def test_the_waiting_line_rounds_the_seconds_actually_slept_up(tmp_path: Path) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:1])
+    run.sleeps.advance(0.5)
+    leftover = batch_entry(
+        None, ALL_SCENARIOS[:1], "creating", started_at=iso(-timedelta(seconds=30))
+    )
+    write_state(run.model_dir, leftover)
+
+    run()
+
+    assert run.sleeps[0] == pytest.approx(149.5)
+    assert run.echo[0] == waiting(math.ceil(149.5))
+
+
+def test_no_waiting_line_without_a_wait(tmp_path: Path) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:1])
+    write_state(
+        run.model_dir,
+        batch_entry(None, ALL_SCENARIOS[:1], "creating", started_at="2026-11-02T09:00:00Z"),
+    )
+
+    run()
+
+    assert not any(line.startswith("waiting") for line in run.echo)
+
+
+def test_an_in_run_reconcile_says_that_it_waits(tmp_path: Path) -> None:
+    run = make_run(tmp_path, FakeBatches(create_script=["lost"]), ALL_SCENARIOS[:1])
+
+    run()
+
+    assert run.echo[:2] == [
+        waiting(120),
+        "adopted batch msgbatch_01 created by an earlier create request",
+    ]
+
+
+# --- TASK-005c3d H6: the batch list is followed page by page --------------------------------------
+
+
+def cancelled_batch(batch_id: str, total: int, created: str) -> dict[str, Any]:
+    return other_batch(batch_id, total, created) | {"cancel_initiated_at": created}
+
+
+def test_the_batch_behind_100_newer_cancelled_ones_is_found_on_page_two(tmp_path: Path) -> None:
+    # U5: one page of 100 was read as the whole list.
+    server = FakeBatches(
+        create_script=["lost-none"],
+        newest=[
+            cancelled_batch(f"msgbatch_c{n:03d}", 1, iso(timedelta(seconds=30))) for n in range(100)
+        ],
+    )
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+    server.register(list(ALL_SCENARIOS[:1]), created_at=iso(timedelta(seconds=5)))
+
+    run()
+
+    assert "adopted batch msgbatch_01 created by an earlier create request" in run.echo
+    assert len(server.creates()) == 1
+    list_urls = [call.url for call in server.calls if call.url.startswith(LIST_URL)]
+    assert list_urls == [LIST_URL, f"{LIST_URL}&after_id=msgbatch_c099"]
+
+
+def test_the_paging_stops_at_the_first_page_that_ends_before_the_window(tmp_path: Path) -> None:
+    recent = [other_batch(f"msgbatch_r{n:03d}", 3, iso(-timedelta(minutes=5))) for n in range(100)]
+    old = [other_batch(f"msgbatch_o{n:03d}", 3, iso(-timedelta(minutes=20))) for n in range(150)]
+    server = FakeBatches(create_script=["lost-none"], newest=recent + old)
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+
+    run()
+
+    # Page 1 ends at -5 min (inside the window), page 2 at -20 min: page 3 is never read.
+    assert run.pages() == 2
+    assert len(server.creates()) == 2
+
+
+def test_a_page_ending_exactly_at_the_window_is_followed(tmp_path: Path) -> None:
+    edge = [other_batch(f"msgbatch_e{n:03d}", 3, iso(-timedelta(minutes=10))) for n in range(100)]
+    server = FakeBatches(create_script=["lost-none"], newest=edge)
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+    server.register(list(ALL_SCENARIOS[:1]), created_at=iso(-timedelta(minutes=10)))
+
+    run()
+
+    assert run.pages() == 2
+    assert "adopted batch msgbatch_01 created by an earlier create request" in run.echo
+
+
+@pytest.mark.parametrize(("count", "stops"), [(1000, False), (1001, True)])
+def test_more_than_ten_pages_stop_the_run(tmp_path: Path, count: int, stops: bool) -> None:
+    newer = [
+        cancelled_batch(f"msgbatch_c{n:04d}", 1, iso(timedelta(seconds=1))) for n in range(count)
+    ]
+    server = FakeBatches(create_script=["lost-none"], newest=newer)
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+
+    if stops:
+        with pytest.raises(RunStopped) as raised:
+            run()
+        assert str(raised.value) == (
+            "more than 1000 batches were created recently in this workspace; look in the Claude "
+            "Console (Batches) and send this message to the reviewer"
+        )
+        assert run.states() == ["creating"]  # fail closed: never "none found"
+        assert len(server.creates()) == 1
+    else:
+        run()
+        assert len(server.creates()) == 2
+    # 1000: the tenth page has has_more false; 1001: it has more, and no eleventh page is read.
+    assert run.pages() == 10
+
+
+def list_page(data: list[dict[str, Any]], **fields: object) -> HttpResponse:
+    return ok({"data": data, "has_more": True, "first_id": None, "last_id": None} | fields)
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"last_id": "msgbatch/../x"},
+        {"last_id": "msgbatch_other"},
+        {"last_id": None},
+        {"last_id": 5},
+        {"has_more": "yes"},
+        {"has_more": None},
+    ],
+    ids=["not-an-id", "not-the-last", "null", "number", "has-more-text", "has-more-null"],
+)
+def test_an_unusable_page_cursor_stops_with_no_further_call(
+    tmp_path: Path, fields: dict[str, object]
+) -> None:
+    listed = other_batch("msgbatch_x", 3, iso(timedelta(seconds=1)))
+    server = FakeBatches(create_script=["lost-none"], list_pages=[list_page([listed], **fields)])
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == "listing batches failed: unexpected list object"
+    assert run.pages() == 1
+    assert run.states() == ["creating"]
+
+
+def test_an_empty_page_that_has_more_stops(tmp_path: Path) -> None:
+    server = FakeBatches(create_script=["lost-none"], list_pages=[list_page([])])
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+
+    with pytest.raises(RunStopped, match=r"^listing batches failed: unexpected list object$"):
+        run()
+
+    assert run.pages() == 1
+
+
+def test_a_failed_second_page_stops_the_run(tmp_path: Path) -> None:
+    listed = other_batch("msgbatch_x", 3, iso(timedelta(seconds=1)))
+    second = HttpResponse(403, {}, b"")
+    server = FakeBatches(
+        create_script=["lost-none"],
+        list_pages=[list_page([listed], last_id="msgbatch_x"), second],
+    )
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+
+    with pytest.raises(RunStopped, match=r"^listing batches failed: HTTP 403$"):
+        run()
+
+    assert run.pages() == 2
+    assert run.states() == ["creating"]

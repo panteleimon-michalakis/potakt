@@ -19,6 +19,7 @@ answer, before anything else is sent; the next run starts with that reconciliati
 """
 
 import json
+import math
 import re
 from collections.abc import Callable
 from contextlib import suppress
@@ -113,6 +114,19 @@ FIRST_MODEL = "claude-haiku-5-5"
 RECONCILE_DELAY_SECONDS = 120
 ADOPTION_WINDOW = timedelta(minutes=10)  # clock skew allowed between us and the API
 LIST_LIMIT = 100
+# TASK-005c3d H6: the batch list is read page by page back to an instant, at most this many pages.
+LIST_PAGES = 10
+# TASK-005c3d H4: no reconcile sleep is longer than this, whatever ``started_at`` says.
+MAX_RECONCILE_WAIT_SECONDS = RECONCILE_DELAY_SECONDS + CALL_TIMEOUT_SECONDS
+WAITING = "waiting {seconds} s before looking for a batch the create request may have made"
+FUTURE_STOP = (
+    "batches.json has an entry started at {started_at}, in the future: the clock or the file is "
+    "wrong; send batches.json to the reviewer"
+)
+TOO_MANY_BATCHES = (
+    f"more than {LIST_PAGES * LIST_LIMIT} batches were created recently in this workspace; look "
+    "in the Claude Console (Batches) and send this message to the reviewer"
+)
 # TASK-005c3b D5: an unchanged status line is shown again after this many polls (10 minutes at
 # the default 60 s), so the owner sees that the run is alive.
 HEARTBEAT_POLLS = 10
@@ -432,6 +446,40 @@ def _instant(text: str) -> datetime | None:
         return None
 
 
+@dataclass(frozen=True, slots=True)
+class _Listed:
+    """A batch of the list, with its ``created_at`` read as an instant."""
+
+    status: _BatchStatus
+    created: datetime
+
+
+def _t0(entry: _Batch, answered: datetime | None) -> datetime:
+    """The instant a reconciliation of ``entry`` counts from (TASK-005c3c E3, TASK-005c3d H3):
+    the later of ``started_at`` and the unclear answer in this run; for a leftover entry of an
+    earlier run (no answer known) ``started_at + CALL_TIMEOUT_SECONDS``, the latest instant its
+    create call could have ended."""
+    started = cast(datetime, _started(entry.started_at))  # validated or written by _stamp
+    if answered is None:
+        return started + timedelta(seconds=CALL_TIMEOUT_SECONDS)
+    return max(started, answered)
+
+
+def _is_candidate(listed: _Listed, entry: _Batch, t_end: datetime, known: set[str]) -> bool:
+    """TASK-005c3d H2: ``listed`` could be the batch an unclear create of ``entry`` made: not
+    cancelled, recorded by no model (``known``), with as many requests as ``entry`` has
+    scenarios, and created in the closed window from ``started_at - ADOPTION_WINDOW`` to
+    ``t_end + ADOPTION_WINDOW``. ``t_end`` is ``_t0`` of the reconciliation. The one rule of the
+    reconciliation and of the audit."""
+    started = cast(datetime, _started(entry.started_at))
+    return (
+        not listed.status.cancelled
+        and listed.status.id not in known
+        and listed.status.total == len(entry.scenarios)
+        and started - ADOPTION_WINDOW <= listed.created <= t_end + ADOPTION_WINDOW
+    )
+
+
 # --- the Anthropic batch runner --------------------------------------------------------------
 
 
@@ -465,6 +513,7 @@ class _AnthropicRun:
         held = next((b for b in _load_state(self.model_dir) if b.state == "held"), None)
         if held is not None:
             raise RunStopped(HELD_STOP.format(id=held.id, problems="; ".join(held.problems)))
+        self._check_started_at()
         _complete_records(self.corpus_dir, self.model_dir, self.model, self.echo)
         adopted = self._reconcile_earlier()
         pending = pending_scenarios(self.corpus_dir, self.model_dir)
@@ -491,6 +540,15 @@ class _AnthropicRun:
             batches = _load_state(self.model_dir)
             self.sleep(base_delay(self._next_attempt(pending, batches)))
             batch = self._create(pending, batches)
+
+    def _check_started_at(self) -> None:
+        """TASK-005c3d H4: ``RunStopped`` before any call if an entry, of any state, started
+        more than ``ADOPTION_WINDOW`` after ``now()``: the clock moved back or the file was
+        edited, so no wait or window computed from it can be trusted."""
+        latest = self.now() + ADOPTION_WINDOW
+        for batch in _load_state(self.model_dir):
+            if cast(datetime, _started(batch.started_at)) > latest:
+                raise RunStopped(FUTURE_STOP.format(started_at=batch.started_at))
 
     def _release(self, batch_id: str) -> None:
         """E4: the held entry ``batch_id`` becomes ``done`` (its problems kept, for the record)
@@ -623,50 +681,70 @@ class _AnthropicRun:
     def _reconcile(self, entry: _Batch, answered: datetime | None = None) -> _BatchStatus | None:
         """The batch an unclear create of ``entry`` created, or ``None`` if it created none.
 
-        TASK-005c3c E3: one list call, at ``t0 + RECONCILE_DELAY_SECONDS``, where ``t0`` is the
-        later of ``started_at`` and ``answered`` (the instant the unclear answer arrived, in this
-        run; a leftover entry of an earlier run has none). The wait is computed once from
-        ``now()`` and slept in one call, or skipped if it is not positive. Exactly one candidate
-        is adopted; several stop the run.
+        TASK-005c3c E3, TASK-005c3d H2-H6: one listing (``_list_back_to``, every page back to
+        the window) at ``t0 + RECONCILE_DELAY_SECONDS`` (``_t0``). The wait is computed once
+        from ``now()``, capped at ``MAX_RECONCILE_WAIT_SECONDS``, announced and slept in one
+        call, or skipped if it is not positive. Exactly one candidate (``_is_candidate``) is
+        adopted; several stop the run.
         """
-        started = cast(datetime, _started(entry.started_at))  # validated or written by _stamp
-        t0 = started if answered is None else max(started, answered)
+        t0 = _t0(entry, answered)
         wait = (t0 + timedelta(seconds=RECONCILE_DELAY_SECONDS) - self.now()).total_seconds()
+        wait = min(wait, MAX_RECONCILE_WAIT_SECONDS)
         if wait > 0:
+            self.echo(WAITING.format(seconds=math.ceil(wait)))
             self.sleep(wait)
-        candidates = self._candidates(entry, started)
+        started = cast(datetime, _started(entry.started_at))
+        listed = self._list_back_to(started - ADOPTION_WINDOW)
+        # Every batch any model recorded: another model's batch of the same size is never this one.
+        known = _all_batch_ids(self.model_dir.parent)
+        candidates = [item.status for item in listed if _is_candidate(item, entry, t0, known)]
         if len(candidates) > 1:
             ids = ", ".join(sorted(candidate.id for candidate in candidates))
             raise RunStopped(SEVERAL_CANDIDATES.format(count=len(candidates), ids=ids))
         return candidates[0] if candidates else None
 
-    def _candidates(self, entry: _Batch, started: datetime) -> list[_BatchStatus]:
-        """The listed batches that could be the one ``entry`` created: not cancelled, recorded
-        by no model, with as many requests as ``entry`` has scenarios, created at most
-        ``ADOPTION_WINDOW`` before ``started_at``."""
-        response = self._get(f"{BATCHES_URL}?limit={LIST_LIMIT}", CALL_TIMEOUT_SECONDS)
-        if response.status != 200:
-            raise RunStopped(f"listing batches failed: {self._describe(response)}")
-        data = _field(_json(response.body), "data")
-        if not isinstance(data, list):
-            raise RunStopped("listing batches failed: unexpected list object")
-        # Every batch any model recorded: another model's batch of the same size is never this one.
-        known = _all_batch_ids(self.model_dir.parent)
-        earliest = started - ADOPTION_WINDOW
-        candidates: list[_BatchStatus] = []
-        for item in cast(list[object], data):
-            status = _batch_status(item)
-            created = _instant(status.created_at) if status is not None else None
-            if status is None or created is None:
-                raise RunStopped("listing batches failed: unexpected batch object")
-            if (
-                not status.cancelled
-                and status.id not in known
-                and status.total == len(entry.scenarios)
-                and created >= earliest
+    def _list_back_to(self, instant: datetime) -> list[_Listed]:
+        """TASK-005c3d H6: the listed batches, newest first, page by page until a page is the
+        last one or ends with a batch created before ``instant``; at most ``LIST_PAGES`` pages.
+
+        Each page goes through ``send_with_retries``. A page that is not a 200 with a list of
+        readable batches, a ``has_more`` that is not a boolean, or a page to follow whose
+        ``last_id`` is not the id of its last batch stops the run; so does a list that would need
+        more pages (fail closed: never "none found").
+        """
+        url = f"{BATCHES_URL}?limit={LIST_LIMIT}"
+        listed: list[_Listed] = []
+        for _ in range(LIST_PAGES):
+            response = self._get(url, CALL_TIMEOUT_SECONDS)
+            if response.status != 200:
+                raise RunStopped(f"listing batches failed: {self._describe(response)}")
+            document = _json(response.body)
+            data = _field(document, "data")
+            if not isinstance(data, list):
+                raise RunStopped("listing batches failed: unexpected list object")
+            page: list[_Listed] = []
+            for item in cast(list[object], data):
+                status = _batch_status(item)
+                created = _instant(status.created_at) if status is not None else None
+                if status is None or created is None:
+                    raise RunStopped("listing batches failed: unexpected batch object")
+                page.append(_Listed(status, created))
+            listed += page
+            has_more = _field(document, "has_more")
+            if not isinstance(has_more, bool):
+                raise RunStopped("listing batches failed: unexpected list object")
+            if not has_more or (page and page[-1].created < instant):
+                return listed
+            last_id = _field(document, "last_id")
+            if not (
+                page
+                and isinstance(last_id, str)
+                and _BATCH_ID.fullmatch(last_id)
+                and last_id == page[-1].status.id
             ):
-                candidates.append(status)
-        return candidates
+                raise RunStopped("listing batches failed: unexpected list object")
+            url = f"{BATCHES_URL}?limit={LIST_LIMIT}&after_id={last_id}"
+        raise RunStopped(TOO_MANY_BATCHES)
 
     # -- poll, download, record (F2 steps 4, 5) --
 

@@ -153,6 +153,7 @@ def test_the_runbook_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     held = eval_run(OPUS, "--yes")
     assert held.exit_code == 1
     assert held.stdout.startswith(
+        "waiting 120 s before looking for a batch the create request may have made\n"
         "adopted batch msgbatch_02 created by an earlier create request\n"
     )
     assert held.stderr == (

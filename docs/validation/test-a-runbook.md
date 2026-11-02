@@ -73,8 +73,11 @@ window shows that the run is alive. This first batch also confirms the API versi
 charge and no record, and the reason is printed.
 
 If the answer to the batch creation is lost or unclear (no answer, a redirect, a 408 or a 5xx),
-the run may pause about two minutes; this is normal. It then looks the batch up in the Claude
-batch list once, adopts it if it was created, and sends nothing twice.
+the run may pause about two minutes; this is normal. It first prints
+`waiting <n> s before looking for a batch the create request may have made` (at most 180 s), then
+looks the batch up in the Claude batch list once, page by page back to the request, adopts it if
+it was created, and sends nothing twice. Do not press Ctrl+C during that wait; if you do, the next
+run waits again (up to three minutes) before it sends anything.
 
 ## 4. Check the Haiku records
 
@@ -133,8 +136,11 @@ Push only after the reviewer's check of a fresh clone.
     this run, when its answer was lost, a redirect, a 408 or a 5xx, or in an interrupted run) did
     create a batch; the run polls that batch and records its answers instead of sending a new one.
   - `no batch was created by the earlier create request (started <time>)`: the batch list was
-    checked once, two minutes after the request, and no batch was found; the run continues and
-    sends the pending scenarios.
+    checked once, two minutes after the answer (three minutes after the request, for a request
+    of an interrupted run), and no batch was found; the run continues and sends the pending
+    scenarios.
+  - `waiting <n> s before looking for a batch the create request may have made`: the pause
+    before that check; it is at most 180 s.
   - `Unconfirmed create request: started <time> (<n> scenarios); --yes checks for its batch
     before sending anything` (dry run): an earlier run was interrupted while creating a batch.
     The dry run itself sends nothing; the next `--yes` run does the check above first.
@@ -164,6 +170,13 @@ Push only after the reviewer's check of a fresh clone.
   3. Only if the reviewer says so, run the same command with `--yes --release <id>`. It prints
      `batch <id> released after review` and continues: the scenarios still pending are sent in a
      new batch.
+- **`batches.json has an entry started at <time>, in the future: the clock or the file is wrong;
+  send batches.json to the reviewer`**: the laptop's clock moved back, or `batches.json` was
+  edited. Nothing was listed or sent. Check the Windows clock (Settings, Time, "Sync now"), do not
+  edit `batches.json`, and send it with the message to the reviewer.
+- **`more than 1000 batches were created recently in this workspace; look in the Claude Console
+  (Batches) and send this message to the reviewer`**: the run could not read the whole recent
+  batch list, so it stops instead of guessing that no batch exists; nothing more was sent.
 - **The same open batch fails on every run** (for example `polling batch <id> failed: HTTP 404`
   or `downloading the results of batch <id> failed`, because the batch was deleted or its results
   are no longer kept): do not edit `batches.json`. Send the message and `batches.json` to the
