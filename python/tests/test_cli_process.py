@@ -252,6 +252,11 @@ def test_eval_rescore_matches_the_golden_byte_for_byte(tmp_path: Path) -> None:
         ("rescore-ok", 0),
         ("rescore-missing-directory", 1),
         ("rescore-unregistered-model", 1),
+        # eval run (TASK-005c3 F5): the key variables are absent (conftest), so nothing is sent.
+        ("run-dry", 0),
+        ("run-missing-key", 1),
+        ("run-opus-before-haiku", 1),
+        ("run-unregistered-model", 2),
     ],
 )
 def test_eval_exit_codes(case: str, expected: int, tmp_path: Path) -> None:
@@ -259,6 +264,7 @@ def test_eval_exit_codes(case: str, expected: int, tmp_path: Path) -> None:
     truth.write_bytes((PHARMACY / "truth.json").read_bytes())
     junk = tmp_path / "junk.txt"
     junk.write_bytes(b"Sorry, no model today.\n")
+    test_a = ("--runs", tmp_path / "test-a")  # eval run: never the repository's runs directory
     runs = tmp_path / "claude-opus-5-5"  # rescoring writes: never into the fixtures
     shutil.copytree(OPUS_RUNS, runs)
     unregistered = tmp_path / "claude-sonnet-5-5"
@@ -278,6 +284,10 @@ def test_eval_exit_codes(case: str, expected: int, tmp_path: Path) -> None:
         "rescore-ok": ("rescore", runs),
         "rescore-missing-directory": ("rescore", tmp_path / "nope"),
         "rescore-unregistered-model": ("rescore", unregistered),
+        "run-dry": ("run", "--model", "claude-haiku-5-5", *test_a),
+        "run-missing-key": ("run", "--model", "gemini-3.8-flash", *test_a, "--yes"),
+        "run-opus-before-haiku": ("run", "--model", "claude-opus-5-5", *test_a, "--yes"),
+        "run-unregistered-model": ("run", "--model", "claude-sonnet-5-5", "--yes"),
     }
 
     result = potakt("eval", *args[case])

@@ -1,8 +1,11 @@
 """Command-line interface for Potakt."""
 
 import io
+import os
 import sys
+import time
 from collections.abc import Iterable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, NoReturn
 
@@ -27,7 +30,16 @@ from potakt.evaluation import (
     summarize,
 )
 from potakt.evaluation.records import RESPONSE_FILE
-from potakt.evaluation.test_a import check_registered
+from potakt.evaluation.runner import (
+    RUNS_PATH,
+    check_order,
+    run_anthropic,
+    run_gemini,
+    run_plan,
+)
+from potakt.evaluation.summary import model_directory_name
+from potakt.evaluation.test_a import ANTHROPIC_PREFIX, check_registered
+from potakt.evaluation.transport import RunStopped, Transport, UrllibTransport
 from potakt.model import (
     DecisionModel,
     DecisionModelError,
@@ -43,7 +55,8 @@ from potakt.model import (
     validate_solution,
 )
 
-app = typer.Typer(no_args_is_help=True)
+# Never print local variables in a traceback: one of them could hold an API key (TASK-005c3 F5).
+app = typer.Typer(no_args_is_help=True, pretty_exceptions_show_locals=False)
 
 
 def use_utf8(stream: object) -> None:
@@ -183,13 +196,16 @@ def _load_for_check(model: Path, solution: Path) -> tuple[DecisionModel, Problem
     return dm, instance, parsed
 
 
-# --- eval: the Phase 0 experiment, offline (ADR-0007 §7) -------------------------------------
+# --- eval: the Phase 0 experiment (ADR-0007 §7) ----------------------------------------------
 
-eval_app = typer.Typer(no_args_is_help=True)
+eval_app = typer.Typer(no_args_is_help=True, pretty_exceptions_show_locals=False)
 app.add_typer(
     eval_app,
     name="eval",
-    help="Phase 0 evaluation (ADR-0007), offline: no model calls, no credentials.",
+    help=(
+        "Phase 0 evaluation (ADR-0007). eval run calls the model APIs (paid, with a key from "
+        "the environment); the other commands are offline: no model calls, no credentials."
+    ),
 )
 EXIT_USAGE = 2  # the framework's usage error code (Click/Typer)
 
@@ -355,3 +371,125 @@ def _rescored(run: Path, corpus: Path, model: str) -> str | None:
         return f"skipped (no {RESPONSE_FILE})"
     written = rescore_run(run, scenario, model)
     return f"updated ({', '.join(written)})" if written else "unchanged"
+
+
+# --- eval run: the only command that calls the model APIs (TASK-005c3 F5) --------------------
+
+ANTHROPIC_KEY_VARIABLE = "POTAKT_ANTHROPIC_API_KEY"
+GEMINI_KEY_VARIABLE = "POTAKT_GEMINI_API_KEY"
+MIN_POLL_SECONDS = 10
+INTERRUPTED = "interrupted: run the same command again to resume (nothing is lost)"
+
+
+def read_key(variable: str) -> str:
+    """The API key in ``variable``: the only reader of the process environment in ``potakt``
+    (CLAUDE.md golden rule 3). Exit 1 if it is unset or empty, or not printable ASCII without
+    whitespace; the value is never printed."""
+    value = os.environ.get(variable, "")
+    if not value:
+        _stop(1, f"{variable} is not set in this shell")
+    if not (value.isascii() and value.isprintable()) or any(char.isspace() for char in value):
+        _stop(1, f"{variable} is not a valid key")
+    return value
+
+
+def make_transport() -> Transport:
+    """The HTTPS transport of a real run (tests replace this factory)."""
+    return UrllibTransport()
+
+
+@eval_app.command("run")
+def eval_run(
+    model: Annotated[
+        str,
+        typer.Option(
+            "--model",
+            help=f"Model id: {', '.join(REGISTERED_MODELS)}.",
+            show_default=False,
+        ),
+    ],
+    runs: Annotated[
+        Path,
+        typer.Option(
+            "--runs",
+            help=(
+                "Test A runs directory of all models, created if missing (default: the "
+                "repository's docs/validation/runs/test-a)."
+            ),
+            show_default=False,
+        ),
+    ] = RUNS_PATH,
+    corpus: Annotated[
+        Path,
+        typer.Option(
+            "--corpus",
+            help="Scenario corpus directory (default: the repository's docs/validation/scenarios).",
+            show_default=False,
+        ),
+    ] = CORPUS_PATH,
+    poll_seconds: Annotated[
+        int,
+        typer.Option(
+            "--poll-seconds",
+            min=MIN_POLL_SECONDS,
+            help="Seconds between two polls of a batch (Claude models), at least 10.",
+        ),
+    ] = 60,
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", help="Send the requests (paid calls); without it, nothing is sent."),
+    ] = False,
+) -> None:
+    """Run Test A for one model: send every corpus scenario without a recorded answer and record
+    the answers (ADR-0007 §7 and its amendment).
+
+    Without --yes, print the plan and the cost upper bound; nothing is sent and no key is read.
+    With --yes, read the key from POTAKT_ANTHROPIC_API_KEY (Claude models, Message Batches API)
+    or POTAKT_GEMINI_API_KEY (gemini-3.8-flash, generateContent), send, record, then print the
+    model's summary. claude-opus-5-5 runs only after claude-haiku-5-5 has a complete run. The
+    same command again resumes; a recorded scenario is never sent again.
+
+    Files: <runs>/<model dir>/<scenario id>/ with request.json, response.json, candidate.txt,
+    comparison.json; for Claude models also <runs>/<model dir>/ batches.json and
+    batch-<id>.results.jsonl.
+
+    Exit code 0: everything pending is recorded, or the plan was printed; 1: the run stopped (the
+    reason on stderr), a missing or invalid key, claude-opus-5-5 before a complete
+    claude-haiku-5-5 run, a missing directory, or an interruption; 2: usage error (also an
+    unregistered model id).
+    """
+    try:
+        check_registered(model)
+    except UnknownModelError as error:
+        _stop(EXIT_USAGE, str(error))
+    if not corpus.is_dir():
+        _stop(1, f"{corpus} is not a directory")
+    if runs.exists() and not runs.is_dir():
+        _stop(1, f"{runs} is not a directory")
+    anthropic = model.startswith(ANTHROPIC_PREFIX)
+    try:
+        check_order(model, runs, corpus)
+        if not yes:
+            typer.echo(run_plan(model, corpus, runs), nl=False)
+            return
+        key = read_key(ANTHROPIC_KEY_VARIABLE if anthropic else GEMINI_KEY_VARIABLE)
+        transport = make_transport()
+        if anthropic:
+            run_anthropic(
+                model,
+                corpus,
+                runs,
+                key,
+                transport,
+                sleep=time.sleep,
+                now=lambda: datetime.now(UTC),
+                poll_seconds=poll_seconds,
+                echo=typer.echo,
+            )
+        else:
+            run_gemini(model, corpus, runs, key, transport, sleep=time.sleep, echo=typer.echo)
+    except RunStopped as error:
+        _stop(1, str(error))
+    except KeyboardInterrupt:
+        _stop(1, INTERRUPTED)
+    typer.echo(summarize(runs / model_directory_name(model), corpus).to_text(), nl=False)

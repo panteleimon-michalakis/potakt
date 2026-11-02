@@ -31,9 +31,16 @@ from potakt.evaluation.records import (
     write_request,
 )
 from potakt.evaluation.scenario import METADATA_FILE, LoadedScenario, ScenarioError, load_scenario
-from potakt.evaluation.summary import model_directory_name
+from potakt.evaluation.summary import (
+    LONG_PROMPT_PRICES_USD_PER_MILLION,
+    PRICES_USD_PER_MILLION,
+    model_directory_name,
+    summarize,
+)
 from potakt.evaluation.test_a import (
+    ANTHROPIC_MAX_TOKENS,
     ANTHROPIC_PREFIX,
+    STRONG_MODEL,
     check_registered,
     render_test_a,
     request_payload,
@@ -58,10 +65,17 @@ __all__ = [
     "ANTHROPIC_VERSION",
     "BATCHES_URL",
     "BATCH_STATE_FILE",
+    "FIRST_MODEL",
     "GEMINI_URL",
+    "RUNS_PATH",
     "USER_AGENT",
+    "check_order",
+    "cost_upper_bound",
+    "pending_scenarios",
+    "recorded_scenarios",
     "run_anthropic",
     "run_gemini",
+    "run_plan",
 ]
 
 ANTHROPIC_VERSION = "2026-10-21"  # ADR-0007 §7 amendment «Transport»
@@ -74,6 +88,10 @@ RESULTS_TIMEOUT_SECONDS = 300.0
 # ADR-0007 §7: Gemini ``generateContent``, the key in a header (TASK-005c3 F4).
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 GEMINI_TIMEOUT_SECONDS = 600.0
+# The records of ADR-0007 §7 «Records», resolved from the repository root like CORPUS_PATH.
+RUNS_PATH = Path(__file__).resolve().parents[4] / "docs" / "validation" / "runs" / "test-a"
+# ADR-0007 §7 amendment «Order»: the strong model runs only after this one has a complete run.
+FIRST_MODEL = "claude-haiku-5-5"
 ADOPTION_WAIT_SECONDS = 10
 ADOPTION_WINDOW = timedelta(minutes=10)
 LIST_LIMIT = 20
@@ -182,6 +200,13 @@ def pending_scenarios(corpus_dir: Path, model_dir: Path) -> list[str]:
         name
         for name in _corpus_names(corpus_dir)
         if not (model_dir / name / RESPONSE_FILE).exists()
+    ]
+
+
+def recorded_scenarios(corpus_dir: Path, model_dir: Path) -> list[str]:
+    """The corpus scenarios with a recorded ``response.json``, in UTF-8 byte order."""
+    return [
+        name for name in _corpus_names(corpus_dir) if (model_dir / name / RESPONSE_FILE).exists()
     ]
 
 
@@ -648,3 +673,71 @@ def run_gemini(
         _run_gemini(model, corpus_dir, model_dir, gemini_headers(key), transport, sleep, echo)
     except RunStopped as error:
         raise RunStopped(redact(str(error), [key])) from None
+
+
+# --- before a run: the order rule and the plan (F5) ------------------------------------------
+
+
+def check_order(model: str, runs_dir: Path, corpus_dir: Path) -> None:
+    """ADR-0007 §7 amendment «Order»: ``RunStopped`` for ``claude-opus-5-5`` unless
+    ``claude-haiku-5-5`` has a complete run in ``runs_dir``; every other model may run."""
+    if model != STRONG_MODEL:
+        return
+    first_dir = runs_dir / model_directory_name(FIRST_MODEL)
+    if first_dir.is_dir():
+        summary = summarize(first_dir, corpus_dir)
+        missing = list(dict.fromkeys([*summary.missing, *summary.not_scored]))
+    else:
+        missing = _corpus_names(corpus_dir)
+    if missing:
+        raise RunStopped(
+            f"{model} runs only after {FIRST_MODEL} has a complete run "
+            f"(missing: {', '.join(missing)})"
+        )
+
+
+def cost_upper_bound(model: str, corpus_dir: Path, scenarios: list[str]) -> float:
+    """USD: for each scenario, the UTF-8 bytes of system + user as input tokens (a byte is at
+    least one token's worth of text) and ``max_tokens`` as output tokens, at the pinned batch
+    prices of a Claude model. A scenario whose bytes pass a long-prompt threshold is priced at
+    that tier, so the bound holds whatever the token count."""
+    price_in, price_out = PRICES_USD_PER_MILLION[model]
+    long_prompt = LONG_PROMPT_PRICES_USD_PER_MILLION.get(model)
+    total = 0.0
+    for name in scenarios:
+        prompt = render_test_a(_load(corpus_dir, name))
+        input_bytes = len(prompt.system.encode("utf-8")) + len(prompt.user.encode("utf-8"))
+        prices = (price_in, price_out)
+        if long_prompt is not None and input_bytes > long_prompt[0]:
+            prices = long_prompt[1]
+        total += input_bytes * prices[0] + ANTHROPIC_MAX_TOKENS[model] * prices[1]
+    return total / 1_000_000
+
+
+def run_plan(model: str, corpus_dir: Path, runs_dir: Path) -> str:
+    """What ``eval run`` would do for ``model``, one fact per line, ending with ``\\n``. Reads
+    no key and sends nothing."""
+    model_dir = runs_dir / model_directory_name(model)
+    pending = pending_scenarios(corpus_dir, model_dir)
+    recorded = recorded_scenarios(corpus_dir, model_dir)
+    lines = [
+        f"Test A run plan: {model}",
+        f"Runs directory: {model_dir}",
+        f"Pending ({len(pending)}): {', '.join(pending) or 'none'}",
+        f"Recorded ({len(recorded)}): {', '.join(recorded) or 'none'}",
+    ]
+    if model.startswith(ANTHROPIC_PREFIX):
+        batch = next((item for item in _load_state(model_dir) if item.state == "open"), None)
+        if batch is not None:
+            count = len(batch.scenarios)
+            lines.append(f"Open batch: {batch.id} ({count} scenarios), resumed by --yes")
+        cost = cost_upper_bound(model, corpus_dir, pending)
+        lines.append(
+            f"Cost upper bound: ${cost:.4f} ({len(pending)} requests; input: the UTF-8 bytes of "
+            f"the prompt, output: max_tokens {ANTHROPIC_MAX_TOKENS[model]}; batch prices pinned "
+            "on 2026-11-02)"
+        )
+    else:
+        lines.append("Cost upper bound: $0 (free tier)")
+    lines.append("Run again with --yes to send.")
+    return "\n".join(lines) + "\n"

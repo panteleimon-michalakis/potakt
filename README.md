@@ -22,8 +22,21 @@ A pre-registered validation corpus for the Phase 0 experiment (10 scenarios, six
 its comparison metric exist under [`docs/validation/`](docs/validation/) and in
 [ADR-0007](docs/adr/0007-phase-0-validation-protocol.md); no LLM results exist yet.
 
-**Phase 0 evaluation.** The Test A harness (ADR-0007 §7) is pre-registered, and its offline part
-exists; none of these commands calls a model or needs credentials:
+**Phase 0 evaluation.** The Test A harness (ADR-0007 §7) is pre-registered. `potakt eval run` is
+the only command that calls the model APIs; the owner runs it by following
+[`docs/validation/test-a-runbook.md`](docs/validation/test-a-runbook.md):
+- `potakt eval run --model ID [--runs DIR] [--corpus DIR] [--poll-seconds N] [--yes]` without
+  `--yes` prints the plan (pending and recorded scenarios, an open batch, the cost upper bound) and
+  sends nothing; with `--yes` it reads the key from `POTAKT_ANTHROPIC_API_KEY` (Claude models,
+  Message Batches API) or `POTAKT_GEMINI_API_KEY` (`gemini-3.8-flash`), records every pending
+  scenario under `docs/validation/runs/test-a/<model>/` (`request.json`, `response.json`,
+  `candidate.txt`, `comparison.json`, and for Claude models `batches.json` and
+  `batch-<id>.results.jsonl`) and prints the summary; `claude-opus-5-5` runs only after
+  `claude-haiku-5-5` has a complete run, and the same command again resumes (exit code 0 all
+  recorded or plan printed, 1 run stopped, missing or invalid key, order refused, missing
+  directory or interrupted, 2 usage error, also for an unregistered model id).
+
+The other commands are offline: none of them calls a model or needs credentials:
 - `potakt eval prompt <scenario dir> [--model ID]` prints the exact JSON request payload for one
   scenario; the registered models are `claude-haiku-5-5`, `gemini-3.8-flash` and `claude-opus-5-5`
   (exit code 0 printed, 1 invalid scenario, 2 usage error, also for an unregistered model id);
@@ -39,7 +52,7 @@ exists; none of these commands calls a model or needs credentials:
   processed, 1 missing directory, a directory not named after a registered model, or a scenario
   not in the corpus, whose line is printed while processing continues).
 
-There is no LLM, solver, agent or server yet; the capabilities below are planned.
+There is no agent, solver or server yet; the capabilities below are planned.
 
 ## Try it
 

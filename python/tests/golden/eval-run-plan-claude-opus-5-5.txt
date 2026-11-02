@@ -1,0 +1,6 @@
+Test A run plan: claude-opus-5-5
+Runs directory: <runs>/claude-opus-5-5
+Pending (10): 01-pharmacy, 02-hotel-reception, 03-call-centre, 04-restaurant, 05-supermarket-checkouts, 06-ambulance-crews, 07-security-guards, 08-warehouse, 09-care-home, 10-municipal-nursery
+Recorded (0): none
+Cost upper bound: $7.3373 (10 requests; input: the UTF-8 bytes of the prompt, output: max_tokens 64000; batch prices pinned on 2026-11-02)
+Run again with --yes to send.
