@@ -12,7 +12,7 @@ Rules for the whole runbook:
 - A scenario with a recorded answer (`response.json`) is never sent again; running the same
   command again resumes where it stopped.
 - One run at a time: never run `potakt eval run` in two windows at once, not even for two
-  different models.
+  different models. A second `--yes` run is refused while the first one holds the lock (§8).
 - Keep the laptop awake and plugged in while a batch runs. If it sleeps anyway, run the same
   command again.
 
@@ -68,9 +68,13 @@ The first command prints the plan and the cost upper bound. The second sends one
 polls it every 60 seconds until it ends (usually well under an hour), then records the answers and
 prints the summary. While the batch is in progress, the line `batch <id>: in_progress (…)` is
 printed when it changes and again after every 10 polls without a change (every 10 minutes), so the
-window shows that the run is alive. This first batch also confirms the API version (`anthropic-version:
-2026-10-21`) and the `output_config` field: a 400 here stops the run with no charge and no record,
-and the reason is printed.
+window shows that the run is alive. This first batch also confirms the API version
+(`anthropic-version: 2026-10-21`) and the `output_config` field: a 400 here stops the run with no
+charge and no record, and the reason is printed.
+
+If the answer to the batch creation is lost or unclear (no answer, a redirect, a 408 or a 5xx),
+the run may pause about two minutes; this is normal. It then looks the batch up in the Claude
+batch list once, adopts it if it was created, and sends nothing twice.
 
 ## 4. Check the Haiku records
 
@@ -134,6 +138,13 @@ Push only after the reviewer's check of a fresh clone.
   - `Unconfirmed create request: started <time> (<n> scenarios); --yes checks for its batch
     before sending anything` (dry run): an earlier run was interrupted while creating a batch.
     The dry run itself sends nothing; the next `--yes` run does the check above first.
+- **`another eval run is active (<model> <time>), or one was cut off: if no other window runs
+  eval run, delete <path> and run again`**: every `--yes` run holds the lock file
+  `docs/validation/runs/test-a/.eval-run.lock` while it runs and removes it when it ends,
+  also after a stop or Ctrl+C. Check every PowerShell window: if one still runs `eval run`, let
+  it finish. If none does (the laptop crashed or a window was killed), delete the file named in
+  the message and run the same command again; nothing is lost. The dry run shows an existing lock
+  as `Lock: <model> <time> (another run may be active)`. The lock file is never committed.
 - **Several batches could be the one created by an earlier create request** (the run stops and
   names them; for example after two windows ran at once): in the Claude Console (Batches) cancel
   all of them but the oldest, then run the same command again; it adopts the one left. Requests

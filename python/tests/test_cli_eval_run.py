@@ -848,6 +848,12 @@ def test_the_runbook_quotes_the_reconciliation_messages_and_the_new_rules() -> N
         "same command with --release <id>`",
         "`batch <id> released after review`",
         "`batch <id>: no result for <scenario>`",
+        # TASK-005c3c E8: the 120 s wait, the lock and the line of the dry run.
+        "the run may pause about two minutes; this is normal",
+        "`" + runner_module.LOCKED.format(contents="<model> <time>", path="<path>") + "`",
+        "`Lock: <model> <time> (another run may be active)`",
+        "docs/validation/runs/test-a/.eval-run.lock",
+        "--yes --release <id>",
         "cancel all of them but the oldest, then run the same command again; it adopts the one "
         "left",
         "One run at a time: never run `potakt eval run` in two windows at once",
@@ -860,3 +866,9 @@ def test_the_runbook_quotes_the_reconciliation_messages_and_the_new_rules() -> N
     assert "interrupted while creating a batch:" not in text
     assert "cancel any batch created in the last minutes" not in text
     assert "a crash" in text
+    # The two-check rule of TASK-005c3b is gone (E3), and no line is wider than 100 (E8).
+    assert "twice and a minute apart" not in text
+    assert "check 2" not in text
+    widths = [len(line) for line in RUNBOOK.read_text(encoding="utf-8").splitlines()]
+    long_lines = [n for n, width in enumerate(widths, 1) if width > 100]
+    assert long_lines == [40, 48]  # the two verbatim PowerShell lines of §2 only

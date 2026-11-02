@@ -1,10 +1,12 @@
-"""TASK-005c3b D7: a rehearsal of the Test A runbook, end to end, through the CLI.
+"""TASK-005c3b D7, TASK-005c3c E8: a rehearsal of the Test A runbook, end to end, through the CLI.
 
 One test follows the owner's runbook (``docs/validation/test-a-runbook.md``) in its order, over a
 copy of the full ten-scenario corpus, with fake keys, fake transports and a fake clock: the dry
 runs, Haiku, the checks of the Haiku records, Gemini in two invocations, then Opus with a lost
-create response. At the end, the runs directory holds exactly the expected files, the fake keys
-are in no file and no output, and every ``request.json`` is the ``eval prompt`` payload.
+create response whose adopted batch misses one result: the batch is held, the plain re-run sends
+nothing, and ``--release`` after the reviewer's decision completes the run. At the end, the runs
+directory holds exactly the expected files (no lock), the fake keys are in no file and no output,
+and every ``request.json`` is the ``eval prompt`` payload.
 """
 
 import json
@@ -135,18 +137,44 @@ def test_the_runbook_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert gemini.sent().count("01-pharmacy") == 1  # a recorded scenario is never sent again
 
     # 5. Opus: the dry run is allowed now; the create response is lost after the server created
-    # the batch, and the run adopts it instead of paying for a second one.
+    # the batch, and the run adopts it instead of paying for a second one. Its results miss the
+    # line of 07-security-guards, so the batch is held for the reviewer (TASK-005c3c E4).
     opus_plan = eval_run(OPUS)
     assert opus_plan.exit_code == 0, opus_plan.stderr
     golden = (GOLDEN / "eval-run-plan-claude-opus-5-5.txt").read_text(encoding="utf-8")
     assert shown(opus_plan.stdout) == golden
     batches.create_script = ["lost"]
-    opus = eval_run(OPUS, "--yes")
-    assert opus.exit_code == 0, opus.stderr
-    assert opus.stdout.startswith(
+    missing = "07-security-guards"
+    batches.raw_results["msgbatch_02"] = "".join(
+        json.dumps({"custom_id": name, "result": claude_outcome(2, name)}) + "\n"
+        for name in ALL_SCENARIOS
+        if name != missing
+    ).encode("utf-8")
+    held = eval_run(OPUS, "--yes")
+    assert held.exit_code == 1
+    assert held.stdout.startswith(
         "adopted batch msgbatch_02 created by an earlier create request\n"
     )
-    assert len(batches.creates()) == 2  # one batch per Claude model
+    assert held.stderr == (
+        f"batch msgbatch_02: no result for {missing}; batch msgbatch_02 is held: send "
+        "batch-msgbatch_02.results.jsonl and this message to the reviewer\n"
+    )
+    # The plain re-run stops at once and sends nothing.
+    calls = len(batches.calls)
+    again = eval_run(OPUS, "--yes")
+    assert again.exit_code == 1
+    assert again.stderr == (
+        f"batch msgbatch_02 is held for the reviewer: batch msgbatch_02: no result for {missing}; "
+        "after the reviewer's decision, run the same command with --release msgbatch_02\n"
+    )
+    assert len(batches.calls) == calls
+    # After the reviewer's decision: the release sends the missing scenario in a new batch.
+    opus = eval_run(OPUS, "--yes", "--release", "msgbatch_02")
+    assert opus.exit_code == 0, opus.stderr
+    assert opus.stdout.startswith(
+        "batch msgbatch_02 released after review\nbatch msgbatch_03 created for 1 scenarios\n"
+    )
+    assert batches.creates() == [list(ALL_SCENARIOS), list(ALL_SCENARIOS), [missing]]
     assert "Complete: yes\n" in opus.stdout
     rescored = potakt("eval", "rescore", runs / OPUS, "--corpus", corpus)
     assert rescored.stdout == "".join(f"{name}: unchanged\n" for name in ALL_SCENARIOS)
@@ -164,13 +192,16 @@ def test_the_runbook_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
         f"{HAIKU}/batch-msgbatch_01.results.jsonl",
         f"{HAIKU}/batches.json",
         f"{OPUS}/batch-msgbatch_02.results.jsonl",
+        f"{OPUS}/batch-msgbatch_03.results.jsonl",
         f"{OPUS}/batches.json",
     ]
-    assert files == sorted(expected)
+    assert files == sorted(expected)  # no lock file left either
     assert not list(runs.rglob("*.tmp"))
-    for model in (HAIKU, OPUS):
-        state = json.loads((runs / model / "batches.json").read_bytes())
-        assert [entry["state"] for entry in state["batches"]] == ["done"]
+    haiku_state = json.loads((runs / HAIKU / "batches.json").read_bytes())
+    assert [entry["state"] for entry in haiku_state["batches"]] == ["done"]
+    opus_state = json.loads((runs / OPUS / "batches.json").read_bytes())
+    assert [entry["state"] for entry in opus_state["batches"]] == ["done", "done"]
+    assert opus_state["batches"][0]["problems"] == [f"batch msgbatch_02: no result for {missing}"]
     for key in (KEY, GEMINI_KEY):
         assert files_containing(tmp_path, key) == []
         assert not any(key in result.stdout + result.stderr for result in results)
