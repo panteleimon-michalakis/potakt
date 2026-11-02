@@ -30,8 +30,8 @@ an interruption; 2: usage error, also for an unregistered model id or `--release
 Test A records go to `runs/test-a/<model>/<scenario id>/` (ADR-0007 §7 and its amendment):
 `request.json`, `response.json` (the raw answer, written first and never overwritten; UTF-8,
 or ASCII with every non-ASCII character escaped if the answer holds text that is not valid
-Unicode, which is a malformed answer), `candidate.txt` and `comparison.json`. For a Claude model, `runs/test-a/<model>/` also holds
-`batches.json` (one entry per batch creation: the batch id, the scenarios, when the create request
+Unicode, which is a malformed answer), `candidate.txt` and `comparison.json`. For a Claude
+model, `runs/test-a/<model>/` also holds `batches.json` (one entry per batch creation: the batch id, the scenarios, when the create request
 was sent, the batch's creation time, the state `creating`, `open`, `held`, `done` or `failed`,
 and the problems that held the batch, kept after its release) and
 `batch-<id>.results.jsonl` (the raw batch results); the summary and `eval rescore` ignore these

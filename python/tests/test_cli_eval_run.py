@@ -24,7 +24,7 @@ from runner_helpers import (
     corpus_copy,
     write_state,
 )
-from test_evaluation_runner_anthropic import CreateStep, FakeBatches, succeeded
+from test_evaluation_runner_anthropic import CreateStep, FakeBatches, other_batch, succeeded
 from test_evaluation_runner_gemini import FakeGemini
 from typer.testing import CliRunner, Result
 
@@ -1229,6 +1229,39 @@ def test_an_interrupt_in_the_audit_ends_only_the_audit(
         assert "Complete: yes\n" in result.stdout
 
 
+def test_a_run_ended_by_an_unexpected_error_after_a_call_is_audited(
+    monkeypatch: pytest.MonkeyPatch, haiku_run: Setup
+) -> None:
+    # H16 review, Minor 1: only RunStopped was audited; a full disk after a create call went to
+    # the last resort, and a batch that call may have made was named nowhere.
+    server = FakeBatches(listing=[other_batch("msgbatch_orphan", 1, "2026-11-02T10:00:05Z")])
+    corpus, runs = haiku_run(server)
+    write_state(runs / HAIKU, batch_entry("msgbatch_91", ["01-pharmacy"], "done"))
+
+    def create_then_full_disk(
+        model: str, corpus_dir: Path, runs_dir: Path, key: str, transport: Any, **kwargs: Any
+    ) -> None:
+        body = json.dumps({"requests": [{"custom_id": "01-pharmacy", "params": {}}]}).encode()
+        transport.send("POST", runner_module.BATCHES_URL, {}, body, 60.0)  # makes msgbatch_01
+        raise OSError(28, f"No space left on device {KEY}")
+
+    monkeypatch.setattr(cli, "run_anthropic", create_then_full_disk)
+
+    result = eval_run(runs, HAIKU, "--yes", corpus=corpus)
+
+    assert_clean_exit_1(result, "")
+    created = "2026-11-02T10:00:05.123456Z"  # the fake's created_at of msgbatch_01
+    assert [line for line in result.stdout.splitlines() if line.startswith("warning")] == [
+        UNRECORDED.format(id="msgbatch_01", count=1, created=created),
+        UNRECORDED.format(id="msgbatch_orphan", count=1, created="2026-11-02T10:00:05Z"),
+    ]
+    assert result.stderr == (
+        "eval run stopped by an unexpected error (OSError): run the dry run and send its output "
+        "and this message to the reviewer\n"
+    )
+    assert not (runs / LOCK).exists()
+
+
 def test_gemini_runs_are_not_audited(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(GEMINI_VARIABLE, KEY)
     server = FakeGemini()
@@ -1442,6 +1475,7 @@ def test_the_runbook_quotes_the_reconciliation_messages_and_the_new_rules() -> N
         "`" + runner_module.AUDIT_INTERRUPTED + "`",
         "This check never changes the records or the exit code",
         "Do not cancel it yourself and do not run `--yes` again",
+        "also after an unexpected error",  # H16 review, Minor 1
         # TASK-005c3d H15: the current key types (R5).
         "Create a **personal** API key",
         "Linked account: yourself",

@@ -548,7 +548,7 @@ def _eval_run(
         lock = take_lock(runs, model, utc_now())  # E5: before anything else that writes
         try:
             if anthropic:
-                stopped: RunStopped | None = None
+                stopped: Exception | None = None
                 try:
                     run_anthropic(
                         model,
@@ -562,10 +562,11 @@ def _eval_run(
                         echo=typer.echo,
                         release=release,
                     )
-                except RunStopped as error:
+                except Exception as error:  # a stop, or an unexpected error (H16 review)
                     stopped = error
                 # TASK-005c3d H13: after a run that called the API and was not interrupted (an
-                # interrupt skips this), with the lock still held; it never changes the outcome.
+                # interrupt skips this), with the lock still held; it never changes the outcome:
+                # the stop or the error is raised again after it.
                 if transport.calls:
                     audit_batches(
                         model, runs, key, transport, sleep=time.sleep, now=utc_now, echo=typer.echo
