@@ -267,6 +267,21 @@ def test_a_missing_runs_directory_is_an_error(tmp_path: Path) -> None:
         summarize(tmp_path / "nope", CORPUS)
 
 
+def test_a_missing_corpus_directory_is_the_same_error(tmp_path: Path) -> None:
+    # Review finding: it raised FileNotFoundError from iterdir() instead.
+    with pytest.raises(ValueError, match="not a directory"):
+        summarize(OPUS_RUNS, tmp_path / "nope")
+
+
+def test_the_model_is_the_name_of_the_resolved_runs_directory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Review finding: "." from inside the runs directory gave the model "" (no price, no stops).
+    monkeypatch.chdir(OPUS_RUNS)
+
+    assert summarize(Path("."), CORPUS).to_json() == summarize(OPUS_RUNS, CORPUS).to_json()
+
+
 # --- usage and cost --------------------------------------------------------------------------
 
 

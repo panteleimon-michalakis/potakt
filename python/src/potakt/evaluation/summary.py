@@ -253,11 +253,13 @@ def summarize(runs_dir: Path, corpus_dir: Path) -> Summary:
 
     Each subdirectory is one scenario run, named by its scenario id; its language comes from the
     corpus. The corpus scenarios are the subdirectories of ``corpus_dir`` with a
-    ``scenario.json``. Raises ``ValueError`` if ``runs_dir`` is not a directory.
+    ``scenario.json``. The model is the name of the resolved ``runs_dir`` (so ``.`` works).
+    Raises ``ValueError`` if ``runs_dir`` or ``corpus_dir`` is not a directory.
     """
-    if not runs_dir.is_dir():
-        raise ValueError(f"{runs_dir} is not a directory")
-    model = runs_dir.name
+    for directory in (runs_dir, corpus_dir):
+        if not directory.is_dir():
+            raise ValueError(f"{directory} is not a directory")
+    model = runs_dir.resolve().name
     registered = model in REGISTERED_MODELS
     totals: Counter[str] = Counter()
     languages: dict[str, Counter[str]] = {}
@@ -381,8 +383,11 @@ def _pairs(groups: dict[str, Counter[str]]) -> dict[str, tuple[int, int]]:
 
 
 def _prices(model: str) -> tuple[float, float] | None:
-    """The pinned prices of ``model``, a runs directory name, so a priced model id is looked up
-    by its directory name; ``None`` for a model without a price."""
+    """The pinned prices of ``model``, or ``None`` for a model without a price.
+
+    ``model`` is a runs directory name, so each priced model id is compared by its directory
+    name (``model_directory_name``).
+    """
     prices = {model_directory_name(name): price for name, price in PRICES_USD_PER_MILLION.items()}
     return prices.get(model)
 

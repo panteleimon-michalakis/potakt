@@ -287,6 +287,18 @@ def test_rescore_reports_both_derived_files_when_both_changed(tmp_path: Path) ->
     assert "04-restaurant: updated (candidate.txt, comparison.json)\n" in result.stdout
 
 
+def test_rescore_of_the_current_directory_uses_its_resolved_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Review finding: "." gave the model "" and was refused as unregistered.
+    monkeypatch.chdir(runs_copy(tmp_path))
+
+    result = runner.invoke(app, ["eval", "rescore", ".", "--corpus", str(CORPUS)])
+
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout.count(": unchanged\n") == 3
+
+
 def test_rescore_uses_the_default_corpus(tmp_path: Path) -> None:
     result = runner.invoke(app, ["eval", "rescore", str(runs_copy(tmp_path))])
 

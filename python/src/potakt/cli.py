@@ -329,7 +329,7 @@ def eval_rescore(
     for directory in (runs, corpus):
         if not directory.is_dir():
             _stop(1, f"{directory} is not a directory")
-    model = runs.name
+    model = runs.resolve().name  # so "." from inside the runs directory works too
     try:
         check_registered(model)
     except UnknownModelError as error:
