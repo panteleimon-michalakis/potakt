@@ -310,6 +310,17 @@ differ from the bullets above, they apply.
   when all ten are scored; the gate of §5.4 is read only from a complete summary of
   `claude-opus-5-5`.
 
+**Amendment (2026-11-02, TASK-005c3c, before any LLM run).** One request is never paid twice:
+- **Unclear create.** A batch create call that ends without a batch object and without a definite
+  rejection (no response, a 3xx, a 408, any 5xx, or a 200 that cannot be read) may have created a
+  batch. Before anything else is sent, the runner lists the recent batches once, no earlier than
+  120 seconds after the later of the call and its answer, and adopts the one batch that can be it;
+  several possible batches stop the run for the owner. An adopted batch is the same single request,
+  not a second attempt. Only a 429 or another 4xx answer (except 408) proves that no batch exists.
+- **Held batch.** A batch whose results need the reviewer (a scenario without a result, a line that
+  cannot be read, or an `invalid_request_error`) is held: no scenario of it is sent again until the
+  owner releases it after the reviewer's decision.
+
 ## Consequences
 - Results can be compared across models and over time, because every rule of the measurement is fixed
   in advance and implemented once, in tested code.
