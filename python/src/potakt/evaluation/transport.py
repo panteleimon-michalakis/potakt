@@ -2,9 +2,10 @@
 
 The only module of ``potakt`` that may import ``urllib``, ``http``, ``ssl`` or ``socket``
 (``tests/test_no_network.py``). Every request goes to one of ``ALLOWED_HOSTS`` over verified TLS,
-through no proxy, and no redirect is ever followed, so the API key in a header can reach only the
-API it belongs to. Messages of ``TransportError`` and ``RunStopped`` never contain a header, a
-request body or a URL query.
+through no proxy, and no redirect is ever followed, and each key header may go only to the host
+of its API (``check_url``), so the API key in a header can reach only the API it belongs to.
+Messages of ``TransportError`` and ``RunStopped`` never contain a header, a request body or a URL
+query.
 """
 
 import http.client
@@ -31,7 +32,15 @@ _RETRY_INFO = "google.rpc.RetryInfo"
 _DURATION = re.compile(r"(\d+(?:\.\d+)?)s")
 _ERROR_TEXT_LIMIT = 300
 _REDACTED = "[redacted]"
-KEY_HEADERS = frozenset({"x-api-key", "x-goog-api-key"})
+# TASK-005c3d H7: the headers that carry an API key, and the one host each may be sent to.
+# ``x-api-key`` is no longer sent (the Anthropic key goes in ``authorization``) but stays a key
+# header: redacted and bound to the Anthropic host.
+KEY_HEADERS = frozenset({"authorization", "x-api-key", "x-goog-api-key"})
+_KEY_HOSTS = {
+    "authorization": "api.anthropic.com",
+    "x-api-key": "api.anthropic.com",
+    "x-goog-api-key": "generativelanguage.googleapis.com",
+}
 # Connection-level failures: no HTTP response arrived (``HTTPError`` is caught before these).
 _NETWORK_ERRORS = (
     urllib.error.URLError,
@@ -73,9 +82,12 @@ class Opener(Protocol):
     ) -> Any: ...
 
 
-def check_url(url: str) -> None:
+def check_url(url: str, headers: Mapping[str, str]) -> None:
     """Raise ``ValueError`` unless ``url`` is ``https://`` on one of ``ALLOWED_HOSTS``, with no
-    explicit port and no user information. The message names the host only."""
+    explicit port and no user information, and every key header of the request (``KEY_HEADERS``,
+    any letter case) belongs to that host (TASK-005c3d H7): ``authorization`` and ``x-api-key``
+    to ``api.anthropic.com``, ``x-goog-api-key`` to ``generativelanguage.googleapis.com``; the
+    keys of both APIs in one request are refused. The message names the host only."""
     parts = urllib.parse.urlsplit(url)
     if parts.scheme != "https":
         raise ValueError(f"refused: only https:// URLs are sent (got {parts.scheme or 'none'}://)")
@@ -86,6 +98,11 @@ def check_url(url: str) -> None:
     host = parts.hostname or ""
     if host not in ALLOWED_HOSTS or port is not None or parts.username or parts.password:
         raise ValueError(f"refused: {host or 'no host'} is not an API host of the experiment")
+    key_hosts = {_KEY_HOSTS[name.lower()] for name in headers if name.lower() in KEY_HEADERS}
+    if len(key_hosts) > 1:
+        raise ValueError(f"refused: a request to {host} carries the keys of two APIs")
+    if key_hosts and host not in key_hosts:
+        raise ValueError(f"refused: {host} is not the API host of this key")
 
 
 class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
@@ -138,7 +155,7 @@ class UrllibTransport:
         most one byte more than the cap is ever read. Raises ``ValueError`` before sending if
         ``check_url`` refuses the URL.
         """
-        check_url(url)
+        check_url(url, headers)
         request = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
             try:
@@ -208,8 +225,15 @@ def retry_delay(attempt: int, hint: int | None) -> int:
 
 
 def secret_values(headers: Mapping[str, str]) -> list[str]:
-    """The values of the headers that carry an API key (``KEY_HEADERS``)."""
-    return [value for name, value in headers.items() if name.lower() in KEY_HEADERS]
+    """The values of the headers that carry an API key (``KEY_HEADERS``); for ``authorization``
+    also the credential after ``Bearer ``, which a server message may echo alone (H7)."""
+    values: list[str] = []
+    for name, value in headers.items():
+        if name.lower() in KEY_HEADERS:
+            values.append(value)
+            if name.lower() == "authorization" and value.startswith("Bearer "):
+                values.append(value.removeprefix("Bearer "))
+    return values
 
 
 def redact(text: str, secrets: Mapping[str, str] | list[str]) -> str:
@@ -262,10 +286,10 @@ def send_with_retries(
     ``attempts`` in total, sleeping ``retry_delay`` before each retry. Any other status is
     returned at once (a 3xx too: it is never followed). After the last failed attempt,
     ``RunStopped`` names the last status and its API error, or the last ``TransportError``;
-    the values of the key headers (``KEY_HEADERS``) are redacted from it. ``check_url`` runs
-    before the first attempt.
+    the values of the key headers (``secret_values``) are redacted from it. ``check_url`` runs
+    on the URL and the headers before the first attempt.
     """
-    check_url(url)
+    check_url(url, headers)
     secrets = secret_values(headers)
     last = ""
     for attempt in range(1, attempts + 1):

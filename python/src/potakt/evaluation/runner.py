@@ -484,9 +484,11 @@ def _is_candidate(listed: _Listed, entry: _Batch, t_end: datetime, known: set[st
 
 
 def anthropic_headers(key: str) -> dict[str, str]:
-    """The request headers of every Message Batches call (F2)."""
+    """The request headers of every Message Batches call (F2): the key as ``Authorization:
+    Bearer <key>``, the documented method (TASK-005c3d H7); no ``anthropic-workspace-id``, as
+    the key is restricted to one workspace."""
     return {
-        "x-api-key": key,
+        "authorization": f"Bearer {key}",
         "anthropic-version": ANTHROPIC_VERSION,
         "content-type": "application/json",
         "user-agent": USER_AGENT,
@@ -784,7 +786,7 @@ class _AnthropicRun:
         if status.results_url is None:
             raise RunStopped(f"batch {batch_id} ended without a results_url")
         try:
-            check_url(status.results_url)
+            check_url(status.results_url, self.headers)
         except ValueError as error:
             raise RunStopped(f"batch {batch_id}: results_url {server_text(str(error))}") from None
         response = self._get(status.results_url, RESULTS_TIMEOUT_SECONDS)

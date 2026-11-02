@@ -6,6 +6,7 @@ a recording ``sleep``.
 """
 
 import http.client
+import inspect
 import io
 import json
 import ssl
@@ -27,6 +28,7 @@ from potakt.evaluation.transport import (
     UrllibTransport,
     base_delay,
     build_opener,
+    check_url,
     describe_response,
     secret_values,
     send_with_retries,
@@ -37,7 +39,8 @@ GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"
 )
 KEY = "potakt-test-key"
-HEADERS = {"x-api-key": KEY, "content-type": "application/json"}
+HEADERS = {"authorization": f"Bearer {KEY}", "content-type": "application/json"}
+GEMINI_HEADERS = {"x-goog-api-key": KEY, "content-type": "application/json"}
 
 
 def message(**headers: str) -> http.client.HTTPMessage:
@@ -200,7 +203,7 @@ def test_a_reason_without_an_os_message_names_its_type(error: BaseException, exp
 def test_describe_response_reads_only_the_error_type_and_message(
     body: bytes, expected: str
 ) -> None:
-    assert describe_response(HttpResponse(500, {"x-api-key": KEY}, body)) == expected
+    assert describe_response(HttpResponse(500, {"authorization": KEY}, body)) == expected
 
 
 @pytest.mark.parametrize(
@@ -231,9 +234,79 @@ def test_the_allowed_hosts_are_exactly_the_two_apis() -> None:
 
 
 def test_both_api_hosts_are_accepted() -> None:
-    for url in (URL, GEMINI_URL):
+    for url, headers in ((URL, HEADERS), (GEMINI_URL, GEMINI_HEADERS)):
         opener = FakeOpener(FakeResponse(200, message(), b"{}"))
-        assert UrllibTransport(opener).send("POST", url, HEADERS, b"{}", 1.0).status == 200
+        assert UrllibTransport(opener).send("POST", url, headers, b"{}", 1.0).status == 200
+
+
+# --- TASK-005c3d H7: each key header is bound to its own host -------------------------------------
+
+BOTH = {**HEADERS, **GEMINI_HEADERS}
+
+
+@pytest.mark.parametrize(
+    ("url", "headers", "host"),
+    [
+        (GEMINI_URL, HEADERS, "generativelanguage.googleapis.com"),
+        (GEMINI_URL, {"x-api-key": KEY}, "generativelanguage.googleapis.com"),
+        (GEMINI_URL, {"Authorization": f"Bearer {KEY}"}, "generativelanguage.googleapis.com"),
+        (URL, GEMINI_HEADERS, "api.anthropic.com"),
+        (URL, {"X-Goog-Api-Key": KEY}, "api.anthropic.com"),
+        (URL, BOTH, "api.anthropic.com"),
+        (GEMINI_URL, BOTH, "generativelanguage.googleapis.com"),
+    ],
+    ids=[
+        "bearer-to-google",
+        "x-api-key-to-google",
+        "capitalised-bearer-to-google",
+        "goog-key-to-anthropic",
+        "capitalised-goog-key-to-anthropic",
+        "both-to-anthropic",
+        "both-to-google",
+    ],
+)
+def test_a_key_header_is_refused_on_another_host_before_any_request(
+    url: str, headers: dict[str, str], host: str
+) -> None:
+    # U3: both hosts were allowed for every request, so a key could reach the other provider.
+    opener = FakeOpener(FakeResponse(200, message(), b"{}"))
+    transport = Scripted(OK)
+
+    with pytest.raises(ValueError, match=r"^refused: ") as by_urllib:
+        UrllibTransport(opener).send("GET", url, headers, None, 1.0)
+    with pytest.raises(ValueError, match=r"^refused: ") as by_retries:
+        send_with_retries(transport, "GET", url, headers, None, 1.0, sleep=lambda _: None)
+
+    assert opener.calls == []
+    assert transport.calls == []
+    for raised in (by_urllib, by_retries):
+        text = str(raised.value)
+        assert host in text
+        assert KEY not in text
+        assert "Bearer" not in text
+
+
+def test_the_refusals_name_only_the_host() -> None:
+    with pytest.raises(ValueError) as wrong:
+        check_url(GEMINI_URL, HEADERS)
+    with pytest.raises(ValueError) as both:
+        check_url(URL, BOTH)
+
+    assert str(wrong.value) == (
+        "refused: generativelanguage.googleapis.com is not the API host of this key"
+    )
+    assert str(both.value) == "refused: a request to api.anthropic.com carries the keys of two APIs"
+
+
+def test_a_request_without_a_key_header_may_go_to_either_api_host() -> None:
+    for url in (URL, GEMINI_URL):
+        check_url(url, {"content-type": "application/json"})
+
+
+def test_check_url_needs_the_request_headers() -> None:
+    parameter = inspect.signature(check_url).parameters["headers"]
+
+    assert parameter.default is inspect.Parameter.empty
 
 
 # --- TASK-005c3b D4: the response size cap ------------------------------------------------------
@@ -555,7 +628,7 @@ def test_four_gemini_errors_name_the_status() -> None:
             Scripted(error, error, error, error),
             "POST",
             GEMINI_URL,
-            HEADERS,
+            GEMINI_HEADERS,
             b"{}",
             600.0,
             sleep=sleeps.append,
@@ -625,9 +698,30 @@ def test_only_the_key_headers_are_redacted_from_the_stop_message() -> None:
 
 
 def test_secret_values_are_the_key_headers() -> None:
-    headers = {"x-api-key": "a", "x-goog-api-key": "b", "content-type": "application/json"}
+    headers = {
+        "authorization": "Bearer a",
+        "x-api-key": "c",
+        "x-goog-api-key": "b",
+        "content-type": "application/json",
+    }
 
-    assert secret_values(headers) == ["a", "b"]
+    # TASK-005c3d H7: the whole Authorization value and the bare credential after "Bearer ".
+    assert secret_values(headers) == ["Bearer a", "a", "c", "b"]
+
+
+def test_a_server_message_that_echoes_the_bare_bearer_key_is_redacted() -> None:
+    error = anthropic_error(503, "authentication_error", f"bad key {KEY}; header Bearer {KEY}")
+
+    with pytest.raises(RunStopped) as raised:
+        run(Scripted(error, error, error, error))
+
+    assert str(raised.value) == (
+        "the request failed 4 times; last: HTTP 503 (authentication_error: bad key [redacted]; "
+        "header [redacted])"
+    )
+    text = describe_response(error, secret_values(HEADERS))
+    assert KEY not in text
+    assert text.endswith("(authentication_error: bad key [redacted]; header [redacted])")
 
 
 def test_a_400_is_returned_at_once() -> None:

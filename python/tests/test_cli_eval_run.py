@@ -333,7 +333,8 @@ def test_yes_runs_haiku_and_prints_the_summary(
     assert result.stdout.endswith(summary)
     assert "Complete: yes" in summary
     assert no_real_transport == [10]
-    assert all(call.headers["x-api-key"] == KEY for call in server.calls)
+    assert all(call.headers["authorization"] == f"Bearer {KEY}" for call in server.calls)
+    assert not any("x-api-key" in call.headers for call in server.calls)
     assert KEY not in result.stdout
 
 

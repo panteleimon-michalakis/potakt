@@ -435,8 +435,9 @@ def test_every_call_carries_the_key_the_pinned_version_and_the_timeouts(tmp_path
 
     assert ANTHROPIC_VERSION == "2026-10-21"
     for call in run.server.calls:
+        # TASK-005c3d H7: the documented Bearer header; no x-api-key, no anthropic-workspace-id.
         assert call.headers == {
-            "x-api-key": KEY,
+            "authorization": f"Bearer {KEY}",
             "anthropic-version": "2026-10-21",
             "content-type": "application/json",
             "user-agent": f"potakt/{__version__}",
@@ -742,6 +743,23 @@ def test_a_results_url_on_another_host_is_refused(tmp_path: Path) -> None:
 
     assert not any("evil" in call.url for call in server.calls)
     assert run.recorded() == []
+
+
+def test_a_results_url_on_the_google_host_is_refused_before_any_request(tmp_path: Path) -> None:
+    # U3: an Anthropic results_url on the Google host would have carried the Anthropic key there.
+    google = "https://generativelanguage.googleapis.com/v1/messages/batches"
+    server = FakeBatches(results_base=google)
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == (
+        "batch msgbatch_01: results_url refused: generativelanguage.googleapis.com is not the API "
+        "host of this key"
+    )
+    assert not any("googleapis" in call.url for call in server.calls)
+    assert run.states() == ["open"]
 
 
 @pytest.mark.parametrize("code", [400, 401, 403, 404, 409, 413, 422])
@@ -1259,6 +1277,25 @@ def test_a_key_across_the_cut_of_an_invalid_request_message_is_redacted(tmp_path
     # The held problem is written redacted too (the raw results file keeps the server's bytes).
     assert KEY.encode() not in (run.model_dir / BATCH_STATE_FILE).read_bytes()
     assert problems_of(run) == [f"01-pharmacy: invalid_request_error: {'x' * 290}[redacted]"]
+
+
+def test_a_server_message_echoing_the_bare_bearer_key_is_redacted_everywhere(
+    tmp_path: Path,
+) -> None:
+    # TASK-005c3d H7: the header value is "Bearer <key>"; the server may echo the key alone.
+    server = FakeBatches(
+        outcome=lambda n, s: errored("invalid_request_error", f"key {KEY} is not allowed")
+    )
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    problem = "01-pharmacy: invalid_request_error: key [redacted] is not allowed"
+    assert str(raised.value) == problem + HELD
+    assert problems_of(run) == [problem]
+    assert KEY.encode() not in (run.model_dir / BATCH_STATE_FILE).read_bytes()
+    assert all(KEY not in line for line in run.echo)
 
 
 def test_a_key_across_the_cut_of_an_http_error_is_redacted(tmp_path: Path) -> None:
