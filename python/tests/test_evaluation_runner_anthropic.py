@@ -38,6 +38,7 @@ from potakt.evaluation.runner import (
     ANTHROPIC_VERSION,
     BATCH_STATE_FILE,
     BATCHES_URL,
+    HEARTBEAT_POLLS,
     run_anthropic,
 )
 from potakt.evaluation.transport import HttpResponse, RunStopped, TransportError
@@ -46,6 +47,7 @@ HAIKU = "claude-haiku-5-5"
 OPUS = "claude-opus-5-5"
 CREATED_AT = "2026-11-02T10:00:05.123456Z"
 LIST_URL = f"{BATCHES_URL}?limit=100"
+DO_NOT_RUN = "; do not run again: send this message to the reviewer"  # D6
 
 Outcome = Callable[[int, str], dict[str, Any]]
 
@@ -416,6 +418,23 @@ def test_a_status_line_is_printed_only_when_it_changes(tmp_path: Path) -> None:
     ]
 
 
+def test_an_unchanged_status_line_is_repeated_after_every_ten_polls(tmp_path: Path) -> None:
+    # D5: a heartbeat, counted in polls (not the clock): polls 1, 11 and 21 show the line.
+    run = make_run(tmp_path, FakeBatches(polls_in_progress=25), ALL_SCENARIOS[:1])
+
+    run()
+
+    in_progress = (
+        "batch msgbatch_01: in_progress "
+        "(processing 1, succeeded 0, errored 0, expired 0, canceled 0)"
+    )
+    status_lines = [line for line in run.echo if line.startswith("batch msgbatch_01:")]
+    assert status_lines == [in_progress] * 3 + [
+        "batch msgbatch_01: ended (processing 0, succeeded 1, errored 0, expired 0, canceled 0)"
+    ]
+    assert HEARTBEAT_POLLS == 10
+
+
 def test_nothing_pending_prints_nothing_to_run_and_sends_nothing(tmp_path: Path) -> None:
     run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:2])
     run()
@@ -483,16 +502,28 @@ def test_errored_and_expired_are_resubmitted_in_a_second_batch(tmp_path: Path) -
     assert "05-supermarket-checkouts: canceled; pending" in run.echo
 
 
-def test_a_scenario_missing_from_the_results_stays_pending(tmp_path: Path) -> None:
+TO_THE_REVIEWER = "; send batch-msgbatch_01.results.jsonl to the reviewer before running again"
+
+
+def test_a_scenario_missing_from_the_results_stops_the_run(tmp_path: Path) -> None:
+    # D3: it used to stay pending silently, and the next batch would pay for it again.
     server = FakeBatches()
-    run = make_run(tmp_path, server, ALL_SCENARIOS[:2])
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:3])
     first = json.dumps({"custom_id": ALL_SCENARIOS[0], "result": succeeded()}) + "\n"
     server.raw_results["msgbatch_01"] = first.encode()
 
-    run()
+    with pytest.raises(RunStopped) as raised:
+        run()
 
-    assert run.server.creates() == [list(ALL_SCENARIOS[:2]), [ALL_SCENARIOS[1]]]
-    assert run.recorded() == list(ALL_SCENARIOS[:2])
+    assert str(raised.value) == (
+        "batch msgbatch_01: no result for 02-hotel-reception; "
+        "batch msgbatch_01: no result for 03-call-centre" + TO_THE_REVIEWER
+    )
+    assert run.server.creates() == [list(ALL_SCENARIOS[:3])]
+    assert run.recorded() == [ALL_SCENARIOS[0]]
+    assert run.states() == ["done"]
+    raw = run.model_dir / "batch-msgbatch_01.results.jsonl"
+    assert raw.read_bytes() == first.encode()
 
 
 def test_a_scenario_in_four_batches_is_not_resubmitted(tmp_path: Path) -> None:
@@ -553,7 +584,7 @@ def test_an_invalid_request_error_stops_after_recording_the_other_lines(tmp_path
         run()
 
     assert str(raised.value) == (
-        "02-hotel-reception: invalid_request_error: output_config: unknown field"
+        "02-hotel-reception: invalid_request_error: output_config: unknown field" + DO_NOT_RUN
     )
     assert run.recorded() == ["01-pharmacy", "03-call-centre"]
     assert not (run.model_dir / "02-hotel-reception" / "response.json").exists()
@@ -581,9 +612,12 @@ def test_a_malformed_results_line_stops_after_the_raw_file_is_saved(
     good = json.dumps({"custom_id": "01-pharmacy", "result": succeeded()}).encode()
     server.raw_results["msgbatch_01"] = good + b"\n" + line + b"\n"
 
-    with pytest.raises(RunStopped, match=r"^batch msgbatch_01: results line 2 "):
+    with pytest.raises(RunStopped, match=r"^batch msgbatch_01: results line 2 ") as raised:
         run()
 
+    assert str(raised.value).endswith(
+        "; batch msgbatch_01: no result for 02-hotel-reception" + TO_THE_REVIEWER
+    )
     raw = run.model_dir / "batch-msgbatch_01.results.jsonl"
     assert raw.read_bytes() == server.raw_results["msgbatch_01"]
     assert run.recorded() == ["01-pharmacy"]
@@ -595,10 +629,28 @@ def test_a_duplicate_results_line_stops(tmp_path: Path) -> None:
     line = json.dumps({"custom_id": "01-pharmacy", "result": succeeded()}).encode()
     server.raw_results["msgbatch_01"] = line + b"\n" + line + b"\n"
 
-    with pytest.raises(RunStopped, match=r"results line 2 .*01-pharmacy.* twice"):
+    with pytest.raises(RunStopped) as raised:
         run()
 
+    assert str(raised.value) == (
+        "batch msgbatch_01: results line 2 names 01-pharmacy twice" + TO_THE_REVIEWER
+    )
     assert run.recorded() == ["01-pharmacy"]
+
+
+def test_an_invalid_request_error_and_a_missing_result_keep_both_endings(tmp_path: Path) -> None:
+    server = FakeBatches()
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:2])
+    line = {"custom_id": "01-pharmacy", "result": errored("invalid_request_error", "bad")}
+    server.raw_results["msgbatch_01"] = (json.dumps(line) + "\n").encode()
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == (
+        "batch msgbatch_01: no result for 02-hotel-reception; "
+        "01-pharmacy: invalid_request_error: bad" + DO_NOT_RUN + TO_THE_REVIEWER
+    )
 
 
 def test_a_results_url_on_another_host_is_refused(tmp_path: Path) -> None:
@@ -1102,7 +1154,9 @@ def test_a_key_across_the_cut_of_an_invalid_request_message_is_redacted(tmp_path
     with pytest.raises(RunStopped) as raised:
         run()
 
-    assert str(raised.value) == f"01-pharmacy: invalid_request_error: {'x' * 290}[redacted]"
+    assert str(raised.value) == (
+        f"01-pharmacy: invalid_request_error: {'x' * 290}[redacted]" + DO_NOT_RUN
+    )
 
 
 def test_a_key_across_the_cut_of_an_http_error_is_redacted(tmp_path: Path) -> None:
@@ -1138,7 +1192,7 @@ def test_an_invalid_request_message_loses_its_control_characters(tmp_path: Path)
     with pytest.raises(RunStopped) as raised:
         run()
 
-    assert str(raised.value) == "01-pharmacy: invalid_request_error: bad?[31m?"
+    assert str(raised.value) == "01-pharmacy: invalid_request_error: bad?[31m?" + DO_NOT_RUN
 
 
 def test_the_run_state_repr_never_shows_the_key(tmp_path: Path) -> None:

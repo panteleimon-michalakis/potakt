@@ -20,6 +20,7 @@ import pytest
 
 from potakt.evaluation.transport import (
     ALLOWED_HOSTS,
+    MAX_RESPONSE_BYTES,
     HttpResponse,
     RunStopped,
     TransportError,
@@ -54,9 +55,11 @@ class FakeResponse:
         self.status = status
         self.headers = headers
         self._body = body
+        self.asked: list[int] = []  # the sizes passed to read()
 
-    def read(self) -> bytes:
-        return self._body
+    def read(self, amount: int = -1) -> bytes:
+        self.asked.append(amount)
+        return self._body if amount < 0 else self._body[:amount]
 
     def __enter__(self) -> "FakeResponse":
         return self
@@ -231,6 +234,69 @@ def test_both_api_hosts_are_accepted() -> None:
     for url in (URL, GEMINI_URL):
         opener = FakeOpener(FakeResponse(200, message(), b"{}"))
         assert UrllibTransport(opener).send("POST", url, HEADERS, b"{}", 1.0).status == 200
+
+
+# --- TASK-005c3b D4: the response size cap ------------------------------------------------------
+
+
+def test_the_cap_is_64_mib() -> None:
+    assert MAX_RESPONSE_BYTES == 64 * 1024 * 1024
+
+
+def test_a_body_of_exactly_the_cap_is_read() -> None:
+    response = FakeResponse(200, message(), b"x" * MAX_RESPONSE_BYTES)
+
+    answer = UrllibTransport(FakeOpener(response)).send("GET", URL, HEADERS, None, 1.0)
+
+    assert len(answer.body) == MAX_RESPONSE_BYTES
+    assert response.asked == [MAX_RESPONSE_BYTES + 1]  # never an unbounded read
+
+
+def test_a_body_over_the_cap_is_no_response() -> None:
+    response = FakeResponse(200, message(), b"x" * (MAX_RESPONSE_BYTES + 1))
+
+    with pytest.raises(TransportError) as raised:
+        UrllibTransport(FakeOpener(response)).send("GET", URL, HEADERS, None, 1.0)
+
+    assert str(raised.value) == "response larger than 64 MiB"
+    assert response.asked == [MAX_RESPONSE_BYTES + 1]
+
+
+def test_an_error_body_over_the_cap_is_no_response() -> None:
+    body = io.BytesIO(b"x" * (MAX_RESPONSE_BYTES + 1))
+    error = urllib.error.HTTPError(URL, 500, "Internal", message(), body)
+
+    with pytest.raises(TransportError, match=r"^response larger than 64 MiB$"):
+        UrllibTransport(FakeOpener(error)).send("GET", URL, HEADERS, None, 1.0)
+
+    assert body.closed
+
+
+def test_an_error_body_of_exactly_the_cap_is_read() -> None:
+    body = b"x" * MAX_RESPONSE_BYTES
+    error = urllib.error.HTTPError(URL, 500, "Internal", message(), io.BytesIO(body))
+
+    answer = UrllibTransport(FakeOpener(error)).send("GET", URL, HEADERS, None, 1.0)
+
+    assert (answer.status, len(answer.body)) == (500, MAX_RESPONSE_BYTES)
+
+
+def test_an_oversized_response_is_retried_then_stops_the_run() -> None:
+    sleeps: list[float] = []
+
+    class Oversized:
+        def open(
+            self, fullurl: urllib.request.Request, data: None = None, timeout: float = 0.0
+        ) -> FakeResponse:
+            return FakeResponse(200, message(), b"x" * (MAX_RESPONSE_BYTES + 1))
+
+    transport = UrllibTransport(Oversized())
+
+    with pytest.raises(RunStopped) as raised:
+        send_with_retries(transport, "GET", URL, HEADERS, None, 1.0, sleep=sleeps.append)
+
+    assert str(raised.value) == "the request failed 4 times; last: response larger than 64 MiB"
+    assert sleeps == [15, 45, 135]
 
 
 # --- the real opener: no proxy, verified TLS, no redirects ------------------------------------

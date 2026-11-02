@@ -24,6 +24,7 @@ ALLOWED_HOSTS = frozenset({"api.anthropic.com", "generativelanguage.googleapis.c
 RETRIED_STATUSES = frozenset({429, 500, 502, 503, 504, 529})
 ATTEMPTS = 4
 MAX_DELAY_SECONDS = 300
+MAX_RESPONSE_BYTES = 64 * 1024 * 1024  # TASK-005c3b D4: a larger body counts as no response
 _BASE_SECONDS = 15
 _GROWTH = 3
 _RETRY_INFO = "google.rpc.RetryInfo"
@@ -133,7 +134,9 @@ class UrllibTransport:
     ) -> HttpResponse:
         """Send one request; any HTTP status is a response, no response is a ``TransportError``.
 
-        Raises ``ValueError`` before sending if ``check_url`` refuses the URL.
+        A body larger than ``MAX_RESPONSE_BYTES`` (success or error) is no response either: at
+        most one byte more than the cap is ever read. Raises ``ValueError`` before sending if
+        ``check_url`` refuses the URL.
         """
         check_url(url)
         request = urllib.request.Request(url, data=body, headers=headers, method=method)
@@ -141,14 +144,22 @@ class UrllibTransport:
             try:
                 with self._opener.open(request, timeout=timeout) as response:
                     status = cast(int, response.status)
-                    return HttpResponse(status, _headers(response.headers), response.read())
+                    return HttpResponse(status, _headers(response.headers), _capped(response))
             except urllib.error.HTTPError as error:
                 try:
-                    return HttpResponse(error.code, _headers(error.headers), error.read())
+                    return HttpResponse(error.code, _headers(error.headers), _capped(error))
                 finally:
                     error.close()
         except _NETWORK_ERRORS as error:
             raise TransportError(_describe(error)) from None
+
+
+def _capped(response: Any) -> bytes:
+    """The body, read up to ``MAX_RESPONSE_BYTES`` + 1 bytes; a larger one is no response."""
+    data = cast(bytes, response.read(MAX_RESPONSE_BYTES + 1))
+    if len(data) > MAX_RESPONSE_BYTES:
+        raise TransportError(f"response larger than {MAX_RESPONSE_BYTES // (1024 * 1024)} MiB")
+    return data
 
 
 def base_delay(attempt: int) -> int:

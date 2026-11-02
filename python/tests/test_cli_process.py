@@ -286,7 +286,9 @@ def test_eval_exit_codes(case: str, expected: int, tmp_path: Path) -> None:
         "rescore-unregistered-model": ("rescore", unregistered),
         "run-dry": ("run", "--model", "claude-haiku-5-5", *test_a),
         "run-missing-key": ("run", "--model", "gemini-3.8-flash", *test_a, "--yes"),
-        "run-opus-before-haiku": ("run", "--model", "claude-opus-5-5", *test_a, "--yes"),
+        # The dry run: without the order rule it would print the plan and exit 0 (TASK-005c3b
+        # D6); with --yes, the missing key would exit 1 even without the rule.
+        "run-opus-before-haiku": ("run", "--model", "claude-opus-5-5", *test_a),
         "run-unregistered-model": ("run", "--model", "claude-sonnet-5-5", "--yes"),
     }
 
@@ -300,3 +302,7 @@ def test_eval_exit_codes(case: str, expected: int, tmp_path: Path) -> None:
     else:
         assert result.stdout == b""
         assert result.stderr
+    if case == "run-opus-before-haiku":
+        assert result.stderr.startswith(
+            b"claude-opus-5-5 runs only after claude-haiku-5-5 has a complete run"
+        )

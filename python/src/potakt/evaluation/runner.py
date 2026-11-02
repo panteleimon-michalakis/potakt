@@ -108,6 +108,12 @@ SECOND_CHECK = timedelta(seconds=70)  # the second one, if the first found none
 LIST_LAG = timedelta(seconds=60)  # how long a new batch may be missing from the list
 ADOPTION_WINDOW = timedelta(minutes=10)  # clock skew allowed between us and the API
 LIST_LIMIT = 100
+# TASK-005c3b D5: an unchanged status line is shown again after this many polls (10 minutes at
+# the default 60 s), so the owner sees that the run is alive.
+HEARTBEAT_POLLS = 10
+# TASK-005c3b D6: the endings of the stops that must not be run again blindly.
+DO_NOT_RUN_AGAIN = "; do not run again: send this message to the reviewer"
+TO_THE_REVIEWER = "; send {name} to the reviewer before running again"
 _STATES = ("creating", "open", "done", "failed")
 _ACTIVE = ("creating", "open")  # at most one entry is in one of these states
 _WITH_BATCH = ("open", "done")  # the states whose entry names a batch
@@ -619,7 +625,10 @@ class _AnthropicRun:
         )
 
     def _poll(self, batch_id: str) -> _BatchStatus:
+        """Poll until the batch ends. The status line is printed when it changes and again after
+        every ``HEARTBEAT_POLLS`` polls without a change (polls, not the clock: deterministic)."""
         shown = ""
+        unchanged = 0
         while True:
             response = self._get(f"{BATCHES_URL}/{batch_id}", CALL_TIMEOUT_SECONDS)
             if response.status != 200:
@@ -629,9 +638,10 @@ class _AnthropicRun:
                 raise RunStopped(f"polling batch {batch_id} failed: unexpected batch object")
             counts = ", ".join(f"{name} {status.counts[name]}" for name in _COUNTS)
             line = f"batch {batch_id}: {status.status} ({counts})"
-            if line != shown:
+            unchanged = unchanged + 1 if line == shown else 0
+            if line != shown or unchanged == HEARTBEAT_POLLS:
                 self.echo(line)
-                shown = line
+                shown, unchanged = line, 0
             if status.status == "ended":
                 return status
             self.sleep(self.poll_seconds)
@@ -651,21 +661,24 @@ class _AnthropicRun:
                 f"downloading the results of batch {batch_id} failed: {self._describe(response)}"
             )
         write_atomic(self.model_dir / _results_file(batch_id), response.body)
-        problems = self._record_results(batch, response.body)
+        problems, results_problem = self._record_results(batch, batch_id, response.body)
         batches = _load_state(self.model_dir)
         done = [replace(item, state="done") if item.id == batch_id else item for item in batches]
         _save_state(self.model_dir, done)
         if problems:
-            raise RunStopped("; ".join(problems))
+            # D6: running again would send the affected scenarios in a new, paid batch.
+            ending = TO_THE_REVIEWER.format(name=_results_file(batch_id)) if results_problem else ""
+            raise RunStopped("; ".join(problems) + ending)
 
-    def _record_results(self, batch: _Batch, raw: bytes) -> list[str]:
-        """Record every usable line, in scenario order; return the problems found."""
+    def _record_results(self, batch: _Batch, batch_id: str, raw: bytes) -> tuple[list[str], bool]:
+        """Record every usable line, in scenario order; return the problems found and whether
+        one of them is in the results file itself (a malformed line or a missing result)."""
         results: dict[str, dict[str, object]] = {}
         problems: list[str] = []
         for number, line in enumerate(raw.split(b"\n"), start=1):
             if not line.strip():
                 continue
-            prefix = f"batch {batch.id}: results line {number}"
+            prefix = f"batch {batch_id}: results line {number}"
             document = _json(line)
             if not isinstance(document, dict):
                 problems.append(f"{prefix} is not a JSON object")
@@ -687,40 +700,51 @@ class _AnthropicRun:
                 problems.append(f"{prefix} has an unknown result type")
             else:
                 results[custom_id] = cast(dict[str, object], result)
+        # D3: a scenario with no line would silently stay pending and be paid for again.
+        problems += [
+            f"batch {batch_id}: no result for {name}"
+            for name in batch.scenarios
+            if name not in results
+        ]
+        results_problem = bool(problems)
         for name in batch.scenarios:
             if name in results:
-                problem = self._record_result(name, results[name])
+                problem, malformed = self._record_result(name, results[name])
                 if problem:
                     problems.append(problem)
-        return problems
+                    results_problem = results_problem or malformed
+        return problems, results_problem
 
-    def _record_result(self, name: str, result: dict[str, object]) -> str | None:
+    def _record_result(self, name: str, result: dict[str, object]) -> tuple[str | None, bool]:
+        """Record one result line; return a problem, if any, and whether it is a malformed
+        line."""
         run_dir = self.model_dir / name
         kind = cast(str, result["type"])
         if (run_dir / RESPONSE_FILE).exists():
             self.echo(f"{name}: already recorded")
-            return None
+            return None, False
         if kind == "succeeded":
             message = result.get("message")
             if not isinstance(message, dict):
-                return f"{name}: a succeeded result without a message"
+                return f"{name}: a succeeded result without a message", True
             response = cast(dict[str, object], message)
             comparison = write_answer(run_dir, _load(self.corpus_dir, name), self.model, response)
             self.echo(recorded_line(name, self.model, response, comparison))
-            return None
+            return None, False
         if kind == "errored":
             error = _field(_field(result, "error"), "error")
             error_type, text = _field(error, "type"), _field(error, "message")
             if error_type == "invalid_request_error":
                 secrets = secret_values(self.headers)
                 detail = server_text(text, secrets) if isinstance(text, str) else "no message"
-                return f"{name}: invalid_request_error: {detail}"
+                # D6: the same request would fail again.
+                return f"{name}: invalid_request_error: {detail}{DO_NOT_RUN_AGAIN}", False
             known_type = isinstance(error_type, str) and _ERROR_TYPE.fullmatch(error_type)
             shown = error_type if known_type else "unknown error"
             self.echo(f"{name}: errored ({shown}); pending")
-            return None
+            return None, False
         self.echo(f"{name}: {kind}; pending")  # expired or canceled
-        return None
+        return None, False
 
 
 def run_anthropic(
