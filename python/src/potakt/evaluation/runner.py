@@ -78,15 +78,18 @@ __all__ = [
     "BATCH_STATE_FILE",
     "FIRST_MODEL",
     "GEMINI_URL",
+    "LOCK_FILE",
     "RUNS_PATH",
     "USER_AGENT",
     "check_order",
     "cost_upper_bound",
+    "lock_text",
     "pending_scenarios",
     "recorded_scenarios",
     "run_anthropic",
     "run_gemini",
     "run_plan",
+    "take_lock",
 ]
 
 ANTHROPIC_VERSION = "2026-10-21"  # ADR-0007 §7 amendment «Transport»
@@ -111,13 +114,20 @@ LIST_LIMIT = 100
 # TASK-005c3b D5: an unchanged status line is shown again after this many polls (10 minutes at
 # the default 60 s), so the owner sees that the run is alive.
 HEARTBEAT_POLLS = 10
-# TASK-005c3b D6: the endings of the stops that must not be run again blindly.
-DO_NOT_RUN_AGAIN = "; do not run again: send this message to the reviewer"
-TO_THE_REVIEWER = "; send {name} to the reviewer before running again"
-_STATES = ("creating", "open", "done", "failed")
+# TASK-005c3c E4 (ADR-0007 §7 amendment «Held batch»): the ending of the stop that holds a batch,
+# and the stop of every later run until the owner releases it.
+HELD = "; batch {id} is held: send batch-{id}.results.jsonl and this message to the reviewer"
+HELD_STOP = (
+    "batch {id} is held for the reviewer: {problems}; after the reviewer's decision, run the "
+    "same command with --release {id}"
+)
+# TASK-005c3c E5: the lock file of ``eval run --yes`` in the runs directory of all models.
+LOCK_FILE = ".eval-run.lock"
+_LOCK_SHOWN = 120  # characters of a lock file shown in a message
+_STATES = ("creating", "open", "held", "done", "failed")
 _ACTIVE = ("creating", "open")  # at most one entry is in one of these states
-_WITH_BATCH = ("open", "done")  # the states whose entry names a batch
-_ENTRY_KEYS = frozenset({"id", "scenarios", "started_at", "created_at", "state"})
+_WITH_BATCH = ("open", "held", "done")  # the states whose entry names a batch
+_ENTRY_KEYS = frozenset({"id", "scenarios", "started_at", "created_at", "state", "problems"})
 _CUSTOM_ID = re.compile(r"[a-zA-Z0-9_-]{1,64}")
 _BATCH_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _INSTANT = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d+)?(Z|[+-]\d{2}:\d{2})")
@@ -149,9 +159,12 @@ class _Batch:
 
     ``state`` is ``creating`` while a create call may be in flight or its outcome is unknown,
     ``open`` once the batch exists and its results are not recorded yet, ``done`` once they are,
-    and ``failed`` when it is proven that no batch was created. ``id`` and ``created_at`` (the
-    batch's) are set for ``open`` and ``done`` only; ``started_at`` is the UTC instant just before
-    the last create call, in whole seconds (``2026-11-02T07:15:03Z``).
+    ``held`` (TASK-005c3c E4) when the batch ended and its results were recorded where possible
+    but ``problems`` need the reviewer, and ``failed`` when it is proven that no batch was
+    created. ``id`` and ``created_at`` (the batch's) are set for ``open``, ``held`` and ``done``
+    only; ``started_at`` is the UTC instant just before the last create call, in whole seconds
+    (``2026-11-02T07:15:03Z``). ``problems`` is empty except for a held batch, and for a ``done``
+    one that was held and then released.
     """
 
     id: str | None
@@ -159,6 +172,7 @@ class _Batch:
     started_at: str
     created_at: str | None
     state: str
+    problems: tuple[str, ...] = ()
 
 
 def _stamp(moment: datetime) -> str:
@@ -182,14 +196,23 @@ def _entry(item: object) -> _Batch | None:
         return None
     entry = cast(dict[str, object], item)
     batch_id, scenarios, state = entry["id"], entry["scenarios"], entry["state"]
-    started_at, created_at = entry["started_at"], entry["created_at"]
+    started_at, created_at, problems = entry["started_at"], entry["created_at"], entry["problems"]
     if not (
         state in _STATES
         and isinstance(scenarios, list)
         and all(isinstance(name, str) for name in cast(list[object], scenarios))
         and isinstance(started_at, str)
         and _started(started_at) is not None
+        and isinstance(problems, list)
+        and all(
+            isinstance(text, str) and text and text.isprintable()
+            for text in cast(list[object], problems)
+        )
     ):
+        return None
+    texts = tuple(cast(list[str], problems))
+    # E4: problems only on a held batch (never empty) or on a done one (held, then released).
+    if (state == "held" and not texts) or (texts and state not in ("held", "done")):
         return None
     if state in _WITH_BATCH:
         if not (
@@ -201,7 +224,7 @@ def _entry(item: object) -> _Batch | None:
     elif batch_id is not None or created_at is not None:
         return None
     names = tuple(cast(list[str], scenarios))
-    return _Batch(batch_id, names, started_at, created_at, cast(str, state))
+    return _Batch(batch_id, names, started_at, created_at, cast(str, state), texts)
 
 
 def _load_state(model_dir: Path) -> list[_Batch]:
@@ -248,6 +271,7 @@ def _save_state(model_dir: Path, batches: list[_Batch]) -> None:
                 "started_at": batch.started_at,
                 "created_at": batch.created_at,
                 "state": batch.state,
+                "problems": list(batch.problems),
             }
             for batch in batches
         ]
@@ -430,21 +454,33 @@ class _AnthropicRun:
     now: Callable[[], datetime]
     poll_seconds: float
     echo: Echo
+    release: str | None = None
 
     def run(self) -> None:
+        if self.release is not None:
+            self._release(self.release)
+        # E4: a held batch stops every run before anything is reconciled, polled or sent.
+        held = next((b for b in _load_state(self.model_dir) if b.state == "held"), None)
+        if held is not None:
+            raise RunStopped(HELD_STOP.format(id=held.id, problems="; ".join(held.problems)))
         _complete_records(self.corpus_dir, self.model_dir, self.model, self.echo)
         adopted = self._reconcile_earlier()
         pending = pending_scenarios(self.corpus_dir, self.model_dir)
-        if not pending and not adopted:
-            self.echo("nothing to run")
-            return
         batches = _load_state(self.model_dir)
         batch = next((batch for batch in batches if batch.state == "open"), None)
+        if not pending and batch is None:
+            self.echo("nothing to run")
+            return
         if batch is None:
             self._next_attempt(pending, batches)
             batch = self._create(pending, batches)
         elif not adopted:
             self.echo(f"resuming batch {batch.id}")
+        if not pending:
+            # E6: an open batch is resumed and closed even when nothing is pending.
+            self._complete(batch)
+            self.echo("nothing to run")
+            return
         while True:
             self._complete(batch)
             pending = pending_scenarios(self.corpus_dir, self.model_dir)
@@ -453,6 +489,19 @@ class _AnthropicRun:
             batches = _load_state(self.model_dir)
             self.sleep(base_delay(self._next_attempt(pending, batches)))
             batch = self._create(pending, batches)
+
+    def _release(self, batch_id: str) -> None:
+        """E4: the held entry ``batch_id`` becomes ``done`` (its problems kept, for the record)
+        after the reviewer's decision; ``RunStopped`` if no held entry has that id."""
+        batches = _load_state(self.model_dir)
+        index = next(
+            (i for i, b in enumerate(batches) if b.state == "held" and b.id == batch_id), None
+        )
+        if index is None:
+            raise RunStopped(f"{server_text(batch_id)} is not a held batch of {self.model}")
+        batches[index] = replace(batches[index], state="done")
+        _save_state(self.model_dir, batches)
+        self.echo(f"batch {batch_id} released after review")
 
     def _next_attempt(self, pending: list[str], batches: list[_Batch]) -> int:
         """The attempt number of the next batch for ``pending``; ``RunStopped`` if a scenario
@@ -664,18 +713,21 @@ class _AnthropicRun:
                 f"downloading the results of batch {batch_id} failed: {self._describe(response)}"
             )
         write_atomic(self.model_dir / _results_file(batch_id), response.body)
-        problems, results_problem = self._record_results(batch, batch_id, response.body)
-        batches = _load_state(self.model_dir)
-        done = [replace(item, state="done") if item.id == batch_id else item for item in batches]
-        _save_state(self.model_dir, done)
+        problems = self._record_results(batch, batch_id, response.body)
+        # E4: a problem holds the batch, so no run sends its scenarios again (a new, paid batch)
+        # until the owner releases it after the reviewer's decision.
+        state = "held" if problems else "done"
+        batches = [
+            replace(item, state=state, problems=tuple(problems)) if item.id == batch_id else item
+            for item in _load_state(self.model_dir)
+        ]
+        _save_state(self.model_dir, batches)
         if problems:
-            # D6: running again would send the affected scenarios in a new, paid batch.
-            ending = TO_THE_REVIEWER.format(name=_results_file(batch_id)) if results_problem else ""
-            raise RunStopped("; ".join(problems) + ending)
+            raise RunStopped("; ".join(problems) + HELD.format(id=batch_id))
 
-    def _record_results(self, batch: _Batch, batch_id: str, raw: bytes) -> tuple[list[str], bool]:
-        """Record every usable line, in scenario order; return the problems found and whether
-        one of them is in the results file itself (a malformed line or a missing result)."""
+    def _record_results(self, batch: _Batch, batch_id: str, raw: bytes) -> list[str]:
+        """Record every usable line, in scenario order; return the problems found (each safe to
+        print and to write: cleaned, the key redacted)."""
         results: dict[str, dict[str, object]] = {}
         problems: list[str] = []
         for number, line in enumerate(raw.split(b"\n"), start=1):
@@ -709,45 +761,42 @@ class _AnthropicRun:
             for name in batch.scenarios
             if name not in results
         ]
-        results_problem = bool(problems)
         for name in batch.scenarios:
             if name in results:
-                problem, malformed = self._record_result(name, results[name])
+                problem = self._record_result(name, results[name])
                 if problem:
                     problems.append(problem)
-                    results_problem = results_problem or malformed
-        return problems, results_problem
+        return problems
 
-    def _record_result(self, name: str, result: dict[str, object]) -> tuple[str | None, bool]:
-        """Record one result line; return a problem, if any, and whether it is a malformed
-        line."""
+    def _record_result(self, name: str, result: dict[str, object]) -> str | None:
+        """Record one result line; return a problem, if any."""
         run_dir = self.model_dir / name
         kind = cast(str, result["type"])
         if (run_dir / RESPONSE_FILE).exists():
             self.echo(f"{name}: already recorded")
-            return None, False
+            return None
         if kind == "succeeded":
             message = result.get("message")
             if not isinstance(message, dict):
-                return f"{name}: a succeeded result without a message", True
+                return f"{name}: a succeeded result without a message"
             response = cast(dict[str, object], message)
             comparison = write_answer(run_dir, _load(self.corpus_dir, name), self.model, response)
             self.echo(recorded_line(name, self.model, response, comparison))
-            return None, False
+            return None
         if kind == "errored":
             error = _field(_field(result, "error"), "error")
             error_type, text = _field(error, "type"), _field(error, "message")
             if error_type == "invalid_request_error":
+                # The same request would fail again: the reviewer decides.
                 secrets = secret_values(self.headers)
                 detail = server_text(text, secrets) if isinstance(text, str) else "no message"
-                # D6: the same request would fail again.
-                return f"{name}: invalid_request_error: {detail}{DO_NOT_RUN_AGAIN}", False
+                return f"{name}: invalid_request_error: {detail}"
             known_type = isinstance(error_type, str) and _ERROR_TYPE.fullmatch(error_type)
             shown = error_type if known_type else "unknown error"
             self.echo(f"{name}: errored ({shown}); pending")
-            return None, False
+            return None
         self.echo(f"{name}: {kind}; pending")  # expired or canceled
-        return None, False
+        return None
 
 
 def run_anthropic(
@@ -761,6 +810,7 @@ def run_anthropic(
     now: Callable[[], datetime],
     poll_seconds: float = 60,
     echo: Echo,
+    release: str | None = None,
 ) -> None:
     """Run every pending scenario of ``corpus_dir`` on a Claude model through the Message
     Batches API (TASK-005c3 F2, F3) and record the answers under
@@ -768,7 +818,9 @@ def run_anthropic(
 
     Returns once every corpus scenario is recorded. Raises ``RunStopped`` (its message is safe to
     print and never contains ``key``) when the run must stop; running the same call again
-    resumes. Raises ``ValueError`` for a model that is not a registered Claude model.
+    resumes, except while a batch is held (TASK-005c3c E4): then every run stops before any
+    call until ``release`` names that batch, which marks it ``done`` first. Raises
+    ``ValueError`` for a model that is not a registered Claude model.
     """
     check_registered(model)
     if not model.startswith(ANTHROPIC_PREFIX):
@@ -783,6 +835,7 @@ def run_anthropic(
         now=now,
         poll_seconds=poll_seconds,
         echo=echo,
+        release=release,
     )
     try:
         run.run()
@@ -875,6 +928,47 @@ def run_gemini(
         raise RunStopped(redact(str(error), [key])) from None
 
 
+# --- one run at a time (TASK-005c3c E5) --------------------------------------------------------
+
+LOCKED = (
+    "another eval run is active ({contents}), or one was cut off: if no other window runs eval "
+    "run, delete {path} and run again"
+)
+
+
+def lock_text(runs_dir: Path) -> str | None:
+    """The contents of the lock file in ``runs_dir``, safe to print; ``None`` if there is none."""
+    path = runs_dir / LOCK_FILE
+    try:
+        with path.open("rb") as handle:
+            data = handle.read(_LOCK_SHOWN * 4)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return "unreadable"
+    return server_text(data.decode("utf-8", "replace").strip(), limit=_LOCK_SHOWN)
+
+
+def take_lock(runs_dir: Path, model: str, now: datetime) -> Path:
+    """Create the lock file of ``eval run --yes`` exclusively (``open("x")``: the same on every
+    operating system) with one line, ``<model> <UTC start>``, and return its path.
+
+    ``RunStopped`` if it exists: another run is active, or one was cut off before it could
+    remove the file (a crash). The caller removes it however the run ends.
+    """
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    path = runs_dir / LOCK_FILE
+    try:
+        handle = path.open("x", encoding="utf-8", newline="\n")
+    except OSError as error:
+        if path.exists() or isinstance(error, FileExistsError):
+            raise RunStopped(LOCKED.format(contents=lock_text(runs_dir), path=path)) from None
+        raise RunStopped(f"cannot create {path}: {error.strerror or error}") from None
+    with handle:
+        handle.write(f"{model} {_stamp(now)}\n")
+    return path
+
+
 # --- before a run: the order rule and the plan (F5) ------------------------------------------
 
 
@@ -932,6 +1026,11 @@ def run_plan(model: str, corpus_dir: Path, runs_dir: Path) -> str:
             count = len(batch.scenarios)
             if batch.state == "open":
                 lines.append(f"Open batch: {batch.id} ({count} scenarios), resumed by --yes")
+            elif batch.state == "held":
+                lines.append(
+                    f"Held batch: {batch.id} ({count} scenarios): {'; '.join(batch.problems)}; "
+                    f"--yes --release {batch.id} after the reviewer's decision"
+                )
             elif batch.state == "creating":
                 lines.append(
                     f"Unconfirmed create request: started {batch.started_at} ({count} scenarios); "
@@ -945,5 +1044,8 @@ def run_plan(model: str, corpus_dir: Path, runs_dir: Path) -> str:
         )
     else:
         lines.append("Cost upper bound: $0 (free tier)")
+    lock = lock_text(runs_dir)
+    if lock is not None:
+        lines.append(f"Lock: {lock} (another run may be active)")
     lines.append("Run again with --yes to send.")
     return "\n".join(lines) + "\n"

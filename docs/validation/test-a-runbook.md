@@ -138,14 +138,19 @@ Push only after the reviewer's check of a fresh clone.
   names them; for example after two windows ran at once): in the Claude Console (Batches) cancel
   all of them but the oldest, then run the same command again; it adopts the one left. Requests
   that a cancelled batch already processed are billed, the others are not.
-- **`<scenario>: invalid_request_error: …; do not run again: send this message to the
-  reviewer`**: the API refused that request itself, and running again would send the same
-  request. Send the message to the reviewer; do not run again.
-- **`batch <id>: no result for <scenario>`** or **a malformed results line** (both end with
-  `send batch-<id>.results.jsonl to the reviewer before running again`): the run stops after the
-  other lines are recorded, and the raw results stay in `batch-<id>.results.jsonl`. Send that file
-  to the reviewer before running again, because running again sends the affected scenarios in a
-  new, paid batch.
+- **A held batch.** Some results need the reviewer: `batch <id>: no result for <scenario>`, a
+  malformed results line, or `<scenario>: invalid_request_error: …` (the API refused that request
+  itself, so it would fail again). The run records every other line, keeps the raw results in
+  `batch-<id>.results.jsonl` and stops with a message that ends with
+  `batch <id> is held: send batch-<id>.results.jsonl and this message to the reviewer`. The batch
+  is now **held**: no scenario of it is sent again, and every run, also the same command, stops
+  at once with `batch <id> is held for the reviewer: <problems>; after the reviewer's decision,
+  run the same command with --release <id>`, sending nothing. Step by step:
+  1. Send `batch-<id>.results.jsonl` and the message to the reviewer.
+  2. Wait for the reviewer's decision.
+  3. Only if the reviewer says so, run the same command with `--yes --release <id>`. It prints
+     `batch <id> released after review` and continues: the scenarios still pending are sent in a
+     new batch.
 - **The same open batch fails on every run** (for example `polling batch <id> failed: HTTP 404`
   or `downloading the results of batch <id> failed`, because the batch was deleted or its results
   are no longer kept): do not edit `batches.json`. Send the message and `batches.json` to the

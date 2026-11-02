@@ -25,18 +25,22 @@ its comparison metric exist under [`docs/validation/`](docs/validation/) and in
 **Phase 0 evaluation.** The Test A harness (ADR-0007 §7) is pre-registered. `potakt eval run` is
 the only command that calls the model APIs; the owner runs it by following
 [`docs/validation/test-a-runbook.md`](docs/validation/test-a-runbook.md):
-- `potakt eval run --model ID [--runs DIR] [--corpus DIR] [--poll-seconds N] [--yes]` without
-  `--yes` prints the plan (pending and recorded scenarios, an open batch or an unconfirmed create
-  request, the cost upper bound) and sends nothing; with `--yes` it reads the key from
+- `potakt eval run --model ID [--runs DIR] [--corpus DIR] [--poll-seconds N] [--yes]
+  [--release BATCH_ID]` without `--yes` prints the plan (pending and recorded scenarios, an open
+  or held batch or an unconfirmed create request, a lock, the cost upper bound) and sends
+  nothing; with `--yes` it reads the key from
   `POTAKT_ANTHROPIC_API_KEY` (Claude models, Message Batches API) or `POTAKT_GEMINI_API_KEY`
   (`gemini-3.8-flash`), records every pending
   scenario under `docs/validation/runs/test-a/<model>/` (`request.json`, `response.json`,
   `candidate.txt`, `comparison.json`, and for Claude models `batches.json` and
   `batch-<id>.results.jsonl`) and prints the summary; `claude-opus-5-5` runs only after
   `claude-haiku-5-5` has a complete run, and the same command again resumes, also after an
-  interrupted batch creation, which it reconciles before sending anything (exit code 0 all
-  recorded or plan printed, 1 run stopped, missing or invalid key, order refused, missing
-  directory or interrupted, 2 usage error, also for an unregistered model id).
+  interrupted batch creation, which it reconciles before sending anything; a batch whose results
+  need the reviewer is held, and every run stops until `--yes --release <id>` after the
+  reviewer's decision; one `--yes` run at a time (the lock file `<runs>/.eval-run.lock`) (exit
+  code 0 all recorded or plan printed, 1 run stopped, a held batch, missing or invalid key, order
+  refused, another run active, a `--release` of a batch that is not held, missing directory or
+  interrupted, 2 usage error, also for an unregistered model id or `--release` without `--yes`).
 
 The other commands are offline: none of them calls a model or needs credentials:
 - `potakt eval prompt <scenario dir> [--model ID]` prints the exact JSON request payload for one

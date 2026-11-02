@@ -47,7 +47,6 @@ HAIKU = "claude-haiku-5-5"
 OPUS = "claude-opus-5-5"
 CREATED_AT = "2026-11-02T10:00:05.123456Z"
 LIST_URL = f"{BATCHES_URL}?limit=100"
-DO_NOT_RUN = "; do not run again: send this message to the reviewer"  # D6
 
 Outcome = Callable[[int, str], dict[str, Any]]
 
@@ -277,7 +276,7 @@ class Run:
     def model_dir(self) -> Path:
         return self.runs / self.model
 
-    def __call__(self) -> None:
+    def __call__(self, release: str | None = None) -> None:
         run_anthropic(
             self.model,
             self.corpus,
@@ -288,6 +287,7 @@ class Run:
             now=self.sleeps.now,
             poll_seconds=60,
             echo=self.echo,
+            release=release,
         )
 
     def state(self) -> dict[str, Any]:
@@ -333,6 +333,7 @@ def test_the_happy_path_records_all_ten_scenarios(tmp_path: Path) -> None:
                 "started_at": STARTED_AT,
                 "created_at": CREATED_AT,
                 "state": "open",
+                "problems": [],
             }
         ]
 
@@ -531,10 +532,18 @@ def test_errored_and_expired_are_resubmitted_in_a_second_batch(tmp_path: Path) -
     assert "05-supermarket-checkouts: canceled; pending" in run.echo
 
 
-TO_THE_REVIEWER = "; send batch-msgbatch_01.results.jsonl to the reviewer before running again"
+# TASK-005c3c E4: the ending of every stop that holds a batch.
+HELD = (
+    "; batch msgbatch_01 is held: send batch-msgbatch_01.results.jsonl and this message to the "
+    "reviewer"
+)
 
 
-def test_a_scenario_missing_from_the_results_stops_the_run(tmp_path: Path) -> None:
+def problems_of(run: "Run", index: int = 0) -> list[str]:
+    return run.state()["batches"][index]["problems"]
+
+
+def test_a_scenario_missing_from_the_results_holds_the_batch(tmp_path: Path) -> None:
     # D3: it used to stay pending silently, and the next batch would pay for it again.
     server = FakeBatches()
     run = make_run(tmp_path, server, ALL_SCENARIOS[:3])
@@ -544,13 +553,15 @@ def test_a_scenario_missing_from_the_results_stops_the_run(tmp_path: Path) -> No
     with pytest.raises(RunStopped) as raised:
         run()
 
-    assert str(raised.value) == (
-        "batch msgbatch_01: no result for 02-hotel-reception; "
-        "batch msgbatch_01: no result for 03-call-centre" + TO_THE_REVIEWER
-    )
+    problems = [
+        "batch msgbatch_01: no result for 02-hotel-reception",
+        "batch msgbatch_01: no result for 03-call-centre",
+    ]
+    assert str(raised.value) == "; ".join(problems) + HELD
     assert run.server.creates() == [list(ALL_SCENARIOS[:3])]
     assert run.recorded() == [ALL_SCENARIOS[0]]
-    assert run.states() == ["done"]
+    assert run.states() == ["held"]
+    assert problems_of(run) == problems
     raw = run.model_dir / "batch-msgbatch_01.results.jsonl"
     assert raw.read_bytes() == first.encode()
 
@@ -612,13 +623,13 @@ def test_an_invalid_request_error_stops_after_recording_the_other_lines(tmp_path
     with pytest.raises(RunStopped) as raised:
         run()
 
-    assert str(raised.value) == (
-        "02-hotel-reception: invalid_request_error: output_config: unknown field" + DO_NOT_RUN
-    )
+    problem = "02-hotel-reception: invalid_request_error: output_config: unknown field"
+    assert str(raised.value) == problem + HELD
     assert run.recorded() == ["01-pharmacy", "03-call-centre"]
     assert not (run.model_dir / "02-hotel-reception" / "response.json").exists()
     assert (run.model_dir / "02-hotel-reception" / "request.json").is_file()
-    assert run.state()["batches"][0]["state"] == "done"
+    assert run.states() == ["held"]
+    assert problems_of(run) == [problem]
     assert len(server.creates()) == 1
 
 
@@ -645,14 +656,17 @@ def test_a_malformed_results_line_stops_after_the_raw_file_is_saved(
         run()
 
     assert str(raised.value).endswith(
-        "; batch msgbatch_01: no result for 02-hotel-reception" + TO_THE_REVIEWER
+        "; batch msgbatch_01: no result for 02-hotel-reception" + HELD
     )
     raw = run.model_dir / "batch-msgbatch_01.results.jsonl"
     assert raw.read_bytes() == server.raw_results["msgbatch_01"]
     assert run.recorded() == ["01-pharmacy"]
+    assert run.states() == ["held"]
+    assert "; ".join(problems_of(run)) + HELD == str(raised.value)
+    assert problems_of(run)[0].startswith("batch msgbatch_01: results line 2 ")
 
 
-def test_a_duplicate_results_line_stops(tmp_path: Path) -> None:
+def test_a_duplicate_results_line_holds_the_batch(tmp_path: Path) -> None:
     server = FakeBatches()
     run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
     line = json.dumps({"custom_id": "01-pharmacy", "result": succeeded()}).encode()
@@ -661,13 +675,14 @@ def test_a_duplicate_results_line_stops(tmp_path: Path) -> None:
     with pytest.raises(RunStopped) as raised:
         run()
 
-    assert str(raised.value) == (
-        "batch msgbatch_01: results line 2 names 01-pharmacy twice" + TO_THE_REVIEWER
-    )
+    problem = "batch msgbatch_01: results line 2 names 01-pharmacy twice"
+    assert str(raised.value) == problem + HELD
     assert run.recorded() == ["01-pharmacy"]
+    assert run.states() == ["held"]
+    assert problems_of(run) == [problem]
 
 
-def test_an_invalid_request_error_and_a_missing_result_keep_both_endings(tmp_path: Path) -> None:
+def test_an_invalid_request_error_and_a_missing_result_are_both_held(tmp_path: Path) -> None:
     server = FakeBatches()
     run = make_run(tmp_path, server, ALL_SCENARIOS[:2])
     line = {"custom_id": "01-pharmacy", "result": errored("invalid_request_error", "bad")}
@@ -676,10 +691,14 @@ def test_an_invalid_request_error_and_a_missing_result_keep_both_endings(tmp_pat
     with pytest.raises(RunStopped) as raised:
         run()
 
-    assert str(raised.value) == (
-        "batch msgbatch_01: no result for 02-hotel-reception; "
-        "01-pharmacy: invalid_request_error: bad" + DO_NOT_RUN + TO_THE_REVIEWER
-    )
+    problems = [
+        "batch msgbatch_01: no result for 02-hotel-reception",
+        "01-pharmacy: invalid_request_error: bad",
+    ]
+    assert str(raised.value) == "; ".join(problems) + HELD
+    assert problems_of(run) == problems
+    assert not hasattr(runner_module, "DO_NOT_RUN_AGAIN")
+    assert not hasattr(runner_module, "TO_THE_REVIEWER")
 
 
 def test_a_results_url_on_another_host_is_refused(tmp_path: Path) -> None:
@@ -813,6 +832,7 @@ def test_a_lost_create_adopts_the_one_candidate_batch(tmp_path: Path) -> None:
             "started_at": STARTED_AT,
             "created_at": CREATED_AT,
             "state": "done",
+            "problems": [],
         }
     ]
     assert run.sleeps == [120, 60]
@@ -994,14 +1014,17 @@ def test_a_line_for_an_already_recorded_scenario_is_skipped(tmp_path: Path) -> N
     assert run.recorded() == list(ALL_SCENARIOS[:2])
 
 
-def test_a_succeeded_result_without_a_message_stops(tmp_path: Path) -> None:
+def test_a_succeeded_result_without_a_message_holds_the_batch(tmp_path: Path) -> None:
     server = FakeBatches(outcome=lambda n, s: {"type": "succeeded"})
     run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
 
-    with pytest.raises(RunStopped, match="01-pharmacy: a succeeded result without a message"):
+    with pytest.raises(RunStopped) as raised:
         run()
 
+    assert str(raised.value) == "01-pharmacy: a succeeded result without a message" + HELD
     assert run.recorded() == []
+    assert run.states() == ["held"]
+    assert problems_of(run) == ["01-pharmacy: a succeeded result without a message"]
 
 
 def state_text(*entries: dict[str, Any]) -> str:
@@ -1010,6 +1033,7 @@ def state_text(*entries: dict[str, Any]) -> str:
 
 OPEN = batch_entry("msgbatch_01", ["01-pharmacy"], "open")
 CREATING = batch_entry(None, ["01-pharmacy"], "creating")
+HELD_ENTRY = batch_entry("msgbatch_01", ["01-pharmacy"], "held", problems=["a problem"])
 
 
 @pytest.mark.parametrize(
@@ -1037,6 +1061,18 @@ CREATING = batch_entry(None, ["01-pharmacy"], "creating")
         state_text(OPEN, CREATING),
         state_text(CREATING, CREATING),
         state_text(OPEN, OPEN | {"id": "msgbatch_02"}),
+        # TASK-005c3c E4: the problems key and the held state.
+        state_text({key: value for key, value in OPEN.items() if key != "problems"}),
+        state_text(HELD_ENTRY | {"problems": []}),
+        state_text(HELD_ENTRY | {"id": None}),
+        state_text(HELD_ENTRY | {"created_at": None}),
+        state_text(HELD_ENTRY | {"problems": "a problem"}),
+        state_text(HELD_ENTRY | {"problems": [5]}),
+        state_text(HELD_ENTRY | {"problems": [""]}),
+        state_text(HELD_ENTRY | {"problems": ["bad\x1b[2J"]}),
+        state_text(OPEN | {"problems": ["a problem"]}),
+        state_text(CREATING | {"problems": ["a problem"]}),
+        state_text(batch_entry(None, ["01-pharmacy"], "failed") | {"problems": ["a problem"]}),
     ],
 )
 def test_an_invalid_batch_state_stops_and_is_kept(tmp_path: Path, text: str) -> None:
@@ -1186,8 +1222,11 @@ def test_a_key_across_the_cut_of_an_invalid_request_message_is_redacted(tmp_path
         run()
 
     assert str(raised.value) == (
-        f"01-pharmacy: invalid_request_error: {'x' * 290}[redacted]" + DO_NOT_RUN
+        f"01-pharmacy: invalid_request_error: {'x' * 290}[redacted]" + HELD
     )
+    # The held problem is written redacted too (the raw results file keeps the server's bytes).
+    assert KEY.encode() not in (run.model_dir / BATCH_STATE_FILE).read_bytes()
+    assert problems_of(run) == [f"01-pharmacy: invalid_request_error: {'x' * 290}[redacted]"]
 
 
 def test_a_key_across_the_cut_of_an_http_error_is_redacted(tmp_path: Path) -> None:
@@ -1223,7 +1262,7 @@ def test_an_invalid_request_message_loses_its_control_characters(tmp_path: Path)
     with pytest.raises(RunStopped) as raised:
         run()
 
-    assert str(raised.value) == "01-pharmacy: invalid_request_error: bad?[31m?" + DO_NOT_RUN
+    assert str(raised.value) == "01-pharmacy: invalid_request_error: bad?[31m?" + HELD
 
 
 def test_the_run_state_repr_never_shows_the_key(tmp_path: Path) -> None:
@@ -1595,3 +1634,163 @@ def test_the_reconcile_lists_through_the_retries(tmp_path: Path) -> None:
 
     assert run.sleeps == [120, 15, 60]
     assert "adopted batch msgbatch_01 created by an earlier create request" in run.echo
+
+
+# --- TASK-005c3c E4: held batches and the release ----------------------------------------------
+
+HELD_STOP = (
+    "batch msgbatch_01 is held for the reviewer: batch msgbatch_01: no result for "
+    "02-hotel-reception; after the reviewer's decision, run the same command with "
+    "--release msgbatch_01"
+)
+
+
+def held_run(tmp_path: Path) -> Run:
+    """A run whose first batch missed 02-hotel-reception's line, so the batch is held."""
+    server = FakeBatches()
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:2])
+    line = json.dumps({"custom_id": "01-pharmacy", "result": succeeded()}) + "\n"
+    server.raw_results["msgbatch_01"] = line.encode()
+    with pytest.raises(RunStopped, match="is held: send batch-msgbatch_01"):
+        run()
+    server.calls.clear()
+    run.echo.clear()
+    return run
+
+
+def test_a_held_batch_stops_the_next_run_before_any_call(tmp_path: Path) -> None:
+    # TASK-005c3b I2: a plain re-run used to send 02-hotel-reception again, in a new paid batch.
+    run = held_run(tmp_path)
+    before = (run.model_dir / BATCH_STATE_FILE).read_bytes()
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == HELD_STOP
+    assert run.server.calls == []
+    assert run.echo == []
+    assert (run.model_dir / BATCH_STATE_FILE).read_bytes() == before
+
+
+def test_a_held_batch_is_checked_before_a_creating_entry_is_reconciled(tmp_path: Path) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:2])
+    held = batch_entry("msgbatch_01", ALL_SCENARIOS[:2], "held", problems=["p1", "p2"])
+    write_state(run.model_dir, held, batch_entry(None, ["02-hotel-reception"], "creating"))
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == (
+        "batch msgbatch_01 is held for the reviewer: p1; p2; after the reviewer's decision, run "
+        "the same command with --release msgbatch_01"
+    )
+    assert run.server.calls == []
+
+
+def test_a_released_batch_is_done_and_the_pending_scenarios_go_in_a_new_batch(
+    tmp_path: Path,
+) -> None:
+    run = held_run(tmp_path)
+
+    run(release="msgbatch_01")
+
+    assert run.echo[0] == "batch msgbatch_01 released after review"
+    assert run.echo[1] == "batch msgbatch_02 created for 1 scenarios"
+    assert run.server.creates() == [["02-hotel-reception"]]
+    assert run.recorded() == list(ALL_SCENARIOS[:2])
+    assert run.states() == ["done", "done"]
+    assert problems_of(run, 0) == ["batch msgbatch_01: no result for 02-hotel-reception"]
+    assert problems_of(run, 1) == []
+
+
+def test_a_release_stops_for_another_held_batch(tmp_path: Path) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:2])
+    write_state(
+        run.model_dir,
+        batch_entry("msgbatch_01", ["01-pharmacy"], "held", problems=["p1"]),
+        batch_entry("msgbatch_02", ["02-hotel-reception"], "held", problems=["p2"]),
+    )
+
+    with pytest.raises(RunStopped, match=r"^batch msgbatch_02 is held for the reviewer: p2; "):
+        run(release="msgbatch_01")
+
+    assert run.echo == ["batch msgbatch_01 released after review"]
+    assert run.states() == ["done", "held"]
+    assert run.server.calls == []
+
+
+@pytest.mark.parametrize("state", ["open", "done", "unknown"])
+def test_only_a_held_batch_can_be_released(tmp_path: Path, state: str) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:1])
+    entries = [] if state == "unknown" else [batch_entry("msgbatch_01", ALL_SCENARIOS[:1], state)]
+    write_state(run.model_dir, *entries)
+    before = (run.model_dir / BATCH_STATE_FILE).read_bytes()
+
+    with pytest.raises(RunStopped) as raised:
+        run(release="msgbatch_01")
+
+    assert str(raised.value) == "msgbatch_01 is not a held batch of claude-haiku-5-5"
+    assert (run.model_dir / BATCH_STATE_FILE).read_bytes() == before
+    assert run.server.calls == []
+
+
+def test_a_done_entry_keeps_its_problems_and_loads(tmp_path: Path) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:1])
+    released = batch_entry("msgbatch_91", ALL_SCENARIOS[:1], "done", problems=["p1"])
+    write_state(run.model_dir, released)
+
+    run()
+
+    assert run.states() == ["done", "done"]
+    assert problems_of(run, 0) == ["p1"]
+
+
+def test_the_attempt_cap_counts_held_batches(tmp_path: Path) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:2])
+    done = [batch_entry(f"msgbatch_9{n}", ["02-hotel-reception"], "done") for n in range(3)]
+    held = batch_entry("msgbatch_99", ["02-hotel-reception"], "held", problems=["p1"])
+    write_state(run.model_dir, *done, held)
+
+    with pytest.raises(RunStopped, match="02-hotel-reception was sent in 4 batches"):
+        run(release="msgbatch_99")  # released, it still counts
+
+    assert run.server.calls == []
+    # A held entry counts like open and done (it is checked first, so this is the rule itself).
+    entry = runner_module._Batch  # the private entry type: no public way to build one
+    held_entries = [
+        entry(f"msgbatch_8{n}", ("02-hotel-reception",), STARTED_AT, CREATED_AT, "held", ("p",))
+        for n in range(4)
+    ]
+    state = runner_module._AnthropicRun(
+        model=HAIKU, corpus_dir=run.corpus, model_dir=run.model_dir,
+        headers=runner_module.anthropic_headers(KEY), transport=FakeBatches(), sleep=Sleeps(),
+        now=lambda: NOW, poll_seconds=60, echo=Echo(),
+    )  # fmt: skip
+    with pytest.raises(RunStopped, match="02-hotel-reception was sent in 4 batches"):
+        state._next_attempt(["02-hotel-reception"], held_entries)
+
+
+# --- TASK-005c3c E6: an open batch with nothing pending is resumed ----------------------------
+
+
+def test_an_open_batch_with_nothing_pending_is_resumed_and_closed(tmp_path: Path) -> None:
+    # TASK-005c3b M5: it used to stay open while the plan said "resumed by --yes".
+    server = FakeBatches()
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:2])
+    for name in ALL_SCENARIOS[:2]:
+        scenario = load_scenario(run.corpus / name)
+        write_answer(run.model_dir / name, scenario, HAIKU, anthropic_message(HAIKU))
+    batch_id = server.register(list(ALL_SCENARIOS[:2]))
+    write_state(run.model_dir, batch_entry(batch_id, ALL_SCENARIOS[:2], "open"))
+
+    run()
+
+    assert run.echo[0] == "resuming batch msgbatch_01"
+    assert run.echo[-3:] == [
+        "01-pharmacy: already recorded",
+        "02-hotel-reception: already recorded",
+        "nothing to run",
+    ]
+    assert server.polled == {"msgbatch_01": 2}
+    assert run.states() == ["done"]
+    assert server.creates() == []

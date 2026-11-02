@@ -36,10 +36,11 @@ from potakt.evaluation.runner import (
     run_anthropic,
     run_gemini,
     run_plan,
+    take_lock,
 )
 from potakt.evaluation.summary import model_directory_name
 from potakt.evaluation.test_a import ANTHROPIC_PREFIX, check_registered
-from potakt.evaluation.transport import RunStopped, Transport, UrllibTransport
+from potakt.evaluation.transport import RunStopped, Transport, UrllibTransport, server_text
 from potakt.model import (
     DecisionModel,
     DecisionModelError,
@@ -444,29 +445,47 @@ def eval_run(
         bool,
         typer.Option("--yes", help="Send the requests (paid calls); without it, nothing is sent."),
     ] = False,
+    release: Annotated[
+        str | None,
+        typer.Option(
+            "--release",
+            metavar="BATCH_ID",
+            help=(
+                "Mark a held batch done after the reviewer's decision (only with --yes), then "
+                "continue the run."
+            ),
+            show_default=False,
+        ),
+    ] = None,
 ) -> None:
     """Run Test A for one model: send every corpus scenario without a recorded answer and record
-    the answers (ADR-0007 §7 and its amendment).
+    the answers (ADR-0007 §7 and its amendments).
 
     Without --yes, print the plan and the cost upper bound; nothing is sent and no key is read.
     With --yes, read the key from POTAKT_ANTHROPIC_API_KEY (Claude models, Message Batches API)
     or POTAKT_GEMINI_API_KEY (gemini-3.8-flash, generateContent), send, record, then print the
     model's summary. claude-opus-5-5 runs only after claude-haiku-5-5 has a complete run. The
-    same command again resumes; a recorded scenario is never sent again.
+    same command again resumes; a recorded scenario is never sent again. A batch whose results
+    need the reviewer is held: every run stops until --yes --release <id> after the reviewer's
+    decision. Only one --yes run at a time: it holds the lock file <runs>/.eval-run.lock while
+    it runs.
 
     Files: <runs>/<model dir>/<scenario id>/ with request.json, response.json, candidate.txt,
     comparison.json; for Claude models also <runs>/<model dir>/ batches.json and
     batch-<id>.results.jsonl.
 
     Exit code 0: everything pending is recorded, or the plan was printed; 1: the run stopped (the
-    reason on stderr), a missing or invalid key, claude-opus-5-5 before a complete
-    claude-haiku-5-5 run, a missing directory, or an interruption; 2: usage error (also an
-    unregistered model id).
+    reason on stderr), a held batch, a missing or invalid key, claude-opus-5-5 before a complete
+    claude-haiku-5-5 run, another run active (the lock file), a --release of a batch that is not
+    held, a missing directory, or an interruption; 2: usage error (also an unregistered model
+    id, or --release without --yes).
     """
     try:
         check_registered(model)
     except UnknownModelError as error:
         _stop(EXIT_USAGE, str(error))
+    if release is not None and not yes:
+        _stop(EXIT_USAGE, "--release needs --yes: a dry run never changes anything")
     if not corpus.is_dir():
         _stop(1, f"{corpus} is not a directory")
     if runs.exists() and not runs.is_dir():
@@ -477,22 +496,29 @@ def eval_run(
         if not yes:
             typer.echo(run_plan(model, corpus, runs), nl=False)
             return
+        if release is not None and not anthropic:
+            raise RunStopped(f"{server_text(release)} is not a held batch of {model}")
         key = read_key(ANTHROPIC_KEY_VARIABLE if anthropic else GEMINI_KEY_VARIABLE)
         transport = make_transport()
-        if anthropic:
-            run_anthropic(
-                model,
-                corpus,
-                runs,
-                key,
-                transport,
-                sleep=time.sleep,
-                now=utc_now,
-                poll_seconds=poll_seconds,
-                echo=typer.echo,
-            )
-        else:
-            run_gemini(model, corpus, runs, key, transport, sleep=time.sleep, echo=typer.echo)
+        lock = take_lock(runs, model, utc_now())  # E5: before anything else that writes
+        try:
+            if anthropic:
+                run_anthropic(
+                    model,
+                    corpus,
+                    runs,
+                    key,
+                    transport,
+                    sleep=time.sleep,
+                    now=utc_now,
+                    poll_seconds=poll_seconds,
+                    echo=typer.echo,
+                    release=release,
+                )
+            else:
+                run_gemini(model, corpus, runs, key, transport, sleep=time.sleep, echo=typer.echo)
+        finally:
+            lock.unlink(missing_ok=True)  # however the run ends; only a crash leaves it
     except RunStopped as error:
         _stop(1, str(error))
     except KeyboardInterrupt:

@@ -8,6 +8,7 @@ import ast
 import json
 from datetime import timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 import typer
@@ -436,6 +437,257 @@ def test_an_interruption_during_the_create_call_is_resumed_by_the_same_command(
     assert "Complete: yes" in resumed.stdout
 
 
+# --- TASK-005c3c E4: --release ----------------------------------------------------------------
+
+HELD_PROBLEM = "batch msgbatch_07: no result for 02-hotel-reception"
+
+
+def held_state(runs: Path) -> None:
+    held = batch_entry("msgbatch_07", ALL_SCENARIOS[:2], "held", problems=[HELD_PROBLEM])
+    write_state(runs / HAIKU, held)
+
+
+def test_release_without_yes_is_a_usage_error(tmp_path: Path) -> None:
+    held_state(tmp_path)
+    before = (tmp_path / HAIKU / "batches.json").read_bytes()
+
+    result = eval_run(tmp_path, HAIKU, "--release", "msgbatch_07")
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert result.stderr == "--release needs --yes: a dry run never changes anything\n"
+    assert (tmp_path / HAIKU / "batches.json").read_bytes() == before
+
+
+@pytest.mark.parametrize("state", ["open", "done", "unknown"])
+def test_release_of_a_batch_that_is_not_held_exits_1_and_changes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str
+) -> None:
+    monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:2])
+    runs = tmp_path / "runs"
+    entries = [] if state == "unknown" else [batch_entry("msgbatch_07", ALL_SCENARIOS[:2], state)]
+    write_state(runs / HAIKU, *entries)
+    before = (runs / HAIKU / "batches.json").read_bytes()
+
+    result = eval_run(runs, HAIKU, "--yes", "--release", "msgbatch_07", corpus=corpus)
+
+    assert result.exit_code == 1
+    assert result.stderr == "msgbatch_07 is not a held batch of claude-haiku-5-5\n"
+    assert (runs / HAIKU / "batches.json").read_bytes() == before
+
+
+def test_release_for_gemini_exits_1(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(GEMINI_VARIABLE, KEY)
+
+    result = eval_run(tmp_path, GEMINI, "--yes", "--release", "msgbatch_07")
+
+    assert result.exit_code == 1
+    assert result.stderr == "msgbatch_07 is not a held batch of gemini-3.8-flash\n"
+    assert not (tmp_path / ".eval-run.lock").exists()
+
+
+def test_a_held_batch_stops_yes_and_release_resumes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
+    server = FakeBatches()
+    monkeypatch.setattr(cli, "make_transport", lambda: server)
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:2])
+    runs = tmp_path / "runs"
+    write_answer(
+        runs / HAIKU / "01-pharmacy",
+        load_scenario(corpus / "01-pharmacy"),
+        HAIKU,
+        anthropic_message(HAIKU),
+    )
+    held_state(runs)
+
+    stopped = eval_run(runs, HAIKU, "--yes", corpus=corpus)
+    released = eval_run(runs, HAIKU, "--yes", "--release", "msgbatch_07", corpus=corpus)
+
+    assert stopped.exit_code == 1
+    assert stopped.stderr == (
+        f"batch msgbatch_07 is held for the reviewer: {HELD_PROBLEM}; after the reviewer's "
+        "decision, run the same command with --release msgbatch_07\n"
+    )
+    assert released.exit_code == 0, released.stderr
+    assert released.stdout.startswith(
+        "batch msgbatch_07 released after review\nbatch msgbatch_01 created for 1 scenarios\n"
+    )
+    assert server.creates() == [["02-hotel-reception"]]
+    assert "Complete: yes" in released.stdout
+
+
+def test_the_dry_run_shows_a_held_batch(tmp_path: Path) -> None:
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:2])
+    runs = tmp_path / "runs"
+    held_state(runs)
+
+    result = eval_run(runs, HAIKU, corpus=corpus)
+
+    assert result.exit_code == 0, result.stderr
+    assert (
+        f"Held batch: msgbatch_07 (2 scenarios): {HELD_PROBLEM}; --yes --release msgbatch_07 "
+        "after the reviewer's decision"
+    ) in result.stdout.splitlines()
+
+
+# --- TASK-005c3c E5: one run at a time ----------------------------------------------------------
+
+LOCK = ".eval-run.lock"
+
+
+def test_a_run_takes_the_lock_and_removes_it_after_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
+    runs = tmp_path / "runs"
+    seen: list[str] = []
+    server = FakeBatches(on_first_poll=lambda: seen.append(lock_text(runs)))
+    monkeypatch.setattr(cli, "make_transport", lambda: server)
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:1])
+
+    result = eval_run(runs, HAIKU, "--yes", corpus=corpus)
+
+    assert result.exit_code == 0, result.stderr
+    assert seen == ["claude-haiku-5-5 2026-11-02T10:00:00Z\n"]
+    assert not (runs / LOCK).exists()
+
+
+def lock_text(runs: Path) -> str:
+    return (runs / LOCK).read_bytes().decode("utf-8")
+
+
+def test_the_lock_is_removed_after_a_stop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
+    rejected = HttpResponse(400, {}, b"")
+    monkeypatch.setattr(cli, "make_transport", lambda: FakeBatches(create_script=[rejected]))
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:1])
+
+    result = eval_run(tmp_path / "runs", HAIKU, "--yes", corpus=corpus)
+
+    assert result.exit_code == 1
+    assert result.stderr == "creating a batch failed: HTTP 400\n"
+    assert not (tmp_path / "runs" / LOCK).exists()
+
+
+def test_the_lock_is_removed_after_an_interruption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
+    server = FakeBatches(create_script=["interrupt-created"])
+    monkeypatch.setattr(cli, "make_transport", lambda: server)
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:1])
+
+    result = eval_run(tmp_path / "runs", HAIKU, "--yes", corpus=corpus)
+
+    assert result.exit_code == 1
+    assert result.stderr == cli.INTERRUPTED + "\n"
+    assert not (tmp_path / "runs" / LOCK).exists()
+
+
+@pytest.mark.parametrize("model", [HAIKU, GEMINI])
+def test_a_second_run_while_the_lock_exists_exits_1_and_sends_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, model: str
+) -> None:
+    monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
+    monkeypatch.setenv(GEMINI_VARIABLE, KEY)
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:1])
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    (runs / LOCK).write_bytes(b"claude-opus-5-5 2026-11-02T09:00:00Z\n")
+
+    result = eval_run(runs, model, "--yes", corpus=corpus)  # NoTransport: any call fails
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert result.stderr == (
+        "another eval run is active (claude-opus-5-5 2026-11-02T09:00:00Z), or one was cut off: "
+        f"if no other window runs eval run, delete {runs / LOCK} and run again\n"
+    )
+    assert lock_text(runs) == "claude-opus-5-5 2026-11-02T09:00:00Z\n"  # left as it was
+    assert not (runs / model).exists()
+
+
+def test_an_odd_lock_is_shown_safely(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    (runs / LOCK).write_bytes(b"\x1b[2J\xff" + b"x" * 500)
+
+    result = eval_run(runs, HAIKU, "--yes")
+
+    assert result.exit_code == 1
+    assert "\x1b" not in result.stderr
+    assert result.stderr.startswith("another eval run is active (?[2J")
+    assert len(result.stderr) < 400
+    assert (runs / LOCK).exists()  # never removed by the run it stopped
+
+
+def test_the_dry_run_reports_a_lock_and_takes_none(tmp_path: Path) -> None:
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:1])
+    runs = tmp_path / "runs"
+    unlocked = eval_run(runs, HAIKU, corpus=corpus)
+    runs.mkdir()
+    (runs / LOCK).write_bytes(b"claude-haiku-5-5 2026-11-02T09:00:00Z\n")
+
+    locked = eval_run(runs, HAIKU, corpus=corpus)
+
+    assert unlocked.exit_code == 0
+    assert not any(line.startswith("Lock:") for line in unlocked.stdout.splitlines())
+    assert locked.exit_code == 0
+    assert (
+        "Lock: claude-haiku-5-5 2026-11-02T09:00:00Z (another run may be active)"
+        in locked.stdout.splitlines()
+    )
+    assert sorted(path.name for path in runs.iterdir()) == [LOCK]  # nothing else written
+
+
+def test_the_repository_lock_is_ignored_by_git() -> None:
+    gitignore = Path(__file__).resolve().parents[2] / ".gitignore"
+    lines = gitignore.read_text(encoding="utf-8").splitlines()
+
+    assert "docs/validation/runs/test-a/.eval-run.lock" in lines
+    repository = Path(__file__).resolve().parents[2]
+    assert repository / "docs/validation/runs/test-a/.eval-run.lock" == RUNS_PATH / LOCK
+
+
+def test_a_lock_that_cannot_be_read_still_blocks_with_the_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A directory in the lock's place: every OS refuses to read or create it; our code decides.
+    monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
+    runs = tmp_path / "runs"
+    (runs / LOCK).mkdir(parents=True)
+
+    result = eval_run(runs, HAIKU, "--yes")
+
+    assert result.exit_code == 1
+    assert result.stderr.startswith("another eval run is active (unreadable), or one was cut off")
+    assert (runs / LOCK).is_dir()
+
+
+def test_a_lock_that_cannot_be_created_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
+    real_open = Path.open
+
+    def refusing_open(self: Path, *args: Any, **kwargs: Any) -> Any:
+        if (args[0] if args else kwargs.get("mode")) == "x":
+            raise PermissionError(13, "Permission denied")
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", refusing_open)
+    runs = tmp_path / "runs"
+
+    result = eval_run(runs, HAIKU, "--yes")
+
+    assert result.exit_code == 1
+    assert result.stderr == f"cannot create {runs / LOCK}: Permission denied\n"
+
+
 # --- the app, the key reader and the help ---------------------------------------------------
 
 
@@ -521,10 +773,17 @@ def test_the_run_help_states_the_exit_codes_and_files() -> None:
     assert "batches.json and batch-<id>.results.jsonl" in text
     assert (
         "Exit code 0: everything pending is recorded, or the plan was printed; 1: the run "
-        "stopped (the reason on stderr), a missing or invalid key, claude-opus-5-5 before a "
-        "complete claude-haiku-5-5 run, a missing directory, or an interruption; 2: usage error "
-        "(also an unregistered model id)"
+        "stopped (the reason on stderr), a held batch, a missing or invalid key, claude-opus-5-5 "
+        "before a complete claude-haiku-5-5 run, another run active (the lock file), a --release "
+        "of a batch that is not held, a missing directory, or an interruption; 2: usage error "
+        "(also an unregistered model id, or --release without --yes)"
     ) in text
+    assert "--release" in text
+    assert (
+        "Mark a held batch done after the reviewer's decision (only with --yes), then continue"
+        in text
+    )
+    assert "<runs>/.eval-run.lock" in text
     assert "default: the repository's docs/validation/runs/test-a" in text
     assert str(RUNS_PATH) not in text
 
@@ -583,9 +842,12 @@ def test_the_runbook_quotes_the_reconciliation_messages_and_the_new_rules() -> N
         "`no batch was created by the earlier create request (started <time>)`",
         "`Unconfirmed create request: started <time> (<n> scenarios); --yes checks for its batch "
         "before sending anything`",
-        f"`<scenario>: invalid_request_error: …{runner_module.DO_NOT_RUN_AGAIN}`",
-        runner_module.TO_THE_REVIEWER.format(name="batch-<id>.results.jsonl")[2:],
-        "**`batch <id>: no result for <scenario>`**",
+        "`<scenario>: invalid_request_error: …`",
+        "`" + runner_module.HELD.format(id="<id>")[2:] + "`",
+        "`batch <id> is held for the reviewer: <problems>; after the reviewer's decision, run the "
+        "same command with --release <id>`",
+        "`batch <id> released after review`",
+        "`batch <id>: no result for <scenario>`",
         "cancel all of them but the oldest, then run the same command again; it adopts the one "
         "left",
         "One run at a time: never run `potakt eval run` in two windows at once",
