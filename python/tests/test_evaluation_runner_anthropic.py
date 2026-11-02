@@ -103,6 +103,7 @@ class FakeBatches:
     # Seconds the clock moves while a create call is answered (``clock.advance``).
     create_seconds: float = 0.0
     clock: Sleeps | None = None
+    stamp_with_clock: bool = False  # created_at from the clock instead of CREATED_AT
     cancelled: set[str] = field(default_factory=set[str])
     omit_cancel_field: bool = False  # batch objects without cancel_initiated_at
     list_failures: list[TransportError] = field(default_factory=list[TransportError])
@@ -119,7 +120,13 @@ class FakeBatches:
     posted: set[str] = field(default_factory=set[str])  # the batches created by create calls
     lists: int = 0
 
-    def register(self, scenarios: list[str], created_at: str = CREATED_AT) -> str:
+    def register(self, scenarios: list[str], created_at: str | None = None) -> str:
+        """A new batch, created at ``created_at``: by default ``CREATED_AT``, or the clock's
+        time when ``stamp_with_clock`` is set."""
+        if created_at is None:
+            created_at = CREATED_AT
+            if self.stamp_with_clock and self.clock is not None:
+                created_at = self.clock.now().isoformat().replace("+00:00", "Z")
         batch_id = f"msgbatch_{len(self.batches) + 1:02d}"
         self.batches[batch_id] = scenarios
         self.created_at[batch_id] = created_at
