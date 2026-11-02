@@ -6,11 +6,20 @@ No test reads a real key or opens a connection: ``--yes`` runs get the fake key 
 
 import ast
 import json
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
 import typer
-from runner_helpers import ALL_SCENARIOS, KEY, Sleeps, anthropic_message, corpus_copy
+from runner_helpers import (
+    ALL_SCENARIOS,
+    KEY,
+    Sleeps,
+    anthropic_message,
+    batch_entry,
+    corpus_copy,
+    write_state,
+)
 from test_evaluation_runner_anthropic import FakeBatches, succeeded
 from test_evaluation_runner_gemini import FakeGemini
 from typer.testing import CliRunner, Result
@@ -19,7 +28,7 @@ import potakt.cli as cli
 import potakt.evaluation.runner as runner_module
 from potakt.cli import app, eval_app
 from potakt.evaluation import CORPUS_PATH, load_scenario, render_test_a, summarize, write_answer
-from potakt.evaluation.runner import BATCH_STATE_FILE, RUNS_PATH, cost_upper_bound
+from potakt.evaluation.runner import RUNS_PATH, cost_upper_bound
 from potakt.evaluation.transport import HttpResponse, UrllibTransport
 
 GOLDEN = Path(__file__).resolve().parent / "golden"
@@ -60,10 +69,11 @@ class NoTransport:
 
 @pytest.fixture(autouse=True)
 def no_real_transport(monkeypatch: pytest.MonkeyPatch) -> Sleeps:
-    """Every test gets a transport that refuses to send and a recording sleep."""
+    """Every test gets a transport that refuses to send, a recording sleep and its clock."""
     monkeypatch.setattr(cli, "make_transport", NoTransport)
     sleeps = Sleeps()
     monkeypatch.setattr(cli.time, "sleep", sleeps)
+    monkeypatch.setattr(cli, "utc_now", sleeps.now)
     return sleeps
 
 
@@ -121,14 +131,8 @@ def test_the_dry_run_lists_recorded_scenarios_and_an_open_batch(tmp_path: Path) 
         HAIKU,
         anthropic_message(HAIKU),
     )
-    entry = {
-        "id": "msgbatch_07",
-        "scenarios": ["02-hotel-reception", "03-call-centre"],
-        "created_at": "2026-11-02T10:00:05Z",
-        "state": "open",
-    }
-    state = json.dumps({"batches": [entry]})
-    (runs / HAIKU / BATCH_STATE_FILE).write_text(state, encoding="utf-8")
+    pending = ["02-hotel-reception", "03-call-centre"]
+    write_state(runs / HAIKU, batch_entry("msgbatch_07", pending, "open"))
 
     result = eval_run(runs, HAIKU, corpus=corpus)
 
@@ -137,6 +141,26 @@ def test_the_dry_run_lists_recorded_scenarios_and_an_open_batch(tmp_path: Path) 
     assert "Pending (2): 02-hotel-reception, 03-call-centre" in lines
     assert "Recorded (1): 01-pharmacy" in lines
     assert "Open batch: msgbatch_07 (2 scenarios), resumed by --yes" in lines
+    assert not any(line.startswith("Unconfirmed") for line in lines)
+
+
+def test_the_dry_run_shows_an_unconfirmed_create_request_and_lists_nothing(
+    tmp_path: Path,
+) -> None:
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:3])
+    runs = tmp_path / "runs"
+    failed = batch_entry(None, ["01-pharmacy"], "failed", started_at="2026-11-02T09:00:00Z")
+    creating = batch_entry(None, ALL_SCENARIOS[:3], "creating", started_at="2026-11-02T10:15:03Z")
+    write_state(runs / HAIKU, failed, creating)
+
+    result = eval_run(runs, HAIKU, corpus=corpus)  # NoTransport: any call fails the test
+
+    assert result.exit_code == 0, result.stderr
+    assert (
+        "Unconfirmed create request: started 2026-11-02T10:15:03Z (3 scenarios); --yes checks "
+        "for its batch before sending anything"
+    ) in result.stdout.splitlines()
+    assert "Open batch" not in result.stdout
 
 
 def prompt_bytes(name: str) -> int:
@@ -388,32 +412,28 @@ def test_an_interruption_exits_1_and_says_how_to_resume(
     assert result.stderr == "interrupted: run the same command again to resume (nothing is lost)\n"
 
 
-def test_an_interruption_during_the_create_call_points_to_the_console(
+def test_an_interruption_during_the_create_call_is_resumed_by_the_same_command(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # ultrareview finding: "nothing is lost" was wrong while the create call is in flight.
+    # TASK-005c3b D2 step 5: "nothing is lost" is now true while the create call is in flight.
     monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
-
-    class Interrupted:
-        def send(
-            self,
-            method: str,
-            url: str,
-            headers: dict[str, str],
-            body: bytes | None,
-            timeout: float,
-        ) -> HttpResponse:
-            raise KeyboardInterrupt
-
-    monkeypatch.setattr(cli, "make_transport", Interrupted)
+    server = FakeBatches(create_script=["interrupt-created"])
+    monkeypatch.setattr(cli, "make_transport", lambda: server)
     corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:1])
 
-    result = eval_run(tmp_path / "runs", HAIKU, "--yes", corpus=corpus)
+    interrupted = eval_run(tmp_path / "runs", HAIKU, "--yes", corpus=corpus)
+    resumed = eval_run(tmp_path / "runs", HAIKU, "--yes", corpus=corpus)
 
-    assert result.exit_code == 1
-    assert "nothing is lost" not in result.stderr
-    assert result.stderr.startswith("interrupted while creating a batch: ")
-    assert "Claude Console (Batches)" in result.stderr
+    assert interrupted.exit_code == 1
+    assert interrupted.stderr == (
+        "interrupted: run the same command again to resume (nothing is lost)\n"
+    )
+    assert resumed.exit_code == 0, resumed.stderr
+    assert resumed.stdout.startswith(
+        "adopted batch msgbatch_01 created by an earlier create request\n"
+    )
+    assert len(server.creates()) == 1
+    assert "Complete: yes" in resumed.stdout
 
 
 # --- the app, the key reader and the help ---------------------------------------------------
@@ -423,6 +443,12 @@ def test_the_real_factory_builds_the_hardened_transport(monkeypatch: pytest.Monk
     monkeypatch.undo()  # the autouse fixture replaced the factory
 
     assert isinstance(cli.make_transport(), UrllibTransport)
+
+
+def test_the_real_clock_is_aware_utc(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.undo()  # the autouse fixture replaced the clock
+
+    assert cli.utc_now().utcoffset() == timedelta(0)
 
 
 @pytest.mark.parametrize("typer_app", [app, eval_app], ids=["app", "eval_app"])

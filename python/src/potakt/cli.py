@@ -398,6 +398,11 @@ def make_transport() -> Transport:
     return UrllibTransport()
 
 
+def utc_now() -> datetime:
+    """The clock of a real run (tests replace it, together with ``time.sleep``)."""
+    return datetime.now(UTC)
+
+
 @eval_app.command("run")
 def eval_run(
     model: Annotated[
@@ -482,7 +487,7 @@ def eval_run(
                 key,
                 transport,
                 sleep=time.sleep,
-                now=lambda: datetime.now(UTC),
+                now=utc_now,
                 poll_seconds=poll_seconds,
                 echo=typer.echo,
             )

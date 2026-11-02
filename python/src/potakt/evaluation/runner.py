@@ -10,13 +10,18 @@ The batches of a model live in ``<model dir>/batches.json`` and each batch's raw
 and ``eval rescore`` ignore (they read directories only). The API key is only ever placed in a
 request header; it is never written, printed or put in a URL, and every ``RunStopped`` message is
 redacted of it.
+
+A batch is never paid for twice (TASK-005c3b D1, D2): a ``creating`` entry is saved before every
+create call, so a create whose outcome is unclear (no response, a 5xx, an unreadable 200, an
+interruption or a crash) is reconciled against the list of batches, by two list calls at least
+60 seconds apart, before anything else is sent; the next run starts with that reconciliation.
 """
 
 import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from importlib.metadata import version
 from pathlib import Path
 from typing import cast
@@ -97,16 +102,25 @@ GEMINI_TIMEOUT_SECONDS = 600.0
 RUNS_PATH = Path(__file__).resolve().parents[4] / "docs" / "validation" / "runs" / "test-a"
 # ADR-0007 §7 amendment «Order»: the strong model runs only after this one has a complete run.
 FIRST_MODEL = "claude-haiku-5-5"
-INTERRUPTED_CREATE = (
-    "interrupted while creating a batch: it may exist without being recorded; before running "
-    "again, cancel every batch created in the last minutes in the Claude Console (Batches)"
-)
-ADOPTION_WAIT_SECONDS = 10
-ADOPTION_WINDOW = timedelta(minutes=10)
-LIST_LIMIT = 20
+# TASK-005c3b D2: the reconciliation of a create whose outcome is unclear.
+FIRST_CHECK = timedelta(seconds=10)  # the first list call, after started_at
+SECOND_CHECK = timedelta(seconds=70)  # the second one, if the first found none
+LIST_LAG = timedelta(seconds=60)  # how long a new batch may be missing from the list
+ADOPTION_WINDOW = timedelta(minutes=10)  # clock skew allowed between us and the API
+LIST_LIMIT = 100
+_STATES = ("creating", "open", "done", "failed")
+_ACTIVE = ("creating", "open")  # at most one entry is in one of these states
+_WITH_BATCH = ("open", "done")  # the states whose entry names a batch
+_ENTRY_KEYS = frozenset({"id", "scenarios", "started_at", "created_at", "state"})
 _CUSTOM_ID = re.compile(r"[a-zA-Z0-9_-]{1,64}")
 _BATCH_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _INSTANT = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d+)?(Z|[+-]\d{2}:\d{2})")
+_STARTED_AT = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+SEVERAL_CANDIDATES = (
+    "{count} recent batches could be the one created by an earlier create request: {ids}; in the "
+    "Claude Console (Batches) cancel all but the oldest, then run the same command again: it "
+    "adopts the one left"
+)
 _STATUSES = ("in_progress", "canceling", "ended")
 _COUNTS = ("processing", "succeeded", "errored", "expired", "canceled")
 _RESULT_TYPES = ("succeeded", "errored", "expired", "canceled")
@@ -125,12 +139,63 @@ def _results_file(batch_id: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class _Batch:
-    """One entry of ``batches.json``: ``state`` is ``open`` until its results are recorded."""
+    """One entry of ``batches.json`` (TASK-005c3b D1).
 
-    id: str
+    ``state`` is ``creating`` while a create call may be in flight or its outcome is unknown,
+    ``open`` once the batch exists and its results are not recorded yet, ``done`` once they are,
+    and ``failed`` when it is proven that no batch was created. ``id`` and ``created_at`` (the
+    batch's) are set for ``open`` and ``done`` only; ``started_at`` is the UTC instant just before
+    the last create call, in whole seconds (``2026-11-02T07:15:03Z``).
+    """
+
+    id: str | None
     scenarios: tuple[str, ...]
-    created_at: str
+    started_at: str
+    created_at: str | None
     state: str
+
+
+def _stamp(moment: datetime) -> str:
+    """``moment`` as ``started_at``: UTC, whole seconds, ``Z``."""
+    return moment.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _started(text: str) -> datetime | None:
+    """A ``started_at`` value read back; ``None`` if it is not one."""
+    if not _STARTED_AT.fullmatch(text):
+        return None
+    try:
+        return datetime.fromisoformat(text[:-1] + "+00:00")
+    except ValueError:
+        return None
+
+
+def _entry(item: object) -> _Batch | None:
+    """One entry of ``batches.json`` with every key and type checked for its state."""
+    if not isinstance(item, dict) or frozenset(cast(dict[str, object], item)) != _ENTRY_KEYS:
+        return None
+    entry = cast(dict[str, object], item)
+    batch_id, scenarios, state = entry["id"], entry["scenarios"], entry["state"]
+    started_at, created_at = entry["started_at"], entry["created_at"]
+    if not (
+        state in _STATES
+        and isinstance(scenarios, list)
+        and all(isinstance(name, str) for name in cast(list[object], scenarios))
+        and isinstance(started_at, str)
+        and _started(started_at) is not None
+    ):
+        return None
+    if state in _WITH_BATCH:
+        if not (
+            isinstance(batch_id, str)
+            and _BATCH_ID.fullmatch(batch_id)
+            and isinstance(created_at, str)
+        ):
+            return None
+    elif batch_id is not None or created_at is not None:
+        return None
+    names = tuple(cast(list[str], scenarios))
+    return _Batch(batch_id, names, started_at, created_at, cast(str, state))
 
 
 def _load_state(model_dir: Path) -> list[_Batch]:
@@ -146,33 +211,25 @@ def _load_state(model_dir: Path) -> list[_Batch]:
     if not isinstance(entries, list):
         raise invalid
     batches: list[_Batch] = []
-    for entry in cast(list[object], entries):
-        batch_id = _field(entry, "id")
-        scenarios = _field(entry, "scenarios")
-        created_at = _field(entry, "created_at")
-        state = _field(entry, "state")
-        if not (
-            isinstance(batch_id, str)
-            and _BATCH_ID.fullmatch(batch_id)
-            and isinstance(scenarios, list)
-            and all(isinstance(name, str) for name in cast(list[object], scenarios))
-            and isinstance(created_at, str)
-            and state in ("open", "done")
-        ):
+    for item in cast(list[object], entries):
+        batch = _entry(item)
+        if batch is None:
             raise invalid
-        names = tuple(cast(list[str], scenarios))
-        batches.append(_Batch(batch_id, names, created_at, cast(str, state)))
+        batches.append(batch)
+    if sum(batch.state in _ACTIVE for batch in batches) > 1:
+        raise invalid
     return batches
 
 
 def _all_batch_ids(runs_dir: Path) -> set[str]:
-    """The ids in the ``batches.json`` of every model directory under ``runs_dir`` (it exists:
-    ``request.json`` files are written before any batch is created)."""
+    """The batch ids in the ``batches.json`` of every model directory under ``runs_dir`` (it
+    exists: ``batches.json`` is written before any batch is created)."""
     return {
         batch.id
         for model_dir in runs_dir.iterdir()
         if (model_dir / BATCH_STATE_FILE).is_file()
         for batch in _load_state(model_dir)
+        if batch.id is not None
     }
 
 
@@ -182,6 +239,7 @@ def _save_state(model_dir: Path, batches: list[_Batch]) -> None:
             {
                 "id": batch.id,
                 "scenarios": list(batch.scenarios),
+                "started_at": batch.started_at,
                 "created_at": batch.created_at,
                 "state": batch.state,
             }
@@ -281,6 +339,7 @@ class _BatchStatus:
     counts: dict[str, int]
     results_url: str | None
     created_at: str
+    cancelled: bool  # ``cancel_initiated_at`` is set: the owner (or anyone) cancelled it
 
     @property
     def total(self) -> int:
@@ -293,6 +352,8 @@ def _batch_status(document: object) -> _BatchStatus | None:
     raw_counts = _field(document, "request_counts")
     results_url = _field(document, "results_url")
     created_at = _field(document, "created_at")
+    # "Specified only if cancellation was initiated": a missing field is null (no cancel).
+    cancel = _field(document, "cancel_initiated_at")
     if not (
         isinstance(batch_id, str)
         and _BATCH_ID.fullmatch(batch_id)
@@ -300,6 +361,7 @@ def _batch_status(document: object) -> _BatchStatus | None:
         and isinstance(raw_counts, dict)
         and (results_url is None or isinstance(results_url, str))
         and isinstance(created_at, str)
+        and (cancel is None or isinstance(cancel, str))
     ):
         return None
     counts: dict[str, int] = {}
@@ -308,7 +370,9 @@ def _batch_status(document: object) -> _BatchStatus | None:
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             return None
         counts[name] = value
-    return _BatchStatus(batch_id, cast(str, status), counts, results_url, created_at)
+    return _BatchStatus(
+        batch_id, cast(str, status), counts, results_url, created_at, cancel is not None
+    )
 
 
 def _instant(text: str) -> datetime | None:
@@ -351,17 +415,18 @@ class _AnthropicRun:
 
     def run(self) -> None:
         _complete_records(self.corpus_dir, self.model_dir, self.model, self.echo)
+        adopted = self._reconcile_earlier()
         pending = pending_scenarios(self.corpus_dir, self.model_dir)
-        if not pending:
+        if not pending and not adopted:
             self.echo("nothing to run")
             return
         batches = _load_state(self.model_dir)
         batch = next((batch for batch in batches if batch.state == "open"), None)
-        if batch is not None:
-            self.echo(f"resuming batch {batch.id}")
-        else:
+        if batch is None:
             self._next_attempt(pending, batches)
             batch = self._create(pending, batches)
+        elif not adopted:
+            self.echo(f"resuming batch {batch.id}")
         while True:
             self._complete(batch)
             pending = pending_scenarios(self.corpus_dir, self.model_dir)
@@ -373,8 +438,12 @@ class _AnthropicRun:
 
     def _next_attempt(self, pending: list[str], batches: list[_Batch]) -> int:
         """The attempt number of the next batch for ``pending``; ``RunStopped`` if a scenario
-        was already sent in ``ATTEMPTS`` batches."""
-        sent = {name: sum(name in batch.scenarios for batch in batches) for name in pending}
+        was already sent in ``ATTEMPTS`` batches (``open`` or ``done`` entries: a ``failed``
+        create was never a batch)."""
+        sent = {
+            name: sum(name in batch.scenarios for batch in batches if batch.state in _WITH_BATCH)
+            for name in pending
+        }
         exhausted = [name for name in pending if sent[name] >= ATTEMPTS]
         if exhausted:
             verb = "was" if len(exhausted) == 1 else "were"
@@ -384,9 +453,16 @@ class _AnthropicRun:
             )
         return max(sent.values()) + 1
 
-    # -- create (F2 step 3, F3) --
+    # -- create and reconcile (TASK-005c3b D2) --
 
     def _create(self, pending: list[str], batches: list[_Batch]) -> _Batch:
+        """Create one batch for ``pending``; a ``creating`` entry is saved before every POST.
+
+        A 429 is no batch; no response, a 5xx or a 200 without a readable batch object is
+        unclear and reconciled; any other status is no batch and stops the run. A
+        ``KeyboardInterrupt`` is not caught: the ``creating`` entry on disk is reconciled by the
+        next run.
+        """
         for name in pending:
             if not _CUSTOM_ID.fullmatch(name):
                 raise RunStopped(f"{name}: not a valid custom_id for a batch request")
@@ -398,61 +474,124 @@ class _AnthropicRun:
             for name in pending
         ]
         body = json.dumps({"requests": requests}, ensure_ascii=False).encode("utf-8")
-        started = self.now()
-        # Every batch any model recorded: another model's batch of the same size is never this one.
-        known = {batch.id for batch in batches} | _all_batch_ids(self.model_dir.parent)
+        index = len(batches)
+        entry = _Batch(None, tuple(pending), "", None, "creating")
+        batches = [*batches, entry]
         last = ""
         for attempt in range(1, ATTEMPTS + 1):
+            # started_at is the instant just before this create call: the waits of a later
+            # reconciliation, in this run or the next, count from the last request sent.
+            entry = replace(entry, started_at=_stamp(self.now()))
+            batches[index] = entry
+            _save_state(self.model_dir, batches)
             hint: int | None = None
-            lost = False
+            unclear = False
             try:
                 response = self.transport.send(
                     "POST", BATCHES_URL, self.headers, body, CALL_TIMEOUT_SECONDS
                 )
             except TransportError as error:
-                last, lost = str(error), True
-            except KeyboardInterrupt:
-                # The batch may exist on the server, and batches.json does not record it.
-                raise RunStopped(INTERRUPTED_CREATE) from None
+                last, unclear = str(error), True
             else:
                 status = _batch_status(_json(response.body)) if response.status == 200 else None
                 if status is not None:
-                    return self._record_batch(batches, status, pending, "created")
+                    return self._opened(batches, index, status, adopted=False)
                 if response.status == 200:
-                    last, lost = "HTTP 200 without a readable batch object", True
+                    last, unclear = "HTTP 200 without a readable batch object", True
                 elif response.status in RETRIED_STATUSES:
                     last, hint = self._describe(response), server_hint(response)
+                    unclear = response.status != 429  # a gateway may answer after the API took it
                 else:
+                    batches[index] = replace(entry, state="failed")
+                    _save_state(self.model_dir, batches)
                     raise RunStopped(f"creating a batch failed: {self._describe(response)}")
-            if lost:
-                adopted = self._adopt(started, known, len(pending))
-                if adopted is not None:
-                    return self._record_batch(batches, adopted, pending, "adopted")
+            if unclear:
+                found = self._reconcile(entry, answered=self.now())
+                if found is not None:
+                    return self._opened(batches, index, found, adopted=True)
             if attempt < ATTEMPTS:
                 self.sleep(retry_delay(attempt + 1, hint))
+        # The last answer was a 429, or the last reconciliation found no batch.
+        batches[index] = replace(entry, state="failed")
+        _save_state(self.model_dir, batches)
         raise RunStopped(f"creating a batch failed {ATTEMPTS} times; last: {last}")
 
-    def _record_batch(
-        self, batches: list[_Batch], status: _BatchStatus, pending: list[str], how: str
+    def _opened(
+        self, batches: list[_Batch], index: int, status: _BatchStatus, *, adopted: bool
     ) -> _Batch:
-        """Write the new batch to ``batches.json`` at once, before any poll."""
-        batch = _Batch(status.id, tuple(pending), status.created_at, "open")
-        _save_state(self.model_dir, [*batches, batch])
-        if how == "adopted":
-            self.echo(f"adopted batch {batch.id} created by the interrupted request")
+        """The entry at ``index`` becomes ``open`` with the batch's id, saved at once, before
+        any poll."""
+        batch = replace(batches[index], id=status.id, created_at=status.created_at, state="open")
+        batches[index] = batch
+        _save_state(self.model_dir, batches)
+        if adopted:
+            self.echo(f"adopted batch {status.id} created by an earlier create request")
         else:
-            self.echo(f"batch {batch.id} created for {len(pending)} scenarios")
+            self.echo(f"batch {status.id} created for {len(batch.scenarios)} scenarios")
         return batch
 
-    def _adopt(self, started: datetime, known: set[str], count: int) -> _BatchStatus | None:
-        """F3: after a create without a response, find the batch it may have created."""
-        self.sleep(ADOPTION_WAIT_SECONDS)
+    def _reconcile_earlier(self) -> bool:
+        """At the start of every run: reconcile a ``creating`` entry left by an earlier run.
+        ``True`` if its batch was found and adopted (the entry is now ``open``)."""
+        batches = _load_state(self.model_dir)
+        index = next((i for i, batch in enumerate(batches) if batch.state == "creating"), None)
+        if index is None:
+            return False
+        entry = batches[index]
+        found = self._reconcile(entry)
+        if found is not None:
+            self._opened(batches, index, found, adopted=True)
+            return True
+        batches[index] = replace(entry, state="failed")
+        _save_state(self.model_dir, batches)
+        self.echo(
+            f"no batch was created by the earlier create request (started {entry.started_at})"
+        )
+        return False
+
+    def _wait_until(self, moment: datetime) -> bool:
+        """Sleep once until ``moment``, computed once from ``now()``; ``False`` if it is past."""
+        seconds = (moment - self.now()).total_seconds()
+        if seconds <= 0:
+            return False
+        self.sleep(seconds)
+        return True
+
+    def _reconcile(self, entry: _Batch, answered: datetime | None = None) -> _BatchStatus | None:
+        """The batch an unclear create of ``entry`` created, or ``None`` if it created none.
+
+        Check 1 lists the batches ``FIRST_CHECK`` after ``started_at``. If it finds no
+        candidate, check 2 lists them again at ``started_at + SECOND_CHECK`` and, when the
+        answer arrived at ``answered`` (this run), at least ``LIST_LAG`` after it, so the two
+        checks are at least a minute apart; an old entry from an earlier run is checked once.
+        Several candidates stop the run.
+        """
+        started = cast(datetime, _started(entry.started_at))  # validated or written by _stamp
+        self._wait_until(started + FIRST_CHECK)
+        candidates = self._candidates(entry, started)
+        if not candidates:
+            second = started + SECOND_CHECK
+            if answered is not None:
+                second = max(second, answered + LIST_LAG)
+            if self._wait_until(second):
+                candidates = self._candidates(entry, started)
+        if len(candidates) > 1:
+            ids = ", ".join(sorted(candidate.id for candidate in candidates))
+            raise RunStopped(SEVERAL_CANDIDATES.format(count=len(candidates), ids=ids))
+        return candidates[0] if candidates else None
+
+    def _candidates(self, entry: _Batch, started: datetime) -> list[_BatchStatus]:
+        """The listed batches that could be the one ``entry`` created: not cancelled, recorded
+        by no model, with as many requests as ``entry`` has scenarios, created at most
+        ``ADOPTION_WINDOW`` before ``started_at``."""
         response = self._get(f"{BATCHES_URL}?limit={LIST_LIMIT}", CALL_TIMEOUT_SECONDS)
         if response.status != 200:
             raise RunStopped(f"listing batches failed: {self._describe(response)}")
         data = _field(_json(response.body), "data")
         if not isinstance(data, list):
             raise RunStopped("listing batches failed: unexpected list object")
+        # Every batch any model recorded: another model's batch of the same size is never this one.
+        known = _all_batch_ids(self.model_dir.parent)
         earliest = started - ADOPTION_WINDOW
         candidates: list[_BatchStatus] = []
         for item in cast(list[object], data):
@@ -460,15 +599,14 @@ class _AnthropicRun:
             created = _instant(status.created_at) if status is not None else None
             if status is None or created is None:
                 raise RunStopped("listing batches failed: unexpected batch object")
-            if status.id not in known and status.total == count and created >= earliest:
+            if (
+                not status.cancelled
+                and status.id not in known
+                and status.total == len(entry.scenarios)
+                and created >= earliest
+            ):
                 candidates.append(status)
-        if len(candidates) > 1:
-            ids = ", ".join(sorted(candidate.id for candidate in candidates))
-            raise RunStopped(
-                f"the create response was lost and {len(candidates)} recent batches could be "
-                f"it: {ids}; cancel the extra ones in the Claude Console, then run again"
-            )
-        return candidates[0] if candidates else None
+        return candidates
 
     # -- poll, download, record (F2 steps 4, 5) --
 
@@ -499,22 +637,23 @@ class _AnthropicRun:
             self.sleep(self.poll_seconds)
 
     def _complete(self, batch: _Batch) -> None:
-        status = self._poll(batch.id)
+        batch_id = cast(str, batch.id)  # an open entry always names its batch (_entry)
+        status = self._poll(batch_id)
         if status.results_url is None:
-            raise RunStopped(f"batch {batch.id} ended without a results_url")
+            raise RunStopped(f"batch {batch_id} ended without a results_url")
         try:
             check_url(status.results_url)
         except ValueError as error:
-            raise RunStopped(f"batch {batch.id}: results_url {server_text(str(error))}") from None
+            raise RunStopped(f"batch {batch_id}: results_url {server_text(str(error))}") from None
         response = self._get(status.results_url, RESULTS_TIMEOUT_SECONDS)
         if response.status != 200:
             raise RunStopped(
-                f"downloading the results of batch {batch.id} failed: {self._describe(response)}"
+                f"downloading the results of batch {batch_id} failed: {self._describe(response)}"
             )
-        write_atomic(self.model_dir / _results_file(batch.id), response.body)
+        write_atomic(self.model_dir / _results_file(batch_id), response.body)
         problems = self._record_results(batch, response.body)
         batches = _load_state(self.model_dir)
-        done = [replace(item, state="done") if item.id == batch.id else item for item in batches]
+        done = [replace(item, state="done") if item.id == batch_id else item for item in batches]
         _save_state(self.model_dir, done)
         if problems:
             raise RunStopped("; ".join(problems))
@@ -761,10 +900,16 @@ def run_plan(model: str, corpus_dir: Path, runs_dir: Path) -> str:
         f"Recorded ({len(recorded)}): {', '.join(recorded) or 'none'}",
     ]
     if model.startswith(ANTHROPIC_PREFIX):
-        batch = next((item for item in _load_state(model_dir) if item.state == "open"), None)
-        if batch is not None:
+        # One entry at most is creating or open (_load_state); the dry run never lists batches.
+        for batch in _load_state(model_dir):
             count = len(batch.scenarios)
-            lines.append(f"Open batch: {batch.id} ({count} scenarios), resumed by --yes")
+            if batch.state == "open":
+                lines.append(f"Open batch: {batch.id} ({count} scenarios), resumed by --yes")
+            elif batch.state == "creating":
+                lines.append(
+                    f"Unconfirmed create request: started {batch.started_at} ({count} scenarios); "
+                    "--yes checks for its batch before sending anything"
+                )
         cost = cost_upper_bound(model, corpus_dir, pending)
         lines.append(
             f"Cost upper bound: ${cost:.4f} ({len(pending)} requests; input: the UTF-8 bytes of "
