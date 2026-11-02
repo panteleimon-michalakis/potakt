@@ -21,6 +21,7 @@ answer, before anything else is sent; the next run starts with that reconciliati
 import json
 import re
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from importlib.metadata import version
@@ -81,6 +82,7 @@ __all__ = [
     "LOCK_FILE",
     "RUNS_PATH",
     "USER_AGENT",
+    "RunLock",
     "check_order",
     "cost_upper_bound",
     "lock_text",
@@ -949,24 +951,65 @@ def lock_text(runs_dir: Path) -> str | None:
     return server_text(data.decode("utf-8", "replace").strip(), limit=_LOCK_SHOWN)
 
 
-def take_lock(runs_dir: Path, model: str, now: datetime) -> Path:
+@dataclass(frozen=True, slots=True)
+class RunLock:
+    """The lock file of one ``eval run --yes`` and the line it wrote."""
+
+    path: Path
+    line: str
+
+    def release(self) -> str | None:
+        """Remove the lock if it is still this run's. A warning, safe to print, if it now holds
+        another run's line (the owner deleted it as stale while this run was still running, and
+        started another) or if it cannot be removed; ``None`` otherwise (TASK-005c3c E9)."""
+        try:
+            current = self.path.read_bytes().decode("utf-8", "replace")
+        except FileNotFoundError:
+            return None
+        except OSError:
+            current = self.line  # unreadable: try to remove it anyway
+        if current != self.line:
+            shown = server_text(current.strip(), limit=_LOCK_SHOWN)
+            return (
+                f"the lock {self.path} now belongs to another run ({shown}); it was left in place"
+            )
+        try:
+            self.path.unlink(missing_ok=True)
+        except OSError as error:
+            reason = error.strerror or type(error).__name__
+            return (
+                f"could not remove the lock {self.path} ({reason}): delete it before the next run"
+            )
+        return None
+
+
+def take_lock(runs_dir: Path, model: str, now: datetime) -> RunLock:
     """Create the lock file of ``eval run --yes`` exclusively (``open("x")``: the same on every
-    operating system) with one line, ``<model> <UTC start>``, and return its path.
+    operating system) with one line, ``<model> <UTC start>``.
 
     ``RunStopped`` if it exists: another run is active, or one was cut off before it could
-    remove the file (a crash). The caller removes it however the run ends.
+    remove the file (a crash); also if it cannot be created or written (then it is removed).
+    The caller releases it however the run ends.
     """
     runs_dir.mkdir(parents=True, exist_ok=True)
     path = runs_dir / LOCK_FILE
+    line = f"{model} {_stamp(now)}\n"
     try:
         handle = path.open("x", encoding="utf-8", newline="\n")
     except OSError as error:
         if path.exists() or isinstance(error, FileExistsError):
-            raise RunStopped(LOCKED.format(contents=lock_text(runs_dir), path=path)) from None
+            contents = lock_text(runs_dir)
+            shown = "gone" if contents is None else contents  # removed in the meantime
+            raise RunStopped(LOCKED.format(contents=shown, path=path)) from None
         raise RunStopped(f"cannot create {path}: {error.strerror or error}") from None
-    with handle:
-        handle.write(f"{model} {_stamp(now)}\n")
-    return path
+    try:
+        with handle:
+            handle.write(line)
+    except OSError as error:
+        with suppress(OSError):
+            path.unlink(missing_ok=True)  # an empty or partial lock would block the next run
+        raise RunStopped(f"cannot write {path}: {error.strerror or error}") from None
+    return RunLock(path, line)
 
 
 # --- before a run: the order rule and the plan (F5) ------------------------------------------

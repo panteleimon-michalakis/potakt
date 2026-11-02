@@ -518,7 +518,9 @@ def eval_run(
             else:
                 run_gemini(model, corpus, runs, key, transport, sleep=time.sleep, echo=typer.echo)
         finally:
-            lock.unlink(missing_ok=True)  # however the run ends; only a crash leaves it
+            warning = lock.release()  # however the run ends; only a crash leaves it
+            if warning is not None:
+                typer.echo(warning, err=True)
     except RunStopped as error:
         _stop(1, str(error))
     except KeyboardInterrupt:

@@ -688,6 +688,159 @@ def test_a_lock_that_cannot_be_created_says_so(
     assert result.stderr == f"cannot create {runs / LOCK}: Permission denied\n"
 
 
+# -- E9 review findings (Minor 4): the lock's edge cases --
+
+
+def test_a_lock_that_cannot_be_written_is_removed_and_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # It used to escape as a traceback and leave an empty lock behind ("active ()").
+    monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
+    real_open = Path.open
+
+    class FullDisk:
+        def __init__(self, handle: Any) -> None:
+            self.handle = handle
+
+        def __enter__(self) -> "FullDisk":
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            self.handle.close()
+
+        def write(self, text: str) -> int:
+            raise OSError(28, "No space left on device")
+
+    def full_disk_open(self: Path, *args: Any, **kwargs: Any) -> Any:
+        handle = real_open(self, *args, **kwargs)
+        return FullDisk(handle) if (args[0] if args else kwargs.get("mode")) == "x" else handle
+
+    monkeypatch.setattr(Path, "open", full_disk_open)
+    runs = tmp_path / "runs"
+
+    result = eval_run(runs, HAIKU, "--yes")
+
+    assert result.exit_code == 1
+    assert result.stderr == f"cannot write {runs / LOCK}: No space left on device\n"
+    assert not (runs / LOCK).exists()
+
+
+def test_a_lock_gone_before_it_could_be_read_is_not_shown_as_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
+    real_open = Path.open
+
+    def racing_open(self: Path, *args: Any, **kwargs: Any) -> Any:
+        if (args[0] if args else kwargs.get("mode")) == "x":
+            raise FileExistsError(17, "File exists")  # and it is gone again at once
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", racing_open)
+    runs = tmp_path / "runs"
+
+    result = eval_run(runs, HAIKU, "--yes")
+
+    assert result.exit_code == 1
+    assert result.stderr.startswith("another eval run is active (gone), or one was cut off")
+
+
+def test_a_lock_that_cannot_be_removed_keeps_the_result_and_warns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A PermissionError in the finally used to replace the summary with a traceback.
+    monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
+    monkeypatch.setattr(cli, "make_transport", FakeBatches)
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:1])
+    runs = tmp_path / "runs"
+    real_unlink = Path.unlink
+
+    def held_by_antivirus(self: Path, missing_ok: bool = False) -> None:
+        if self.name == LOCK:
+            raise PermissionError(13, "Permission denied")
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", held_by_antivirus)
+
+    result = eval_run(runs, HAIKU, "--yes", corpus=corpus)
+
+    assert result.exit_code == 0, result.stderr
+    assert "Complete: yes" in result.stdout
+    assert result.stderr == (
+        f"could not remove the lock {runs / LOCK} (Permission denied): delete it before the "
+        "next run\n"
+    )
+
+
+def test_a_lock_deleted_during_the_run_ends_quietly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
+    runs = tmp_path / "runs"
+
+    def owner_deletes_it() -> None:
+        (runs / LOCK).unlink()
+
+    server = FakeBatches(on_first_poll=owner_deletes_it)
+    monkeypatch.setattr(cli, "make_transport", lambda: server)
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:1])
+
+    result = eval_run(runs, HAIKU, "--yes", corpus=corpus)
+
+    assert result.exit_code == 0, result.stderr
+    assert result.stderr == ""
+    assert not (runs / LOCK).exists()
+
+
+def test_a_lock_that_cannot_be_read_at_the_end_is_still_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
+    monkeypatch.setattr(cli, "make_transport", FakeBatches)
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:1])
+    runs = tmp_path / "runs"
+    real_read_bytes = Path.read_bytes
+
+    def locked_for_reading(self: Path) -> bytes:
+        if self.name == LOCK:
+            raise PermissionError(13, "Permission denied")
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", locked_for_reading)
+
+    result = eval_run(runs, HAIKU, "--yes", corpus=corpus)
+
+    assert result.exit_code == 0, result.stderr
+    assert result.stderr == ""
+    assert not (runs / LOCK).exists()
+
+
+def test_a_lock_taken_over_by_another_run_is_left_to_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The owner deleted a "stale" lock while run A was still running and started run B: A's
+    # finally used to remove B's lock.
+    monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
+    runs = tmp_path / "runs"
+    other = b"claude-opus-5-5 2026-11-02T10:00:30Z\n"
+
+    def another_run_takes_over() -> None:
+        (runs / LOCK).write_bytes(other)
+
+    server = FakeBatches(on_first_poll=another_run_takes_over)
+    monkeypatch.setattr(cli, "make_transport", lambda: server)
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:1])
+
+    result = eval_run(runs, HAIKU, "--yes", corpus=corpus)
+
+    assert result.exit_code == 0, result.stderr
+    assert (runs / LOCK).read_bytes() == other
+    assert result.stderr == (
+        f"the lock {runs / LOCK} now belongs to another run (claude-opus-5-5 "
+        "2026-11-02T10:00:30Z); it was left in place\n"
+    )
+
+
 # --- the app, the key reader and the help ---------------------------------------------------
 
 

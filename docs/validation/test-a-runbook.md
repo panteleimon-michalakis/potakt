@@ -144,7 +144,9 @@ Push only after the reviewer's check of a fresh clone.
   also after a stop or Ctrl+C. Check every PowerShell window: if one still runs `eval run`, let
   it finish. If none does (the laptop crashed or a window was killed), delete the file named in
   the message and run the same command again; nothing is lost. The dry run shows an existing lock
-  as `Lock: <model> <time> (another run may be active)`. The lock file is never committed.
+  as `Lock: <model> <time> (another run may be active)`. The lock file is never committed. If a
+  run ends with `could not remove the lock <path> (…): delete it before the next run`, delete
+  that file once the window is idle; a run never removes a lock that another run took over.
 - **Several batches could be the one created by an earlier create request** (the run stops and
   names them; for example after two windows ran at once): in the Claude Console (Batches) cancel
   all of them but the oldest, then run the same command again; it adopts the one left. Requests
