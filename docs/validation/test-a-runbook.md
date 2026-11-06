@@ -21,25 +21,44 @@ Rules for the whole runbook:
 **Anthropic**
 1. In the Claude Console, create a workspace `potakt-phase0`.
 2. Set its monthly spend limit to $10 (a non-default workspace: "Spend limits"). When the limit is
-   reached the API answers with a 400 error, and the run stops at once with no record.
+   reached the API answers with a 400 error, and the run stops with no record.
 3. Create a **personal** API key (Claude Console, API keys, Create key):
    - Linked account: yourself;
    - **restricted to the workspace `potakt-phase0`**;
    - expiry: **7 days**.
 
-   Workspace keys are deprecated (the page calls them legacy); a personal key restricted to one
-   workspace replaces them. A key that is not restricted to a workspace makes every call fail
-   with a 400 about `anthropic-workspace-id`, and the run stops with no batch. An expired key
-   gives a 401 `authentication_error`: create a new one. The run sends the key as
-   `Authorization: Bearer <key>`, only to `api.anthropic.com`. See the Claude authentication
-   page, <https://platform.claude.com/docs/en/manage-claude/authentication> (checked on
-   2026-11-02).
+   Workspace keys are **legacy**: the page says "Workspace API keys work but are legacy."; a
+   personal key restricted to one workspace replaces them. A key that is not restricted to a
+   workspace makes every call fail with a 400 about `anthropic-workspace-id`, and the run stops
+   with no batch. An expired key gives a 401 `authentication_error`: create a new one. The run
+   sends the key as `Authorization: Bearer <key>`, only to `api.anthropic.com`; the page calls
+   the other header legacy too: "You can also send the key in the legacy `x-api-key:
+   YOUR_API_KEY` header in place of `Authorization`." See the Claude authentication page,
+   <https://platform.claude.com/docs/en/manage-claude/authentication> (checked on 2026-11-06).
 
 **Gemini**
 1. Create a key in Google AI Studio.
 2. Restrict it to the Gemini API ("Restrict to Gemini API only").
 
 Never paste a key into Claude Code, a chat, a file or a commit.
+
+**Check the keys** (last step, once the variables of §2 are set). In the PowerShell window of §2,
+run:
+
+```powershell
+uv run potakt eval preflight --model claude-haiku-5-5
+uv run potakt eval preflight --model claude-opus-5-5
+uv run potakt eval preflight --model gemini-3.8-flash
+```
+
+Each command makes only free, read-only calls (the model's metadata and, for Claude, one page of
+the batch list): no prompt is sent, nothing is written and nothing is charged. It prints one line
+per check, starting with `key: accepted by api.anthropic.com` (or
+`generativelanguage.googleapis.com`), and ends with
+`preflight passed: no prompt was sent and nothing was charged`. A field shown as `not reported`
+is not a failure. A line `preflight failed: <check>: <reason>` (exit code 1) is a key or model
+problem found for free; an HTTP 401 or 400 there is the key (§1). Send the three outputs to the
+reviewer before any `--yes`.
 
 ## 2. Session-only variables
 
@@ -70,18 +89,23 @@ then close the window.
 
 ## 3. Haiku
 
+If the key or the day changed since the check of §1, run the preflight again first:
+
 ```powershell
+uv run potakt eval preflight --model claude-haiku-5-5
 uv run potakt eval run --model claude-haiku-5-5
 uv run potakt eval run --model claude-haiku-5-5 --yes
 ```
 
-The first command prints the plan and the cost upper bound. The second sends one Message Batch and
+The dry run prints the plan and the cost upper bound. The `--yes` run sends one Message Batch and
 polls it every 60 seconds until it ends (usually well under an hour), then records the answers and
 prints the summary. While the batch is in progress, the line `batch <id>: in_progress (…)` is
 printed when it changes and again after every 10 polls without a change (every 10 minutes), so the
 window shows that the run is alive. This first batch also confirms the API version
-(`anthropic-version: 2026-10-21`), the key (§1) and the `output_config` field: a 400 or a 401
-here stops the run with no charge and no record, and the reason is printed.
+(`anthropic-version: 2026-10-21`) and the `output_config` field: a 400 or a 401 here stops the run
+with no charge and no record, and the reason is printed. If a key problem slips past the
+preflight anyway, the run waits up to five minutes for the check below before it prints the 400
+or the 401: this is normal; wait for the message.
 
 If the answer to the batch creation is lost or unclear (no answer, a redirect, a 408 or a 5xx),
 the run may pause about two minutes; this is normal. It first prints
@@ -98,6 +122,15 @@ records or the exit code. It looks back to the first batch creation of any model
 once named is named again by every later run, of any model, until the reviewer has decided about
 it. If it prints `warning: batch <id> (<n> requests, created <time>) is recorded by no run: …`,
 see §8.
+
+**Check the Console after each model's run** (here and in §6):
+1. Open the Claude Console, Batches, for the workspace `potakt-phase0`.
+2. Compare the batch ids listed there with the ids in
+   `docs/validation/runs/test-a/<model dir>/batches.json` (every model run so far; for example
+   `Get-Content ../docs/validation/runs/test-a/claude-haiku-5-5/batches.json`).
+3. Send the reviewer that list.
+
+A batch listed there that no `batches.json` records is a paid duplicate, whatever the audit said.
 
 ## 4. Check the Haiku records
 
@@ -125,13 +158,15 @@ same command again later: only the scenarios still pending are sent.
 Only after the reviewer has confirmed step 4:
 
 ```powershell
+uv run potakt eval preflight --model claude-opus-5-5
 uv run potakt eval run --model claude-opus-5-5
 uv run potakt eval run --model claude-opus-5-5 --yes
 ```
 
-The dry run shows the cost upper bound. `claude-opus-5-5` is refused until `claude-haiku-5-5` has a
-complete run. Its first answer per scenario is the one that counts for the gate: there is no
-second attempt.
+Run the preflight first if the key or the day changed since the check of §1. The dry run shows
+the cost upper bound. `claude-opus-5-5` is refused until `claude-haiku-5-5` has a complete run.
+Its first answer per scenario is the one that counts for the gate: there is no second attempt.
+After the run, do the Console check of §3 for both `batches.json` files.
 
 ## 7. Commit the records
 
@@ -236,4 +271,13 @@ Push only after the reviewer's check of a fresh clone.
 - **`<id>: record completed (…)`** at the start of a run means an earlier run was interrupted
   after saving an answer and before scoring it; the score is derived from the saved answer, and
   nothing is sent for that scenario.
+- **`cannot summarize <dir>: <reason>`** after a run: every answer is recorded and the exit code
+  is 0; only the summary could not be shown (for example a file locked by another program). Run
+  `uv run potakt eval summary <dir>` once the file is free and send the output to the reviewer.
+- **`preflight failed: <check>: <reason>`**: a check of `eval preflight` found a definite
+  problem with the key or the model; nothing was sent or charged. An HTTP 401 or 400 is the key
+  (§1); anything else, send the output to the reviewer. Do not run `--yes` until it passes.
+- **`interrupted: the preflight sent no prompt and recorded nothing; run it again`** or
+  **`eval preflight stopped by an unexpected error (<type>): send this message to the
+  reviewer`**: run the preflight again, or send the message to the reviewer.
 - **After Phase 0:** delete both keys (Claude Console and Google AI Studio).

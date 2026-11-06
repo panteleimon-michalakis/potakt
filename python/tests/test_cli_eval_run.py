@@ -1614,13 +1614,43 @@ def test_the_runbook_quotes_the_reconciliation_messages_and_the_new_rules() -> N
         "Linked account: yourself",
         "**restricted to the workspace `potakt-phase0`**",
         "expiry: **7 days**",
-        "Workspace keys are deprecated",
         "makes every call fail with a 400 about `anthropic-workspace-id`, and the run stops with "
         "no batch",
         "`Authorization: Bearer <key>`, only to `api.anthropic.com`",
         "<https://platform.claude.com/docs/en/manage-claude/authentication>",
+        # TASK-005c3e J8: the documentation's own word, quoted from the English page.
+        'Workspace keys are **legacy**: the page says "Workspace API keys work but are legacy."',
+        '"You can also send the key in the legacy `x-api-key: YOUR_API_KEY` header in place of '
+        '`Authorization`."',
+        "(checked on 2026-11-06)",
+        # TASK-005c3e J8: the preflight, the five-minute note and the Console check.
+        "**Check the keys** (last step, once the variables of §2 are set)",
+        "uv run potakt eval preflight --model claude-haiku-5-5 "
+        "uv run potakt eval preflight --model claude-opus-5-5 "
+        "uv run potakt eval preflight --model gemini-3.8-flash",
+        "Send the three outputs to the reviewer before any `--yes`",
+        "`key: accepted by api.anthropic.com`",
+        "`" + runner_module.PREFLIGHT_PASSED + "`",
+        "A field shown as `not reported` is not a failure",
+        "`preflight failed: <check>: <reason>`",
+        "`" + cli.PREFLIGHT_INTERRUPTED + "`",
+        "`" + cli.PREFLIGHT_UNEXPECTED.format(kind="<type>") + "`",
+        "If the key or the day changed since the check of §1, run the preflight again first",
+        "the run waits up to five minutes for the check below before it prints the 400 or the 401",
+        "**Check the Console after each model's run** (here and in §6)",
+        "Open the Claude Console, Batches, for the workspace `potakt-phase0`",
+        "Compare the batch ids listed there with the ids in "
+        "`docs/validation/runs/test-a/<model dir>/batches.json`",
+        "Send the reviewer that list.",
+        "A batch listed there that no `batches.json` records is a paid duplicate, whatever the "
+        "audit said.",
+        "do the Console check of §3 for both `batches.json` files",
+        # TASK-005c3e J5: the summary error after a complete run.
+        "`cannot summarize <dir>: <reason>`",
     ):
         assert quoted in text, quoted
+    assert "deprecated" not in text  # F5: the English page says "legacy"
+    assert "stops at once with no record" not in text  # the audit runs first (H13)
     assert "cancel all but the oldest, then run the same command again" in lines
     # The old exception (an interrupted create needed the Console) is gone.
     assert "interrupted while creating a batch:" not in text
