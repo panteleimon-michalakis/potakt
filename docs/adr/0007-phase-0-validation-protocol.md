@@ -322,14 +322,21 @@ differ from the bullets above, they apply.
   owner releases it after the reviewer's decision.
 
 **Amendment (2026-11-02, TASK-005c3d, before any LLM run).** The Anthropic key is sent as
-`Authorization: Bearer <key>`, the documented method (`x-api-key` is deprecated), and only to
+`Authorization: Bearer <key>`, the documented method (`x-api-key` is legacy), and only to
 `api.anthropic.com`. An answer whose text or stop reason is not valid Unicode (it contains an
 unpaired surrogate) is malformed, so its candidate is invalid; `response.json` keeps that response
 exactly, with every non-ASCII character escaped. After every run of a Claude model that called the
-API and was not interrupted, the runner lists the batches created since that model's first create
-request, at least 5 minutes after its last one, and names each batch that no run recorded (except
-those that a still unconfirmed create request may adopt), so the owner can cancel a paid
-duplicate; this check never changes the records or the exit code.
+API and was not interrupted, the runner lists the batches created since the first create request
+of any model, at least 5 minutes after that model's last one, and names each batch that no run
+recorded (except those that a still unconfirmed create request may adopt), so the owner can cancel
+a paid duplicate; this check never changes the records or the exit code.
+
+**Amendment (2026-11-06, TASK-005c3e, before any LLM run).** Before the first run of a model, the
+owner runs `potakt eval preflight` for it: free, read-only calls that check the key and the model
+(its metadata and, for Claude, one page of the batch list); no prompt is sent and nothing is
+recorded. This amendment also corrects the TASK-005c3d amendment above, before any run: the word
+"legacy" (the documentation's term) and the audit window, which starts at the first create request
+of any model.
 
 ## Consequences
 - Results can be compared across models and over time, because every rule of the measurement is fixed
