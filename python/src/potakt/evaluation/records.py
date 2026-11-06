@@ -5,12 +5,14 @@ comparison are derived from ``response.json`` alone, so a run can be rescored of
 harness fix without a new request. Library code only: no network, no credentials.
 
 Every write is atomic: the bytes go to ``<name>.tmp`` in the same directory, which then replaces
-``<name>`` (``os.replace``). Bytes, not text mode, so line endings are LF on every OS; a leftover
-``*.tmp`` is simply overwritten by the next write.
+``<name>`` (``os.replace``); the file and, where possible, the directory are synced to disk
+(``os.fsync``). Bytes, not text mode, so line endings are LF on every OS; a leftover ``*.tmp`` is
+simply overwritten by the next write.
 """
 
 import json
 import os
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -38,6 +40,7 @@ __all__ = [
     "rescore_run",
     "score_answer",
     "write_answer",
+    "write_atomic",
     "write_request",
 ]
 
@@ -69,18 +72,26 @@ class _Malformed(Exception):
 def answer_of(model: str, response: object) -> Answer:
     """The answer in a raw response of ``model`` (ADR-0007 §7 amendment «Answer text»).
 
-    Never raises for any response: a field with the wrong type gives
-    ``Answer("", "malformed", False)``. ``model`` must be registered (``UnknownModelError``
-    otherwise); Claude models read the Anthropic Messages shape, Gemini the ``generateContent``
-    shape.
+    Never raises for any response: a field with the wrong type, or a text or stop that is not
+    valid Unicode, gives ``Answer("", "malformed", False)``. ``model`` must be registered
+    (``UnknownModelError`` otherwise); Claude models read the Anthropic Messages shape, Gemini
+    the ``generateContent`` shape.
     """
     check_registered(model)
     try:
-        if model.startswith(ANTHROPIC_PREFIX):
-            return _anthropic(response)
-        return _gemini(response)
+        answer = _anthropic(response) if model.startswith(ANTHROPIC_PREFIX) else _gemini(response)
     except _Malformed:
         return _MALFORMED
+    # ADR-0007 §7 amendment of TASK-005c3d (H8): text or a stop that is not valid Unicode (an
+    # unpaired surrogate, which json.loads accepts) is malformed.
+    if _surrogate(answer.text) or _surrogate(answer.stop):
+        return _MALFORMED
+    return answer
+
+
+def _surrogate(text: str) -> bool:
+    """``text`` holds a code point in U+D800-U+DFFF: not valid Unicode, no UTF-8 for it."""
+    return any("\ud800" <= char <= "\udfff" for char in text)
 
 
 def _object(value: object) -> dict[str, object]:
@@ -165,7 +176,7 @@ def write_request(run_dir: Path, payload: dict[str, Any]) -> None:
             raise FileExistsError(f"{path} exists with a different request")
         return
     run_dir.mkdir(parents=True, exist_ok=True)
-    _write_atomic(path, data)
+    write_atomic(path, data)
 
 
 def write_answer(
@@ -181,10 +192,10 @@ def write_answer(
     if path.exists():
         raise FileExistsError(f"{path} exists: a recorded answer is never replaced")
     run_dir.mkdir(parents=True, exist_ok=True)
-    _write_atomic(path, _response_bytes(response))
+    write_atomic(path, _response_bytes(response))
     candidate, comparison = score_answer(scenario, answer_of(model, response))
-    _write_atomic(run_dir / CANDIDATE_FILE, candidate.encode("utf-8"))
-    _write_atomic(run_dir / COMPARISON_FILE, comparison.to_json().encode("utf-8"))
+    write_atomic(run_dir / CANDIDATE_FILE, candidate.encode("utf-8"))
+    write_atomic(run_dir / COMPARISON_FILE, comparison.to_json().encode("utf-8"))
     return comparison
 
 
@@ -209,17 +220,56 @@ def rescore_run(run_dir: Path, scenario: LoadedScenario, model: str) -> tuple[st
     ):
         path = run_dir / name
         if not path.is_file() or path.read_bytes() != data:
-            _write_atomic(path, data)
+            write_atomic(path, data)
             written.append(name)
     return tuple(written)
 
 
 def _response_bytes(response: object) -> bytes:
+    """UTF-8 JSON with sorted keys; if the response holds an unpaired surrogate (no UTF-8 exists
+    for it), ASCII JSON with every non-ASCII character escaped instead, which ``json.loads``
+    turns back into exactly the same object (TASK-005c3d H8)."""
     text = json.dumps(response, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
-    return text.encode("utf-8")
+    try:
+        return text.encode("utf-8")
+    except UnicodeEncodeError:
+        escaped = json.dumps(response, indent=2, ensure_ascii=True, sort_keys=True) + "\n"
+        return escaped.encode("ascii")
 
 
-def _write_atomic(path: Path, data: bytes) -> None:
+def write_atomic(path: Path, data: bytes) -> None:
+    """Write ``data`` to ``path`` atomically and durably (see the module docstring); also used by
+    the runner.
+
+    TASK-005c3d H11: the temporary file is written, flushed, ``os.fsync``-ed and closed before
+    ``os.replace``; then the directory is synced where the OS allows it. A failure before the
+    replace (the file fsync included) removes the temporary file and is raised: a write that may
+    not be durable is never reported as done.
+    """
     temporary = path.with_name(path.name + _TEMPORARY_SUFFIX)
-    temporary.write_bytes(data)
+    try:
+        with temporary.open("wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        with suppress(OSError):
+            temporary.unlink(missing_ok=True)
+        raise
     os.replace(temporary, path)
+    _sync_directory(path.parent)
+
+
+def _sync_directory(directory: Path) -> None:
+    """Make a replace in ``directory`` durable: ``os.fsync`` of the directory itself (POSIX).
+    Any ``OSError`` is ignored: Windows cannot open a directory this way, and its ``os.replace``
+    is a single file-system operation."""
+    try:
+        descriptor = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        with suppress(OSError):
+            os.fsync(descriptor)
+    finally:
+        os.close(descriptor)

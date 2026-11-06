@@ -310,6 +310,34 @@ differ from the bullets above, they apply.
   when all ten are scored; the gate of §5.4 is read only from a complete summary of
   `claude-opus-5-5`.
 
+**Amendment (2026-11-02, TASK-005c3c, before any LLM run).** One request is never paid twice:
+- **Unclear create.** A batch create call that ends without a batch object and without a definite
+  rejection (no response, a 3xx, a 408, any 5xx, or a 200 that cannot be read) may have created a
+  batch. Before anything else is sent, the runner lists the recent batches once, no earlier than
+  120 seconds after the later of the call and its answer, and adopts the one batch that can be it;
+  several possible batches stop the run for the owner. An adopted batch is the same single request,
+  not a second attempt. Only a 429 or another 4xx answer (except 408) proves that no batch exists.
+- **Held batch.** A batch whose results need the reviewer (a scenario without a result, a line that
+  cannot be read, or an `invalid_request_error`) is held: no scenario of it is sent again until the
+  owner releases it after the reviewer's decision.
+
+**Amendment (2026-11-02, TASK-005c3d, before any LLM run).** The Anthropic key is sent as
+`Authorization: Bearer <key>`, the documented method (`x-api-key` is legacy), and only to
+`api.anthropic.com`. An answer whose text or stop reason is not valid Unicode (it contains an
+unpaired surrogate) is malformed, so its candidate is invalid; `response.json` keeps that response
+exactly, with every non-ASCII character escaped. After every run of a Claude model that called the
+API and was not interrupted, the runner lists the batches created since the first create request
+of any model, at least 5 minutes after that model's last one, and names each batch that no run
+recorded (except those that a still unconfirmed create request may adopt), so the owner can cancel
+a paid duplicate; this check never changes the records or the exit code.
+
+**Amendment (2026-11-06, TASK-005c3e, before any LLM run).** Before the first run of a model, the
+owner runs `potakt eval preflight` for it: free, read-only calls that check the key and the model
+(its metadata and, for Claude, one page of the batch list); no prompt is sent and nothing is
+recorded. This amendment also corrects the TASK-005c3d amendment above, before any run: the word
+"legacy" (the documentation's term) and the audit window, which starts at the first create request
+of any model.
+
 ## Consequences
 - Results can be compared across models and over time, because every rule of the measurement is fixed
   in advance and implemented once, in tested code.

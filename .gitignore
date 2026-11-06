@@ -29,6 +29,9 @@ Thumbs.db
 .env.*
 !.env.example
 
+# The lock of a running `potakt eval run --yes`: a stale one is never committed
+docs/validation/runs/test-a/.eval-run.lock
+
 # Local agent files
 .claude/
 .tasks/

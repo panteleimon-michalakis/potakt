@@ -7,6 +7,7 @@ reasons») and Gemini ``generateContent`` (``candidates[].content.parts[]`` with
 """
 
 import json
+import os
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -27,9 +28,11 @@ from potakt.evaluation import (
     request_payload,
     rescore_run,
     score_answer,
+    summarize,
     write_answer,
     write_request,
 )
+from potakt.evaluation.records import write_atomic
 
 REPO = Path(__file__).resolve().parents[2]
 CORPUS = REPO / "docs" / "validation" / "scenarios"
@@ -410,3 +413,189 @@ def test_a_leftover_temporary_file_is_overwritten(tmp_path: Path, pharmacy: Load
 
     assert (run / "candidate.txt").read_bytes() == TRUTH_01.encode("utf-8")
     assert not (run / "candidate.txt.tmp").exists()
+
+
+# --- TASK-005c3d H8: answers that are not valid Unicode ---------------------------------------
+
+SURROGATE = "\ud83d"  # an unpaired surrogate: json.loads accepts "\ud83d", UTF-8 cannot encode it
+MALFORMED = Answer("", "malformed", False)
+
+
+@pytest.mark.parametrize(
+    ("model", "response"),
+    [
+        (OPUS, anthropic(text_block(FENCED_01), text_block(SURROGATE))),
+        (GEMINI, gemini({"text": "fine " + SURROGATE + " text"})),
+    ],
+    ids=["anthropic-text", "gemini-text"],
+)
+def test_a_lone_surrogate_in_the_text_is_stored_exactly_and_is_malformed(
+    tmp_path: Path, pharmacy: LoadedScenario, model: str, response: dict[str, object]
+) -> None:
+    # U2: .encode("utf-8") raised in _response_bytes, so the batch stayed open on every run.
+    run = tmp_path / model / "01-pharmacy"
+
+    comparison = write_answer(run, pharmacy, model, response)
+
+    raw = (run / "response.json").read_bytes()
+    assert raw.isascii()
+    assert b"\\ud83d" in raw
+    assert json.loads(raw) == response
+    assert (
+        raw == (json.dumps(response, indent=2, ensure_ascii=True, sort_keys=True) + "\n").encode()
+    )
+    assert answer_of(model, response) == MALFORMED
+    assert (run / "candidate.txt").read_bytes() == b""
+    assert comparison == score_answer(pharmacy, MALFORMED)[1]
+    assert not comparison.valid
+    assert (run / "comparison.json").read_bytes() == comparison.to_json().encode("utf-8")
+    assert rescore_run(run, pharmacy, model) == ()
+    summary = summarize(tmp_path / model, CORPUS)
+    assert summary.stops == {"malformed": 1}
+    assert "Stops: malformed 1\n" in summary.to_text()
+
+
+@pytest.mark.parametrize(
+    ("model", "response"),
+    [
+        (OPUS, anthropic(text_block(FENCED_01), stop="end" + SURROGATE)),
+        (GEMINI, gemini({"text": "x"}, finish="STOP" + SURROGATE)),
+        (GEMINI, {"promptFeedback": {"blockReason": SURROGATE + "SAFETY"}}),
+    ],
+    ids=["stop_reason", "finishReason", "blockReason"],
+)
+def test_a_lone_surrogate_in_the_stop_is_malformed(
+    tmp_path: Path, pharmacy: LoadedScenario, model: str, response: dict[str, object]
+) -> None:
+    assert answer_of(model, response) == MALFORMED
+
+    comparison = write_answer(tmp_path / "run", pharmacy, model, response)
+
+    assert json.loads((tmp_path / "run" / "response.json").read_bytes()) == response
+    assert comparison == score_answer(pharmacy, MALFORMED)[1]
+
+
+def test_a_paired_surrogate_escape_is_valid_text(pharmacy: LoadedScenario) -> None:
+    # "😀" in JSON is one character, U+1F600: valid Unicode, kept as text.
+    response = json.loads(json.dumps(anthropic(text_block(FENCED_01 + "\U0001f600"))))
+
+    assert answer_of(OPUS, response) == Answer(FENCED_01 + "\U0001f600", "end_turn", True)
+
+
+def test_valid_text_is_still_stored_as_utf_8(tmp_path: Path, pharmacy: LoadedScenario) -> None:
+    response = anthropic(text_block(FENCED_01 + " café"))
+
+    write_answer(tmp_path, pharmacy, OPUS, response)
+
+    raw = (tmp_path / "response.json").read_bytes()
+    assert "café".encode() in raw
+    assert (
+        raw == (json.dumps(response, indent=2, ensure_ascii=False, sort_keys=True) + "\n").encode()
+    )
+
+
+# --- TASK-005c3d H11: durable writes ----------------------------------------------------------
+
+DIRECTORY_FD = 987654  # the descriptor the fake os.open gives a directory: never a real one
+
+
+class Disk:
+    """Fakes of ``os.open``, ``os.fsync``, ``os.close`` and ``os.replace`` that record the order
+    of the steps; real file descriptors are synced for real. Our code decides, not the OS: on
+    every OS the fake ``os.open`` opens a directory (or refuses, if ``refuse_directory``)."""
+
+    def __init__(self, target: Path, data: bytes) -> None:
+        self.target = target
+        self.data = data
+        self.events: list[str] = []
+        self.refuse_directory = False
+        self.fail_directory_fsync = False
+        self.fail_file_fsync = False
+        self.real_fsync = os.fsync
+        self.real_replace = os.replace
+
+    def open(self, path: object, flags: int, *args: object) -> int:
+        assert Path(str(path)) == self.target.parent
+        assert flags == os.O_RDONLY
+        self.events.append("open directory")
+        if self.refuse_directory:
+            raise PermissionError(13, "Permission denied")
+        return DIRECTORY_FD
+
+    def fsync(self, fd: int) -> None:
+        if fd == DIRECTORY_FD:
+            self.events.append("fsync directory")
+            if self.fail_directory_fsync:
+                raise OSError(22, "Invalid argument")
+            return
+        temporary = self.target.with_name(self.target.name + ".tmp")
+        # The bytes are flushed to the temporary file, and the target is not replaced yet.
+        assert temporary.read_bytes() == self.data
+        self.events.append(f"fsync file (target exists: {self.target.exists()})")
+        if self.fail_file_fsync:
+            raise OSError(5, "Input/output error")
+        self.real_fsync(fd)
+
+    def close(self, fd: int) -> None:
+        assert fd == DIRECTORY_FD
+        self.events.append("close directory")
+
+    def replace(self, source: Path, destination: Path) -> None:
+        self.events.append(f"replace {source.name} -> {destination.name}")
+        self.real_replace(source, destination)
+
+
+@pytest.fixture
+def disk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Disk:
+    fake = Disk(tmp_path / "out.json", b'{"a": 1}\n')
+    monkeypatch.setattr(os, "open", fake.open)
+    monkeypatch.setattr(os, "fsync", fake.fsync)
+    monkeypatch.setattr(os, "close", fake.close)
+    monkeypatch.setattr(os, "replace", fake.replace)
+    return fake
+
+
+def test_write_atomic_syncs_the_file_before_the_replace_then_the_directory(disk: Disk) -> None:
+    # U6: no fsync, so a power loss right after the create POST could lose the creating entry.
+    write_atomic(disk.target, disk.data)
+
+    assert disk.events == [
+        "fsync file (target exists: False)",
+        "replace out.json.tmp -> out.json",
+        "open directory",
+        "fsync directory",
+        "close directory",
+    ]
+    assert disk.target.read_bytes() == disk.data
+
+
+def test_a_directory_that_cannot_be_opened_is_skipped(disk: Disk) -> None:
+    # Windows cannot open a directory with os.open; its os.replace is one file-system operation.
+    disk.refuse_directory = True
+
+    write_atomic(disk.target, disk.data)
+
+    assert disk.events[-1] == "open directory"
+    assert disk.target.read_bytes() == disk.data
+
+
+def test_a_failed_directory_fsync_is_ignored_and_the_directory_closed(disk: Disk) -> None:
+    disk.fail_directory_fsync = True
+
+    write_atomic(disk.target, disk.data)
+
+    assert disk.events[-2:] == ["fsync directory", "close directory"]
+    assert disk.target.read_bytes() == disk.data
+
+
+def test_a_failed_file_fsync_is_raised_and_leaves_the_target_unchanged(disk: Disk) -> None:
+    # A write that may not be durable is not reported as done; the temporary file is removed.
+    disk.target.write_bytes(b"old\n")
+    disk.fail_file_fsync = True
+
+    with pytest.raises(OSError, match="Input/output error"):
+        write_atomic(disk.target, disk.data)
+
+    assert disk.events == ["fsync file (target exists: True)"]
+    assert disk.target.read_bytes() == b"old\n"
+    assert not disk.target.with_name("out.json.tmp").exists()
