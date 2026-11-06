@@ -6,6 +6,12 @@ corpus format, the input bundle and the metric are pre-registered in
 `potakt.evaluation`. The Test A harness is pre-registered in ADR-0007 §7; its instruction text is
 [`prompts/test-a.md`](prompts/test-a.md), and `potakt eval prompt` shows the exact request.
 
+Before the first run of a model, the owner runs `potakt eval preflight --model <id>` (ADR-0007
+§7, amendment of TASK-005c3e): free, read-only calls that check the key and the model (its
+metadata and, for Claude, one page of the batch list); no prompt is sent and nothing is
+recorded, and a check fails only on a definite contradiction (`preflight failed: <check>:
+<reason>`, exit code 1).
+
 The owner runs Test A with `potakt eval run`, step by step as described in
 [`test-a-runbook.md`](test-a-runbook.md): without `--yes` it prints the plan and the cost upper
 bound and sends nothing; with `--yes` it reads the key from `POTAKT_ANTHROPIC_API_KEY` or

@@ -52,6 +52,8 @@ from potakt.evaluation.summary import (
 from potakt.evaluation.test_a import (
     ANTHROPIC_MAX_TOKENS,
     ANTHROPIC_PREFIX,
+    EFFORT,
+    GEMINI_MAX_OUTPUT_TOKENS,
     INSTRUCTION_PATH,
     STRONG_MODEL,
     Prompt,
@@ -82,8 +84,10 @@ __all__ = [
     "BATCHES_URL",
     "BATCH_STATE_FILE",
     "FIRST_MODEL",
+    "GEMINI_MODEL_URL",
     "GEMINI_URL",
     "LOCK_FILE",
+    "MODELS_URL",
     "RUNS_PATH",
     "USER_AGENT",
     "RunLock",
@@ -93,6 +97,7 @@ __all__ = [
     "cost_upper_bound",
     "lock_text",
     "pending_scenarios",
+    "preflight",
     "recorded_scenarios",
     "run_anthropic",
     "run_gemini",
@@ -508,6 +513,27 @@ class _Listed:
     created: datetime
 
 
+def _read_page(document: object) -> tuple[list[_Listed], bool]:
+    """One page of the batch list and its ``has_more`` (TASK-005c3d H6); ``ValueError``
+    (``unexpected list object`` or ``unexpected batch object``) unless ``data`` is a list of
+    readable batches and ``has_more`` a boolean. Shared by the reconciliation, the audit and
+    ``eval preflight`` (TASK-005c3e J7)."""
+    data = _field(document, "data")
+    if not isinstance(data, list):
+        raise ValueError("unexpected list object")
+    page: list[_Listed] = []
+    for item in cast(list[object], data):
+        status = _batch_status(item)
+        if status is None:
+            raise ValueError("unexpected batch object")
+        created = cast(datetime, _instant(status.created_at))  # read by _batch_status
+        page.append(_Listed(status, created))
+    has_more = _field(document, "has_more")
+    if not isinstance(has_more, bool):
+        raise ValueError("unexpected list object")
+    return page, has_more
+
+
 def _t0(entry: _Batch, answered: datetime | None) -> datetime:
     """The instant a reconciliation of ``entry`` counts from (TASK-005c3c E3, TASK-005c3d H3):
     the later of ``started_at`` and the unclear answer in this run; for a leftover entry of an
@@ -775,20 +801,11 @@ class _AnthropicRun:
             if response.status != 200:
                 raise RunStopped(f"listing batches failed: {self._describe(response)}")
             document = _json(response.body)
-            data = _field(document, "data")
-            if not isinstance(data, list):
-                raise RunStopped("listing batches failed: unexpected list object")
-            page: list[_Listed] = []
-            for item in cast(list[object], data):
-                status = _batch_status(item)
-                if status is None:
-                    raise RunStopped("listing batches failed: unexpected batch object")
-                created = cast(datetime, _instant(status.created_at))  # read by _batch_status
-                page.append(_Listed(status, created))
+            try:
+                page, has_more = _read_page(document)
+            except ValueError as error:
+                raise RunStopped(f"listing batches failed: {error}") from None
             listed += page
-            has_more = _field(document, "has_more")
-            if not isinstance(has_more, bool):
-                raise RunStopped("listing batches failed: unexpected list object")
             if not has_more or (page and page[-1].created < instant):
                 return listed
             last_id = _field(document, "last_id")
@@ -1191,6 +1208,165 @@ def run_gemini(
         _run_gemini(model, corpus_dir, model_dir, gemini_headers(key), transport, sleep, echo)
     except RunStopped as error:
         raise RunStopped(redact(str(error), [key])) from None
+
+
+# --- eval preflight: free checks of the key and the model (TASK-005c3e J7) --------------------
+
+MODELS_URL = "https://api.anthropic.com/v1/models"  # + "/<id>": "Get a Model", free
+# Gemini ``models.get``, on the API version of GEMINI_URL.
+GEMINI_MODEL_URL = GEMINI_URL.removesuffix(":generateContent")
+NOT_REPORTED = "not reported"
+PREFLIGHT_PASSED = "preflight passed: no prompt was sent and nothing was charged"
+
+
+def _failed(check: str, reason: str) -> RunStopped:
+    """A failed preflight check: a definite contradiction (the reason is safe to print)."""
+    return RunStopped(f"preflight failed: {check}: {reason}")
+
+
+def _nested(document: object, *names: str) -> object:
+    for name in names:
+        document = _field(document, name)
+    return document
+
+
+def _positive(value: object) -> int | None:
+    """``value`` if it is a positive integer; ``None`` (not reported) otherwise: the documented
+    example answers ``max_tokens: 0``, a placeholder."""
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class _Preflight:
+    model: str
+    headers: dict[str, str] = field(repr=False)  # carries the key: never in a repr
+    transport: Transport
+    sleep: Sleep
+    echo: Echo
+
+    def shown(self, value: object) -> str:
+        """A server string, safe to print; ``not reported`` if it is not a non-empty string."""
+        if isinstance(value, str) and value:
+            return server_text(value, secret_values(self.headers))
+        return NOT_REPORTED
+
+    def get(self, url: str, check: str) -> dict[str, object]:
+        """One read-only call through ``send_with_retries``: its JSON object, or the failed
+        ``check`` for any other answer. ``check_url`` refusing the URL or a key header (H7) stops
+        before any call."""
+        try:
+            response = send_with_retries(
+                self.transport,
+                "GET",
+                url,
+                self.headers,
+                None,
+                CALL_TIMEOUT_SECONDS,
+                sleep=self.sleep,
+            )
+        except ValueError as error:  # its message names the host only
+            raise RunStopped(str(error)) from None
+        if response.status != 200:
+            raise _failed(check, describe_response(response, secret_values(self.headers)))
+        document = _json(response.body)
+        if not isinstance(document, dict):
+            raise _failed(check, "HTTP 200 without a JSON object")
+        return cast(dict[str, object], document)
+
+    def supported(self, check: str, value: object, reason: str) -> None:
+        """A capability: ``false`` fails ``check``, ``true`` is supported, anything else is not
+        reported."""
+        if value is False:
+            raise _failed(check, reason)
+        self.echo(f"{check}: {'supported' if value is True else NOT_REPORTED}")
+
+    def limit(self, check: str, value: object, wanted: int) -> None:
+        """An output limit: a positive integer below ``wanted`` fails ``check``."""
+        allowed = _positive(value)
+        if allowed is not None and allowed < wanted:
+            raise _failed(check, f"the model allows {allowed}, the run asks for {wanted}")
+        shown = NOT_REPORTED if allowed is None else str(allowed)
+        self.echo(f"{check}: {shown} (the run asks for {wanted})")
+
+    def claude(self) -> None:
+        document = self.get(f"{MODELS_URL}/{self.model}", "model metadata")
+        self.echo("key: accepted by api.anthropic.com")
+        model_id = document.get("id")
+        if model_id is None:
+            raise _failed("model", "no id in the answer")
+        if model_id != self.model:  # an id of any other value or type is no answer for it
+            if not isinstance(model_id, str):
+                named = "an id that is not a string"
+            else:
+                named = self.shown(model_id) if model_id else "an empty id"
+            raise _failed("model", f"the answer names {named}, not {self.model}")
+        name, created = self.shown(document.get("display_name")), document.get("created_at")
+        lifecycle = self.shown(document.get("lifecycle"))
+        self.echo(
+            f"model: {self.model} ({name}), created {self.shown(created)}, lifecycle {lifecycle}"
+        )
+        capabilities = document.get("capabilities")
+        batch = _nested(capabilities, "batch", "supported")
+        self.supported("batch", batch, "not supported by this model")
+        effort = _nested(capabilities, "effort", EFFORT, "supported")
+        reason = f"not supported by this model (the run sends effort {EFFORT})"
+        self.supported(f"effort {EFFORT}", effort, reason)
+        self.limit("max_tokens", document.get("max_tokens"), ANTHROPIC_MAX_TOKENS[self.model])
+        listing = self.get(f"{BATCHES_URL}?limit=1", "batch list")
+        try:
+            page, _ = _read_page(listing)  # as the reconciliation and the audit read a page
+        except ValueError as error:
+            raise _failed("batch list", str(error)) from None
+        count = f"{len(page)} batch" if len(page) == 1 else f"{len(page)} batches"
+        self.echo(f"batch list: readable ({count} on the first page)")
+
+    def gemini(self) -> None:
+        document = self.get(GEMINI_MODEL_URL.format(model=self.model), "model metadata")
+        self.echo("key: accepted by generativelanguage.googleapis.com")
+        name, expected = document.get("name"), f"models/{self.model}"
+        if isinstance(name, str) and name != expected:
+            raise _failed("model", f"the answer names {self.shown(name)}, not {expected}")
+        display, version = document.get("displayName"), document.get("version")
+        self.echo(
+            f"model: {self.shown(name)} ({self.shown(display)}), version {self.shown(version)}"
+        )
+        methods = document.get("supportedGenerationMethods")
+        if isinstance(methods, list) and "generateContent" not in methods:
+            raise _failed("generateContent", "not in supportedGenerationMethods")
+        shown = "supported" if isinstance(methods, list) else NOT_REPORTED
+        self.echo(f"generateContent: {shown}")
+        output = document.get("outputTokenLimit")
+        self.limit("outputTokenLimit", output, GEMINI_MAX_OUTPUT_TOKENS)
+
+
+def preflight(model: str, key: str, transport: Transport, *, sleep: Sleep, echo: Echo) -> None:
+    """``potakt eval preflight`` (TASK-005c3e J7, ADR-0007 §7 amendment of TASK-005c3e): check
+    the key and ``model`` with free, read-only calls before a paid run. No prompt is sent, no
+    file is written, no lock is taken and no audit runs.
+
+    A Claude model: ``GET MODELS_URL/<id>`` and one page of the batch list (``limit=1``), read
+    as ``_read_page`` reads one; Gemini: ``GET GEMINI_MODEL_URL``. Each call goes through
+    ``send_with_retries`` with the run's headers. One line per check goes to ``echo``, every
+    server string through ``server_text``. A check fails only on a definite contradiction (a
+    missing field, or one of an unexpected type, is ``not reported``; the Claude ``id`` alone
+    must be the requested one); the first failure raises ``RunStopped("preflight failed: <check>:
+    <reason>")``. A stop of ``send_with_retries`` is a ``RunStopped`` too; every message is
+    redacted of ``key``. Raises ``UnknownModelError`` for an unregistered model.
+    """
+    check_registered(model)
+    anthropic = model.startswith(ANTHROPIC_PREFIX)
+    headers = anthropic_headers(key) if anthropic else gemini_headers(key)
+    checks = _Preflight(model, headers, transport, sleep, echo)
+    try:
+        if anthropic:
+            checks.claude()
+        else:
+            checks.gemini()
+    except RunStopped as error:
+        raise RunStopped(redact(str(error), [key])) from None
+    echo(PREFLIGHT_PASSED)
 
 
 # --- one run at a time (TASK-005c3c E5) --------------------------------------------------------

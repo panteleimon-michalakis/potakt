@@ -23,8 +23,17 @@ its comparison metric exist under [`docs/validation/`](docs/validation/) and in
 [ADR-0007](docs/adr/0007-phase-0-validation-protocol.md); no LLM results exist yet.
 
 **Phase 0 evaluation.** The Test A harness (ADR-0007 §7) is pre-registered. `potakt eval run` is
-the only command that calls the model APIs; the owner runs it by following
+the only command that sends prompts to the model APIs, and `potakt eval preflight` the only other
+one that calls them (free, read-only); the owner runs both by following
 [`docs/validation/test-a-runbook.md`](docs/validation/test-a-runbook.md):
+- `potakt eval preflight --model ID` checks the key and the model before a paid run with free,
+  read-only calls (Claude: `GET /v1/models/<id>` and one page of the batch list; Gemini:
+  `GET /v1beta/models/<id>`), with the key from the same variable as `eval run`; no prompt is
+  sent and nothing is written; it prints one line per check and fails only on a definite
+  contradiction, a field the API does not report being shown as `not reported` (exit code 0
+  every check passed, 1 a failed check (`preflight failed: <check>: <reason>`), missing or
+  invalid key, a request that failed after its retries, an unexpected error (its type only) or
+  interrupted, 2 usage error, also for an unregistered model id);
 - `potakt eval run --model ID [--runs DIR] [--corpus DIR] [--poll-seconds N] [--yes]
   [--release BATCH_ID]` without `--yes` prints the plan (pending and recorded scenarios, an open
   or held batch or an unconfirmed create request, a lock, the cost upper bound) and sends
