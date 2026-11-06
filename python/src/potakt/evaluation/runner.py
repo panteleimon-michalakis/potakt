@@ -246,6 +246,7 @@ def _entry(item: object) -> _Batch | None:
             isinstance(batch_id, str)
             and _BATCH_ID.fullmatch(batch_id)
             and isinstance(created_at, str)
+            and _instant(created_at) is not None  # TASK-005c3e J2
         ):
             return None
     elif batch_id is not None or created_at is not None:
@@ -442,6 +443,9 @@ class _BatchStatus:
 
 
 def _batch_status(document: object) -> _BatchStatus | None:
+    """The batch object ``document``; ``None`` if a field the runner reads is missing or odd,
+    ``created_at`` included: it must be an RFC 3339 instant (``_instant``, TASK-005c3e J2), so a
+    stored ``created_at`` is always one, and printable."""
     batch_id = _field(document, "id")
     status = _field(document, "processing_status")
     raw_counts = _field(document, "request_counts")
@@ -456,6 +460,7 @@ def _batch_status(document: object) -> _BatchStatus | None:
         and isinstance(raw_counts, dict)
         and (results_url is None or isinstance(results_url, str))
         and isinstance(created_at, str)
+        and _instant(created_at) is not None
         and (cancel is None or isinstance(cancel, str))
     ):
         return None
@@ -776,9 +781,9 @@ class _AnthropicRun:
             page: list[_Listed] = []
             for item in cast(list[object], data):
                 status = _batch_status(item)
-                created = _instant(status.created_at) if status is not None else None
-                if status is None or created is None:
+                if status is None:
                     raise RunStopped("listing batches failed: unexpected batch object")
+                created = cast(datetime, _instant(status.created_at))  # read by _batch_status
                 page.append(_Listed(status, created))
             listed += page
             has_more = _field(document, "has_more")
@@ -798,21 +803,25 @@ class _AnthropicRun:
         raise RunStopped(TOO_MANY_BATCHES)
 
     def audit(self) -> None:
-        """TASK-005c3d H13: the body of ``audit_batches`` (see there)."""
+        """TASK-005c3d H13, TASK-005c3e J3: the body of ``audit_batches`` (see there)."""
         batches = _load_state(self.model_dir)
         if not batches:
             return
+        # Every model's entries, read before the wait: an invalid state stops the audit at once.
+        every = _every_entry(self.model_dir.parent)
         started = [cast(datetime, _started(batch.started_at)) for batch in batches]
         target = max(started) + timedelta(seconds=AUDIT_DELAY_SECONDS)
         wait = min((target - self.now()).total_seconds(), AUDIT_DELAY_SECONDS)
         if wait > 0:
             self.echo(AUDIT_WAITING.format(seconds=math.ceil(wait)))
             self.sleep(wait)
-        earliest = min(started) - ADOPTION_WINDOW
+        # J3: back to the first create request of any model, so a late duplicate of another
+        # model, listed only after that model's own audit, is still named.
+        earliest = min(cast(datetime, _started(batch.started_at)) for batch in every)
+        earliest -= ADOPTION_WINDOW
         listed = self._list_back_to(earliest)
-        runs_dir = self.model_dir.parent
-        known = _all_batch_ids(runs_dir)
-        pending = _pending_creates(runs_dir)
+        known = {batch.id for batch in every if batch.id is not None}
+        pending = [batch for batch in every if batch.state == "creating"]
         for item in listed:
             if (
                 item.status.cancelled
@@ -1033,15 +1042,15 @@ AUDIT_FAILED = (
 AUDIT_INTERRUPTED = "audit interrupted: look in the Claude Console (Batches)"
 
 
-def _pending_creates(runs_dir: Path) -> list[_Batch]:
-    """The ``creating`` entries of every model under ``runs_dir``: the next run of that model
-    reconciles each of them and may adopt one of its candidates."""
+def _every_entry(runs_dir: Path) -> list[_Batch]:
+    """The entries of the ``batches.json`` of every model directory under ``runs_dir``
+    (``RunStopped`` if one is invalid). Its ``creating`` entries are the pending creates: the
+    next run of that model reconciles each of them and may adopt one of its candidates."""
     return [
         batch
         for model_dir in runs_dir.iterdir()
         if (model_dir / BATCH_STATE_FILE).is_file()
         for batch in _load_state(model_dir)
-        if batch.state == "creating"
     ]
 
 
@@ -1058,12 +1067,13 @@ def audit_batches(
     """TASK-005c3d H13 (ADR-0007 §7 amendment of TASK-005c3d): after a run of a Claude model
     that called the API and was not interrupted, name every listed batch that no run recorded.
 
-    Nothing if the model's ``batches.json`` has no entry. Otherwise it waits until
-    ``AUDIT_DELAY_SECONDS`` after the latest ``started_at`` (at most that long, announced), lists
-    the batches back to the earliest ``started_at`` minus ``ADOPTION_WINDOW`` (``_list_back_to``)
-    and prints one warning for each batch created since then that is not cancelled, is in no
-    model's ``batches.json`` and is no candidate (``_is_candidate``) of a ``creating`` entry of any
-    model, which the next run reconciles. It never cancels anything and never writes: the records,
+    Nothing if the model's ``batches.json`` has no entry. Otherwise it reads the ``batches.json``
+    of every model, waits until ``AUDIT_DELAY_SECONDS`` after this model's latest ``started_at``
+    (at most that long, announced), lists the batches back to the earliest ``started_at`` of any
+    model minus ``ADOPTION_WINDOW`` (``_list_back_to``; TASK-005c3e J3) and prints one warning for
+    each batch created since then that is not cancelled, is in no model's ``batches.json`` and is
+    no candidate (``_is_candidate``) of a ``creating`` entry of any model, which the next run
+    reconciles. It never cancels anything and never writes: the records,
     ``batches.json`` and the caller's exit code stay as they are. A failure prints a warning
     instead (its reason redacted of ``key``; an unexpected exception by its type only), and a
     ``KeyboardInterrupt`` ends only the audit. Every line goes to ``echo``.

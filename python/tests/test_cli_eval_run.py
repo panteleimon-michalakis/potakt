@@ -24,7 +24,13 @@ from runner_helpers import (
     corpus_copy,
     write_state,
 )
-from test_evaluation_runner_anthropic import CreateStep, FakeBatches, other_batch, succeeded
+from test_evaluation_runner_anthropic import (
+    CreateStep,
+    FakeBatches,
+    batch_object,
+    other_batch,
+    succeeded,
+)
 from test_evaluation_runner_gemini import FakeGemini
 from typer.testing import CliRunner, Result
 
@@ -34,7 +40,7 @@ import potakt.evaluation.test_a as test_a_module
 from potakt.cli import app, eval_app
 from potakt.evaluation import CORPUS_PATH, load_scenario, render_test_a, summarize, write_answer
 from potakt.evaluation.runner import RUNS_PATH, cost_upper_bound
-from potakt.evaluation.transport import HttpResponse, UrllibTransport
+from potakt.evaluation.transport import HttpResponse, TransportError, UrllibTransport
 
 GOLDEN = Path(__file__).resolve().parent / "golden"
 SOURCE = Path(__file__).resolve().parents[1] / "src" / "potakt"
@@ -1275,6 +1281,91 @@ def test_gemini_runs_are_not_audited(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert len(server.calls) == 1
 
 
+def test_a_late_haiku_duplicate_is_named_by_the_opus_audit_an_hour_later(
+    haiku_run: Setup, no_real_transport: Sleeps
+) -> None:
+    # TASK-005c3e F1 (probe P6): the twin is created 320 s after the adopted batch and listed
+    # 90 s later (410 s), after Haiku's audit (300 s); only Opus's audit can name it.
+    server = FakeBatches(create_script=["duplicated-staggered"], stagger=320, lag=90)
+    corpus, runs = haiku_run(server)
+
+    haiku = eval_run(runs, HAIKU, "--yes", corpus=corpus)
+    no_real_transport.advance(3600)
+    server.outcome = lambda n, s: succeeded(model=OPUS)
+    opus = eval_run(runs, OPUS, "--yes", corpus=corpus)
+
+    assert haiku.exit_code == 0, haiku.output
+    assert "adopted batch msgbatch_01 created by an earlier create request" in haiku.stdout
+    assert "warning" not in haiku.output
+    assert opus.exit_code == 0, opus.output
+    warning = UNRECORDED.format(id="msgbatch_02", count=1, created="2026-11-02T10:05:20Z")
+    assert [line for line in opus.stdout.splitlines() if line.startswith("warning")] == [warning]
+    assert opus.stderr == ""
+
+
+def test_an_unreadable_created_at_never_reaches_the_last_resort(haiku_run: Setup) -> None:
+    # TASK-005c3e F2 (probe P5): a lone surrogate in created_at made _save_state raise.
+    server = FakeBatches(
+        create_script=[batch_object("\ud83d")], newest=[other_batch("msgbatch_01", 1, "\ud83d")]
+    )
+    corpus, runs = haiku_run(server)
+
+    result = eval_run(runs, HAIKU, "--yes", corpus=corpus)
+    dry_run = eval_run(runs, HAIKU, corpus=corpus)
+
+    assert result.exit_code == 1
+    assert result.stderr == "listing batches failed: unexpected batch object\n"
+    assert "unexpected error" not in result.output
+    state = json.loads((runs / HAIKU / "batches.json").read_bytes())
+    assert [entry["state"] for entry in state["batches"]] == ["creating"]
+    assert dry_run.exit_code == 0, dry_run.output
+    assert "Unconfirmed create request: started " in dry_run.stdout
+
+
+def test_an_invalid_state_of_another_model_warns_and_keeps_the_exit_code(
+    haiku_run: Setup,
+) -> None:
+    server = FakeBatches()
+    corpus, runs = haiku_run(server)
+    (runs / OPUS).mkdir(parents=True)
+    (runs / OPUS / "batches.json").write_text("not json", encoding="utf-8")
+
+    result = eval_run(runs, HAIKU, "--yes", corpus=corpus)
+
+    assert result.exit_code == 0, result.output
+    warnings = [line for line in result.stdout.splitlines() if line.startswith("warning")]
+    assert len(warnings) == 1
+    assert warnings[0].startswith("warning: could not check for batches that no run recorded (")
+    assert "Complete: yes\n" in result.stdout
+    assert server.lists == 0
+
+
+def test_a_run_whose_every_call_raised_is_still_audited(
+    monkeypatch: pytest.MonkeyPatch, haiku_run: Setup
+) -> None:
+    # TASK-005c3e F3: a call that raised may have reached the API (a lost create), so it counts.
+    corpus, runs = haiku_run(FakeBatches())
+
+    class Unreachable:
+        def send(
+            self, method: str, url: str, headers: dict[str, str], body: bytes | None, timeout: float
+        ) -> HttpResponse:
+            raise TransportError("TimeoutError: no response received")
+
+    monkeypatch.setattr(cli, "make_transport", Unreachable)
+
+    result = eval_run(runs, HAIKU, "--yes", corpus=corpus)
+
+    stop = "the request failed 4 times; last: TimeoutError: no response received"
+    assert result.exit_code == 1
+    assert result.stdout.splitlines()[-1] == (
+        f"warning: could not check for batches that no run recorded ({stop}): look in the "
+        "Claude Console (Batches)"
+    )
+    assert result.stderr == stop + "\n"
+    assert not (runs / LOCK).exists()
+
+
 # --- the app, the key reader and the help ---------------------------------------------------
 
 
@@ -1476,6 +1567,7 @@ def test_the_runbook_quotes_the_reconciliation_messages_and_the_new_rules() -> N
         "This check never changes the records or the exit code",
         "Do not cancel it yourself and do not run `--yes` again",
         "also after an unexpected error",  # H16 review, Minor 1
+        "It looks back to the first batch creation of any model",  # TASK-005c3e J3
         # TASK-005c3d H15: the current key types (R5).
         "Create a **personal** API key",
         "Linked account: yourself",

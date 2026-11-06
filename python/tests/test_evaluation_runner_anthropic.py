@@ -97,10 +97,11 @@ class FakeBatches:
     # "interrupt" raises KeyboardInterrupt before the server sees the call; "interrupt-created"
     # registers the batch, then raises KeyboardInterrupt; "duplicated" registers two batches (a
     # proxy retried the call), the second missing from the list for 60 s more, then raises
-    # TransportError; "duplicated-staggered" the same, the second created 40 s after the first
-    # (TASK-005c3d R4); an HttpResponse is returned as is (no batch); Created(response) registers
-    # the batch, then returns the response.
+    # TransportError; "duplicated-staggered" the same, the second created ``stagger`` s (40 by
+    # default) after the first (TASK-005c3d R4); an HttpResponse is returned as is (no batch);
+    # Created(response) registers the batch, then returns the response.
     create_script: list[CreateStep] = field(default_factory=list[CreateStep])
+    stagger: float = 40.0
     # Extra listed batches: ``newest`` before the fake's own batches, ``listing`` after them.
     newest: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
     listing: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
@@ -245,8 +246,8 @@ class FakeBatches:
             self.extra_lag[self.post(scenarios)] = 60.0
             raise TransportError("TimeoutError: no response received")
         if step == "duplicated-staggered":
-            # R4: the proxy's second batch is created 40 s after the first.
-            later = self.now() + timedelta(seconds=40)
+            # R4: the proxy's second batch is created ``stagger`` s after the first.
+            later = self.now() + timedelta(seconds=self.stagger)
             twin = self.register(scenarios, created_at=later.isoformat().replace("+00:00", "Z"))
             self.posted.add(twin)
             self.posted_at[twin] = later
@@ -1131,6 +1132,11 @@ HELD_ENTRY = batch_entry("msgbatch_01", ["01-pharmacy"], "held", problems=["a pr
         state_text(OPEN | {"problems": ["a problem"]}),
         state_text(CREATING | {"problems": ["a problem"]}),
         state_text(batch_entry(None, ["01-pharmacy"], "failed") | {"problems": ["a problem"]}),
+        # TASK-005c3e J2: a stored created_at is an RFC 3339 instant.
+        state_text(OPEN | {"created_at": "x"}),
+        state_text(OPEN | {"created_at": "\ud83d"}),
+        state_text(HELD_ENTRY | {"created_at": "yesterday"}),
+        state_text(batch_entry("msgbatch_01", ["01-pharmacy"], "done") | {"created_at": ""}),
     ],
 )
 def test_an_invalid_batch_state_stops_and_is_kept(tmp_path: Path, text: str) -> None:
@@ -2552,3 +2558,142 @@ def test_an_interrupt_during_the_audit_listing_ends_the_audit(tmp_path: Path) ->
     )
 
     assert run.echo[-1] == "audit interrupted: look in the Claude Console (Batches)"
+
+
+# --- TASK-005c3e J2: created_at is an instant, or the batch object is unreadable --------------
+
+UNREADABLE_CREATED_AT = ["yesterday", "\ud83d"]
+
+
+def batch_object(created_at: str, **fields: object) -> HttpResponse:
+    """A 200 with a batch object of one request whose ``created_at`` is the given text."""
+    return ok(other_batch("msgbatch_01", 1, created_at) | fields)
+
+
+@pytest.mark.parametrize("created_at", UNREADABLE_CREATED_AT, ids=["yesterday", "surrogate"])
+def test_a_create_answer_with_an_unreadable_created_at_is_reconciled_and_adopted(
+    tmp_path: Path, created_at: str
+) -> None:
+    # The API made the batch (listed with a readable created_at); its create answer is unreadable.
+    server = FakeBatches(create_script=[Created(batch_object(created_at))])
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+
+    run()
+
+    assert run.lists() == 1
+    assert "adopted batch msgbatch_01 created by an earlier create request" in run.echo
+    assert len(server.creates()) == 1
+    assert run.state()["batches"][0]["created_at"] == CREATED_AT
+    assert run.states() == ["done"]
+
+
+@pytest.mark.parametrize("created_at", UNREADABLE_CREATED_AT, ids=["yesterday", "surrogate"])
+def test_a_create_answer_and_a_list_with_an_unreadable_created_at_stop_the_run(
+    tmp_path: Path, created_at: str
+) -> None:
+    server = FakeBatches(
+        create_script=[batch_object(created_at)],
+        newest=[other_batch("msgbatch_01", 1, created_at)],
+    )
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == "listing batches failed: unexpected batch object"
+    assert run.lists() == 1
+    assert run.states() == ["creating"]  # batches.json still loads; the next run reconciles it
+    assert runner_module.run_plan(HAIKU, run.corpus, run.runs).count("Unconfirmed create") == 1
+
+
+@pytest.mark.parametrize("created_at", UNREADABLE_CREATED_AT, ids=["yesterday", "surrogate"])
+def test_a_poll_with_an_unreadable_created_at_stops_the_run(
+    tmp_path: Path, created_at: str
+) -> None:
+    server = FakeBatches(poll_failure=batch_object(created_at, processing_status="ended"))
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == "polling batch msgbatch_01 failed: unexpected batch object"
+    assert run.states() == ["open"]
+
+
+# --- TASK-005c3e J3: the audit window starts at the first create request of any model --------
+
+
+def test_the_audit_lists_back_to_the_first_create_of_any_model(tmp_path: Path) -> None:
+    # F1 (probe P6): a Haiku duplicate listed only after Haiku's own audit; Opus's audit, an hour
+    # later, must reach back to it although Opus's own first create is later.
+    server = FakeBatches()
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+    run.model = OPUS
+    haiku_started = -timedelta(hours=1)
+    write_state(
+        run.runs / HAIKU,
+        batch_entry("msgbatch_91", ["01-pharmacy"], "done", started_at=iso(haiku_started)),
+    )
+    write_state(run.model_dir, batch_entry("msgbatch_92", ["01-pharmacy"], "done"))
+    server.listing = [
+        other_batch("msgbatch_92", 1, iso(timedelta(seconds=5))),
+        other_batch("msgbatch_dup", 1, iso(haiku_started + timedelta(seconds=320))),
+        other_batch("msgbatch_91", 1, iso(haiku_started + timedelta(seconds=5))),
+        other_batch("msgbatch_older", 1, iso(haiku_started - timedelta(minutes=10, seconds=1))),
+    ]
+
+    runner_module.audit_batches(
+        OPUS, run.runs, KEY, server, sleep=run.sleeps, now=run.sleeps.now, echo=run.echo
+    )
+
+    assert run.echo[1:] == [unrecorded("msgbatch_dup", 1, "2026-11-02T09:05:20Z")]
+    assert run.sleeps == [300]  # the wait still counts from this model's last create only
+
+
+def test_the_wider_window_never_names_another_models_recorded_batch(tmp_path: Path) -> None:
+    server = FakeBatches()
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+    opus_started = -timedelta(hours=2)
+    write_state(
+        run.runs / OPUS,
+        batch_entry("msgbatch_91", ["01-pharmacy"], "done", started_at=iso(opus_started)),
+    )
+    write_state(run.model_dir, batch_entry("msgbatch_92", ["01-pharmacy"], "done"))
+    server.listing = [
+        other_batch("msgbatch_92", 1, iso(timedelta(seconds=5))),
+        other_batch("msgbatch_91", 1, iso(opus_started + timedelta(seconds=5))),
+    ]
+
+    audit(run)
+
+    assert run.echo == [audit_wait(300)]
+    assert server.lists == 1
+
+
+def test_no_audit_for_a_model_without_an_entry_while_another_model_has_some(
+    tmp_path: Path,
+) -> None:
+    server = FakeBatches()
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+    write_state(run.runs / OPUS, batch_entry("msgbatch_91", ["01-pharmacy"], "done"))
+    write_state(run.model_dir)
+
+    audit(run)
+
+    assert server.calls == []
+    assert run.echo == []
+    assert run.sleeps == []
+
+
+def test_an_invalid_state_of_another_model_warns_before_any_wait_or_call(tmp_path: Path) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:1])
+    write_state(run.model_dir, batch_entry("msgbatch_91", ["01-pharmacy"], "done"))
+    (run.runs / OPUS).mkdir()
+    (run.runs / OPUS / BATCH_STATE_FILE).write_text("not json", encoding="utf-8")
+
+    audit(run)
+
+    assert run.server.calls == []
+    assert run.sleeps == []
+    assert len(run.echo) == 1
+    assert run.echo[0].startswith("warning: could not check for batches that no run recorded (")

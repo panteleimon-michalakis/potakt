@@ -94,9 +94,10 @@ After every Claude run that called the API, the run checks once more for batches
 recorded: it prints `waiting <n> s before checking for batches that no run recorded` (at most
 five minutes after the last batch creation), lists the recent batches and only then prints the
 stop message or the summary, also after an unexpected error. This check never changes the
-records or the exit code. It looks back to the model's first batch creation, so a batch it once
-named is named again by every later run until the reviewer has decided about it. If it
-prints `warning: batch <id> (<n> requests, created <time>) is recorded by no run: …`, see §8.
+records or the exit code. It looks back to the first batch creation of any model, so a batch it
+once named is named again by every later run, of any model, until the reviewer has decided about
+it. If it prints `warning: batch <id> (<n> requests, created <time>) is recorded by no run: …`,
+see §8.
 
 ## 4. Check the Haiku records
 
