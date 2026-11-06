@@ -2302,6 +2302,27 @@ def test_an_interrupt_while_recording_is_not_swallowed(
     assert run.states() == ["open"]  # the next run resumes the batch
 
 
+def test_a_scenario_that_became_invalid_while_recording_is_named_once(tmp_path: Path) -> None:
+    # TASK-005c3e F7: the problem read "01-pharmacy: 01-pharmacy: invalid scenario: …".
+    server = FakeBatches()
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:2])
+
+    def break_the_scenario() -> None:
+        (run.corpus / "01-pharmacy" / "scenario.json").write_text("not json", encoding="utf-8")
+
+    server.on_first_poll = break_the_scenario
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    problems = problems_of(run)
+    assert len(problems) == 1
+    assert problems[0].startswith("01-pharmacy: invalid scenario: ")
+    assert problems[0].count("01-pharmacy: ") == 1
+    assert str(raised.value) == problems[0] + HELD
+    assert run.recorded() == ["02-hotel-reception"]
+
+
 def test_a_record_that_cannot_be_completed_stops_before_any_call(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

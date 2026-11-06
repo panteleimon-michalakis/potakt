@@ -942,12 +942,14 @@ class _AnthropicRun:
     def _recorded(self, name: str, result: dict[str, object]) -> str | None:
         """``_record_result``, with any exception of one result turned into its problem
         (TASK-005c3d H9), so the other results are still recorded and the batch is held, never
-        left open: a ``RunStopped`` gives its message, any other ``Exception`` only its type (its
-        text could hold anything). A ``KeyboardInterrupt`` is not caught."""
+        left open: a ``RunStopped`` gives its message, prefixed with ``<name>: `` unless it already
+        starts with it (TASK-005c3e J6), any other ``Exception`` only its type (its text could
+        hold anything). A ``KeyboardInterrupt`` is not caught."""
         try:
             return self._record_result(name, result)
         except RunStopped as error:
-            return f"{name}: {server_text(str(error), secret_values(self.headers))}"
+            text = server_text(str(error), secret_values(self.headers))
+            return text if text.startswith(f"{name}: ") else f"{name}: {text}"
         except Exception as error:
             return UNEXPECTED_RECORD.format(name=name, kind=type(error).__name__)
 

@@ -591,4 +591,8 @@ def _eval_run(
     except ValueError as error:  # the records are kept; only the summary could not be shown
         typer.echo(f"cannot summarize {model_dir}: {error}", err=True)
         return
+    except OSError as error:  # TASK-005c3e J5: likewise; never the error's text
+        reason = error.strerror or type(error).__name__
+        typer.echo(f"cannot summarize {model_dir}: {reason}", err=True)
+        return
     typer.echo(text, nl=False)

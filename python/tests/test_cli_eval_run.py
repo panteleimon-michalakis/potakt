@@ -1020,6 +1020,47 @@ def test_a_summary_that_fails_is_reported_and_the_run_still_exits_0(
     assert result.stderr == f"cannot summarize {runs / GEMINI}: {runs / GEMINI} is broken\n"
 
 
+def test_a_summary_that_cannot_be_read_is_reported_and_the_run_still_exits_0(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # TASK-005c3e F6: an OSError of the final summary went to the last resort (exit 1).
+    monkeypatch.setenv(GEMINI_VARIABLE, KEY)
+    monkeypatch.setattr(cli, "make_transport", FakeGemini)
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:1])
+    runs = tmp_path / "runs"
+
+    def broken(runs_dir: Path, corpus_dir: Path) -> Any:
+        raise PermissionError(13, "Permission denied", "x")
+
+    monkeypatch.setattr(cli, "summarize", broken)
+
+    result = eval_run(runs, GEMINI, "--yes", corpus=corpus)
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "01-pharmacy: recorded (STOP, invalid, recall 0.000)\n"
+    assert result.stderr == f"cannot summarize {runs / GEMINI}: Permission denied\n"
+    assert "unexpected error" not in result.output
+
+
+def test_an_oserror_of_the_summary_without_strerror_shows_its_type(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(GEMINI_VARIABLE, KEY)
+    monkeypatch.setattr(cli, "make_transport", FakeGemini)
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:1])
+    runs = tmp_path / "runs"
+
+    def broken(runs_dir: Path, corpus_dir: Path) -> Any:
+        raise FileNotFoundError(f"text with {KEY}")
+
+    monkeypatch.setattr(cli, "summarize", broken)
+
+    result = eval_run(runs, GEMINI, "--yes", corpus=corpus)
+
+    assert result.exit_code == 0, result.output
+    assert result.stderr == f"cannot summarize {runs / GEMINI}: FileNotFoundError\n"
+
+
 def test_no_summary_without_a_model_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
