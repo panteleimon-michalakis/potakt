@@ -40,6 +40,7 @@ __all__ = [
     "REGISTERED_MODELS",
     "REQUEST_FILE",
     "RESPONSE_FILE",
+    "UNSAVED_RESPONSE_FILE",
     "Answer",
     "answer_of",
     "refused_pause",
@@ -56,6 +57,8 @@ RESPONSE_FILE = "response.json"
 CANDIDATE_FILE = "candidate.txt"
 COMPARISON_FILE = "comparison.json"
 _TEMPORARY_SUFFIX = ".tmp"
+# TASK-005c3g G5: where ``write_answer`` keeps an answer whose replace failed.
+UNSAVED_RESPONSE_FILE = RESPONSE_FILE + _TEMPORARY_SUFFIX
 # TASK-005c3g G3: attempts of an open, replace or remove that Windows refuses (PermissionError).
 REFUSED_ATTEMPTS = 10
 ANTHROPIC_NORMAL_END = "end_turn"

@@ -374,3 +374,56 @@ def test_a_refused_replace_of_an_answer_is_absorbed_and_each_scenario_sent_once(
     assert run.server.sent() == list(ALL_SCENARIOS[:2])
     assert run.recorded() == list(ALL_SCENARIOS[:2])
     assert sorted(run.model_dir.rglob("*.tmp")) == []
+
+
+def test_ten_refused_replaces_keep_the_answer_and_the_next_run_stops_on_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The audit's p03: the next run sent 01-pharmacy again and the first answer was lost.
+    monkeypatch.setattr(time, "sleep", lambda seconds: None)
+    refused = RefusedReplace(10, "response.json")
+    monkeypatch.setattr(os, "replace", refused)
+    run = make_run(tmp_path, FakeGemini(), ALL_SCENARIOS[:2])
+    with pytest.raises(RunStopped, match=r"^01-pharmacy: could not be recorded"):
+        run()
+    monkeypatch.setattr(os, "replace", refused.real)
+    kept = run.model_dir / "01-pharmacy" / "response.json.tmp"
+    assert json.loads(kept.read_bytes()) == gemini_response()
+    run.server.calls.clear()
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == (
+        f"01-pharmacy: an answer that could not be saved is kept in {kept}; nothing was sent; "
+        "send this message to the reviewer and do not delete or rename the file"
+    )
+    assert run.server.calls == []
+    assert json.loads(kept.read_bytes()) == gemini_response()
+
+
+def test_a_leftover_unsaved_answer_of_a_later_scenario_stops_before_the_first_request(
+    tmp_path: Path,
+) -> None:
+    run = make_run(tmp_path, FakeGemini(), ALL_SCENARIOS[:3])
+    kept = run.model_dir / "03-call-centre" / "response.json.tmp"
+    kept.parent.mkdir(parents=True)
+    kept.write_bytes(b"{}\n")
+
+    with pytest.raises(RunStopped, match=r"^03-call-centre: an answer that could not be saved"):
+        run()
+
+    assert run.server.calls == []
+    assert not (run.model_dir / "01-pharmacy").exists()
+
+
+def test_a_leftover_temporary_file_of_a_recorded_scenario_is_ignored(tmp_path: Path) -> None:
+    run = make_run(tmp_path, FakeGemini(), ALL_SCENARIOS[:2])
+    scenario = load_scenario(run.corpus / "01-pharmacy")
+    write_answer(run.model_dir / "01-pharmacy", scenario, GEMINI, gemini_response())
+    (run.model_dir / "01-pharmacy" / "response.json.tmp").write_bytes(b"{}\n")
+
+    run()
+
+    assert run.server.sent() == ["02-hotel-reception"]
+    assert run.recorded() == list(ALL_SCENARIOS[:2])

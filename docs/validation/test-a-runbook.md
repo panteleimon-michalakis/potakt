@@ -224,9 +224,14 @@ Push only after the reviewer's check of a fresh clone.
   batch-<id>.results.jsonl)`. Step by step:
   1. Send `batch-<id>.results.jsonl` and the message to the reviewer.
   2. Wait for the reviewer's decision.
-  3. Only if the reviewer says so, run the same command with `--yes --release <id>`. It prints
-     `batch <id> released after review` and continues: the scenarios still pending are sent in a
-     new batch.
+  3. Only if the reviewer says so, run the same command with `--yes --release <id>`. It first
+     records, from `batch-<id>.results.jsonl`, each scenario of that batch that is still pending
+     and has exactly one succeeded line there, with nothing sent:
+     `<scenario>: recorded from the kept results of batch <id>`. If that file is missing or
+     cannot be read, it prints
+     `the kept results of batch <id> cannot be read; its pending scenarios will be sent again`.
+     Then it prints `batch <id> released after review` and continues: the scenarios still
+     pending are sent in a new batch.
 - **`warning: batch <id> (<n> requests, created <time>) is recorded by no run: it may be a paid
   duplicate; send this warning to the reviewer, who decides whether to cancel it in the Claude
   Console (Batches)`**: a batch exists in the workspace that no run recorded, for example a

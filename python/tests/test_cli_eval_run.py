@@ -529,6 +529,9 @@ def test_a_held_batch_stops_yes_and_release_resumes(
     )
     assert released.exit_code == 0, released.stderr
     assert released.stdout.startswith(
+        # TASK-005c3g G4: this held batch has no kept results file.
+        "the kept results of batch msgbatch_07 cannot be read; its pending scenarios will be "
+        "sent again\n"
         "batch msgbatch_07 released after review\nbatch msgbatch_01 created for 1 scenarios\n"
     )
     assert server.creates() == [["02-hotel-reception"]]
@@ -1702,6 +1705,9 @@ def test_the_runbook_quotes_the_reconciliation_messages_and_the_new_rules() -> N
         "do the Console check of §3 for both `batches.json` files",
         # TASK-005c3e J5: the summary error after a complete run.
         "`cannot summarize <dir>: <reason>`",
+        # TASK-005c3g G4: the release records from the kept results first.
+        "`" + runner_module.RECORDED_FROM_KEPT.format(name="<scenario>", id="<id>") + "`",
+        "`" + runner_module.KEPT_UNREADABLE.format(id="<id>") + "`",
     ):
         assert quoted in text, quoted
     assert "deprecated" not in text  # F5: the English page says "legacy"

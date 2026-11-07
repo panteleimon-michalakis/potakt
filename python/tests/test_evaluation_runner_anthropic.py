@@ -1817,7 +1817,12 @@ def test_a_release_stops_for_another_held_batch(tmp_path: Path) -> None:
     with pytest.raises(RunStopped, match=r"^batch msgbatch_02 is held for the reviewer: p2; "):
         run(release="msgbatch_01")
 
-    assert run.echo == ["batch msgbatch_01 released after review"]
+    assert run.echo == [
+        # TASK-005c3g G4: this held batch has no kept results file.
+        "the kept results of batch msgbatch_01 cannot be read; its pending scenarios will be "
+        "sent again",
+        "batch msgbatch_01 released after review",
+    ]
     assert run.states() == ["done", "held"]
     assert run.server.calls == []
 
@@ -1871,6 +1876,243 @@ def test_the_attempt_cap_counts_held_batches(tmp_path: Path) -> None:
     )  # fmt: skip
     with pytest.raises(RunStopped, match="02-hotel-reception was sent in 4 batches"):
         state._next_attempt(["02-hotel-reception"], held_entries)
+
+
+# --- TASK-005c3g G4: a released batch is first recorded from its kept results ---------------
+
+KEPT = "batch-msgbatch_01.results.jsonl"
+
+
+def result_line(name: str, result: object) -> dict[str, Any]:
+    return {"custom_id": name, "result": result}
+
+
+def held_with(tmp_path: Path, *lines: object) -> Run:
+    """A held msgbatch_01 of 01-pharmacy and 02-hotel-reception, neither recorded, whose kept
+    results file holds ``lines`` (objects as JSON, bytes as they are)."""
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:2])
+    held = batch_entry("msgbatch_01", ALL_SCENARIOS[:2], "held", problems=["p1"])
+    write_state(run.model_dir, held)
+    data = b"".join(
+        (line if isinstance(line, bytes) else json.dumps(line).encode()) + b"\n" for line in lines
+    )
+    (run.model_dir / KEPT).write_bytes(data)
+    return run
+
+
+def recorded_from(name: str) -> str:
+    return f"{name}: recorded from the kept results of batch msgbatch_01"
+
+
+def test_a_refused_answer_is_recorded_from_the_kept_results_on_release_with_no_new_create(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pauses: list[float]
+) -> None:
+    # The audit's p03: --release sent 01-pharmacy again in a new, paid batch.
+    server = FakeBatches(outcome=lambda n, s: succeeded(truth_text(s)))
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:2])
+    refused = RefusedReplace(10, "response.json")
+    monkeypatch.setattr(os, "replace", refused)
+    with pytest.raises(
+        RunStopped, match=r"^01-pharmacy: could not be recorded \(PermissionError\)"
+    ):
+        run()
+    monkeypatch.setattr(os, "replace", refused.real)
+    assert (run.model_dir / "01-pharmacy" / "response.json.tmp").exists()
+    server.calls.clear()
+    run.echo.clear()
+
+    run(release="msgbatch_01")
+
+    assert server.creates() == []
+    assert run.echo[:2] == [recorded_from("01-pharmacy"), "batch msgbatch_01 released after review"]
+    lines = [json.loads(line) for line in (run.model_dir / KEPT).read_bytes().splitlines()]
+    message = next(line for line in lines if line["custom_id"] == "01-pharmacy")["result"][
+        "message"
+    ]
+    expected = json.dumps(message, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
+    assert (run.model_dir / "01-pharmacy" / "response.json").read_bytes() == expected.encode()
+    assert run.recorded() == list(ALL_SCENARIOS[:2])
+    assert run.states() == ["done"]
+    assert sorted(run.model_dir.rglob("*.tmp")) == []
+
+
+def test_a_release_records_each_scenario_with_one_succeeded_line_and_sends_only_the_others(
+    tmp_path: Path,
+) -> None:
+    run = held_with(
+        tmp_path, result_line("02-hotel-reception", succeeded(truth_text("02-hotel-reception")))
+    )
+
+    run(release="msgbatch_01")
+
+    assert run.echo[:2] == [
+        recorded_from("02-hotel-reception"),
+        "batch msgbatch_01 released after review",
+    ]
+    assert run.server.creates() == [["01-pharmacy"]]
+    assert run.recorded() == list(ALL_SCENARIOS[:2])
+    assert run.states() == ["done", "done"]
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        [result_line("01-pharmacy", succeeded()), result_line("01-pharmacy", succeeded())],
+        [result_line("01-pharmacy", errored("invalid_request_error"))],
+        [result_line("01-pharmacy", {"type": "expired"})],
+        [result_line("01-pharmacy", {"type": "succeeded", "message": "not an object"})],
+        [result_line("01-pharmacy", {"type": "succeeded"})],
+        [result_line("01-pharmacy", "no result object")],
+        [b"{not json"],
+        [],
+    ],
+    ids=["two-lines", "errored", "expired", "message-not-object", "no-message", "no-result",
+         "not-json", "no-line"],
+)  # fmt: skip
+def test_a_scenario_without_exactly_one_succeeded_line_is_sent_again(
+    tmp_path: Path, lines: list[object]
+) -> None:
+    run = held_with(tmp_path, result_line("02-hotel-reception", succeeded()), *lines)
+
+    run(release="msgbatch_01")
+
+    assert recorded_from("01-pharmacy") not in run.echo
+    assert recorded_from("02-hotel-reception") in run.echo
+    assert run.server.creates() == [["01-pharmacy"]]
+    assert run.recorded() == list(ALL_SCENARIOS[:2])
+
+
+def test_a_recording_that_fails_during_the_release_keeps_the_batch_held_and_sends_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = held_with(
+        tmp_path,
+        result_line("01-pharmacy", succeeded()),
+        result_line("02-hotel-reception", succeeded()),
+    )
+    failing_write_answer(monkeypatch, "02-hotel-reception", OSError(28, f"No space left {KEY}"))
+
+    with pytest.raises(RunStopped) as raised:
+        run(release="msgbatch_01")
+
+    assert str(raised.value) == (
+        "02-hotel-reception: could not be recorded (OSError); batch msgbatch_01 is still held: "
+        "send this message to the reviewer"
+    )
+    assert run.states() == ["held"]
+    assert run.server.calls == []
+    assert run.recorded() == ["01-pharmacy"]
+    # Released again after the reviewer's decision: 01-pharmacy is recorded, so it is skipped.
+    monkeypatch.undo()
+    run.echo.clear()
+    run(release="msgbatch_01")
+    assert run.echo[:2] == [
+        recorded_from("02-hotel-reception"),
+        "batch msgbatch_01 released after review",
+    ]
+    assert run.server.creates() == []
+
+
+def test_a_missing_kept_results_file_releases_as_before_and_says_so(tmp_path: Path) -> None:
+    run = held_with(tmp_path)
+    (run.model_dir / KEPT).unlink()
+
+    run(release="msgbatch_01")
+
+    assert run.echo[:2] == [
+        "the kept results of batch msgbatch_01 cannot be read; its pending scenarios will be "
+        "sent again",
+        "batch msgbatch_01 released after review",
+    ]
+    assert run.server.creates() == [list(ALL_SCENARIOS[:2])]
+
+
+def test_a_release_with_every_scenario_recorded_reads_nothing_and_says_nothing_about_it(
+    tmp_path: Path,
+) -> None:
+    run = held_with(tmp_path)
+    (run.model_dir / KEPT).unlink()
+    for name in ALL_SCENARIOS[:2]:
+        scenario = load_scenario(run.corpus / name)
+        write_answer(run.model_dir / name, scenario, HAIKU, anthropic_message(HAIKU))
+
+    run(release="msgbatch_01")
+
+    assert run.echo == ["batch msgbatch_01 released after review", "nothing to run"]
+    assert run.server.calls == []
+
+
+def test_an_unreadable_kept_results_file_releases_as_before_and_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = held_with(tmp_path, result_line("01-pharmacy", succeeded()))
+    real_read = Path.read_bytes
+
+    def read_bytes(self: Path) -> bytes:
+        if self.name == KEPT:
+            raise PermissionError(13, "Permission denied")
+        return real_read(self)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+
+    run(release="msgbatch_01")
+
+    assert run.echo[0].startswith("the kept results of batch msgbatch_01 cannot be read; ")
+    assert run.server.creates() == [list(ALL_SCENARIOS[:2])]
+
+
+# --- TASK-005c3g G5: an answer that could not be saved is never sent again --------------------
+
+
+def unsaved_stop(path: Path) -> str:
+    return (
+        f"01-pharmacy: an answer that could not be saved is kept in {path}; nothing was sent; "
+        "send this message to the reviewer and do not delete or rename the file"
+    )
+
+
+def test_a_leftover_unsaved_answer_stops_the_run_before_any_request(tmp_path: Path) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:2])
+    kept = run.model_dir / "01-pharmacy" / "response.json.tmp"
+    kept.parent.mkdir(parents=True)
+    kept.write_bytes(b'{"kept": "answer"}\n')
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == unsaved_stop(kept)
+    assert run.server.calls == []
+    assert kept.read_bytes() == b'{"kept": "answer"}\n'
+    assert sorted(path.name for path in run.model_dir.rglob("*")) == [
+        "01-pharmacy",
+        "response.json.tmp",
+    ]
+
+
+def test_a_leftover_temporary_file_of_a_recorded_scenario_is_ignored(tmp_path: Path) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:2])
+    scenario = load_scenario(run.corpus / "01-pharmacy")
+    write_answer(run.model_dir / "01-pharmacy", scenario, HAIKU, anthropic_message(HAIKU))
+    (run.model_dir / "01-pharmacy" / "response.json.tmp").write_bytes(b"{}\n")
+
+    run()
+
+    assert run.server.creates() == [["02-hotel-reception"]]
+    assert run.recorded() == list(ALL_SCENARIOS[:2])
+
+
+def test_the_unsaved_answer_check_comes_after_the_release_records_what_it_can(
+    tmp_path: Path,
+) -> None:
+    run = held_with(tmp_path, result_line("01-pharmacy", succeeded()))
+    (run.model_dir / "01-pharmacy").mkdir()
+    (run.model_dir / "01-pharmacy" / "response.json.tmp").write_bytes(b"{}\n")
+
+    run(release="msgbatch_01")
+
+    assert run.echo[0] == recorded_from("01-pharmacy")
+    assert run.server.creates() == [["02-hotel-reception"]]
+    assert sorted(run.model_dir.rglob("*.tmp")) == []
 
 
 # --- TASK-005c3c E6: an open batch with nothing pending is resumed ----------------------------

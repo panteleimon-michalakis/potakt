@@ -36,6 +36,7 @@ from potakt.evaluation.records import (
     COMPARISON_FILE,
     REQUEST_FILE,
     RESPONSE_FILE,
+    UNSAVED_RESPONSE_FILE,
     answer_of,
     rescore_run,
     retry_refused,
@@ -373,6 +374,53 @@ def _complete_records(corpus_dir: Path, model_dir: Path, model: str, echo: Echo)
         echo(f"{name}: record completed ({', '.join(written)})")
 
 
+# TASK-005c3g G5: an answer whose replace failed stays in its temporary file (``write_answer``).
+UNSAVED = (
+    "{name}: an answer that could not be saved is kept in {path}; nothing was sent; send this "
+    "message to the reviewer and do not delete or rename the file"
+)
+
+
+def _check_unsaved(corpus_dir: Path, model_dir: Path) -> None:
+    """TASK-005c3g G5: ``RunStopped`` before anything is sent if a pending scenario keeps an
+    answer that could not be saved (``response.json.tmp``): sending it again would pay twice and
+    lose the first answer. A recorded scenario's leftover temporary file is ignored."""
+    for name in pending_scenarios(corpus_dir, model_dir):
+        path = model_dir / name / UNSAVED_RESPONSE_FILE
+        if path.exists():
+            raise RunStopped(UNSAVED.format(name=name, path=path))
+
+
+# TASK-005c3g G4: the release of a held batch and its kept results.
+KEPT_UNREADABLE = (
+    "the kept results of batch {id} cannot be read; its pending scenarios will be sent again"
+)
+RECORDED_FROM_KEPT = "{name}: recorded from the kept results of batch {id}"
+STILL_HELD = "; batch {id} is still held: send this message to the reviewer"
+
+
+def _kept_results(raw: bytes) -> dict[str, list[object]]:
+    """The ``result`` of every line of a kept results file, by its ``custom_id``; a line that is
+    no JSON object with a string ``custom_id`` names no scenario."""
+    found: dict[str, list[object]] = {}
+    for line in raw.split(b"\n"):
+        if not line.strip():
+            continue
+        document = _json(line)
+        custom_id = _field(document, "custom_id")
+        if isinstance(custom_id, str):
+            found.setdefault(custom_id, []).append(_field(document, "result"))
+    return found
+
+
+def _succeeded_message(result: object) -> dict[str, object] | None:
+    """The ``message`` object of a ``succeeded`` result; ``None`` for any other result."""
+    message = _field(result, "message")
+    if _field(result, "type") != "succeeded" or not isinstance(message, dict):
+        return None
+    return cast(dict[str, object], message)
+
+
 def _load(corpus_dir: Path, name: str) -> LoadedScenario:
     try:
         return load_scenario(corpus_dir / name)
@@ -597,6 +645,7 @@ class _AnthropicRun:
         if held is not None:
             raise RunStopped(HELD_STOP.format(id=held.id, problems="; ".join(held.problems)))
         self._check_started_at()
+        _check_unsaved(self.corpus_dir, self.model_dir)  # G5: after the release (G4)
         _complete_records(self.corpus_dir, self.model_dir, self.model, self.echo)
         adopted = self._reconcile_earlier()
         pending = pending_scenarios(self.corpus_dir, self.model_dir)
@@ -635,16 +684,52 @@ class _AnthropicRun:
 
     def _release(self, batch_id: str) -> None:
         """E4: the held entry ``batch_id`` becomes ``done`` (its problems kept, for the record)
-        after the reviewer's decision; ``RunStopped`` if no held entry has that id."""
+        after the reviewer's decision; ``RunStopped`` if no held entry has that id. TASK-005c3g
+        G4: first, ``_record_kept`` records what the batch's kept results already hold."""
         batches = _load_state(self.model_dir)
         index = next(
             (i for i, b in enumerate(batches) if b.state == "held" and b.id == batch_id), None
         )
         if index is None:
             raise RunStopped(f"{server_text(batch_id)} is not a held batch of {self.model}")
+        self._record_kept(batches[index])
         batches[index] = replace(batches[index], state="done")
         _save_state(self.model_dir, batches)
         self.echo(f"batch {batch_id} released after review")
+
+    def _record_kept(self, batch: _Batch) -> None:
+        """TASK-005c3g G4: before a held ``batch`` is released, record each of its scenarios
+        without ``response.json`` whose kept ``batch-<id>.results.jsonl`` has exactly one line,
+        a ``succeeded`` one with a message object, as ``_record_result`` does; nothing is sent.
+        The others stay pending and are sent again. If the file cannot be read, it says so and
+        records nothing. If a recording fails, the batch stays held and ``RunStopped`` names each
+        failed scenario (H9 wording)."""
+        batch_id = cast(str, batch.id)  # a held entry always names its batch (_entry)
+        pending = [n for n in batch.scenarios if not (self.model_dir / n / RESPONSE_FILE).exists()]
+        if not pending:
+            return
+        try:
+            raw = (self.model_dir / _results_file(batch_id)).read_bytes()
+        except OSError:
+            self.echo(KEPT_UNREADABLE.format(id=batch_id))
+            return
+        lines = _kept_results(raw)
+        failures: list[str] = []
+        for name in pending:
+            found = lines.get(name, [])
+            message = _succeeded_message(found[0]) if len(found) == 1 else None
+            if message is None:
+                continue
+            try:
+                write_answer(
+                    self.model_dir / name, _load(self.corpus_dir, name), self.model, message
+                )
+            except Exception as error:  # never its text (H9)
+                failures.append(self._problem(name, error))
+                continue
+            self.echo(RECORDED_FROM_KEPT.format(name=name, id=batch_id))
+        if failures:
+            raise RunStopped("; ".join(failures) + STILL_HELD.format(id=batch_id))
 
     def _next_attempt(self, pending: list[str], batches: list[_Batch]) -> int:
         """The attempt number of the next batch for ``pending``; ``RunStopped`` if a scenario
@@ -965,11 +1050,17 @@ class _AnthropicRun:
         hold anything). A ``KeyboardInterrupt`` is not caught."""
         try:
             return self._record_result(name, result)
-        except RunStopped as error:
+        except Exception as error:
+            return self._problem(name, error)
+
+    def _problem(self, name: str, error: Exception) -> str:
+        """The problem of a scenario whose record failed with ``error`` (H9, J6): a
+        ``RunStopped`` gives its message, prefixed with ``<name>: `` unless it starts with it;
+        any other exception only its type."""
+        if isinstance(error, RunStopped):
             text = server_text(str(error), secret_values(self.headers))
             return text if text.startswith(f"{name}: ") else f"{name}: {text}"
-        except Exception as error:
-            return UNEXPECTED_RECORD.format(name=name, kind=type(error).__name__)
+        return UNEXPECTED_RECORD.format(name=name, kind=type(error).__name__)
 
     def _record_result(self, name: str, result: dict[str, object]) -> str | None:
         """Record one result line; return a problem, if any."""
@@ -1158,6 +1249,7 @@ def _run_gemini(
     if not pending:
         echo("nothing to run")
         return
+    _check_unsaved(corpus_dir, model_dir)  # TASK-005c3g G5: before the first request
     url = GEMINI_URL.format(model=model)
     checked = _JsonObjectOnly(transport)
     for name in pending:
