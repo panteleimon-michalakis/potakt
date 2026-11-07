@@ -37,9 +37,11 @@ one that calls them (free, read-only); the owner runs both by following
   invalid key, a request that failed after its retries, an unexpected error (its type only) or
   interrupted, 2 usage error, also for an unregistered model id);
 - `potakt eval run --model ID [--runs DIR] [--corpus DIR] [--poll-seconds N] [--yes]
-  [--release BATCH_ID]` without `--yes` prints the plan (pending and recorded scenarios, an open
-  or held batch or an unconfirmed create request, a lock, the cost upper bound) and sends
-  nothing; with `--yes` it reads the key from
+  [--release BATCH_ID]` first checks the prompt file and the schema section against the SHA256
+  values that ADR-0007 §7 pins (and stops if one differs); without `--yes` it prints the plan
+  (pending and recorded scenarios, an open or held batch or an unconfirmed create request, a
+  lock, the cost upper bound; for Gemini $0 only if the key's project is on the free tier) and
+  sends nothing; with `--yes` it reads the key from
   `POTAKT_ANTHROPIC_API_KEY` (Claude models, Message Batches API) or `POTAKT_GEMINI_API_KEY`
   (`gemini-3.8-flash`), records every pending
   scenario under `docs/validation/runs/test-a/<model>/` (`request.json`, `response.json`,
@@ -49,10 +51,13 @@ one that calls them (free, read-only); the owner runs both by following
   `claude-opus-5-5` runs only after
   `claude-haiku-5-5` has a complete run, and the same command again resumes, also after an
   interrupted batch creation, which it reconciles before sending anything; a batch whose results
-  need the reviewer is held, and every run stops until `--yes --release <id>` after the
-  reviewer's decision; one `--yes` run at a time (the lock file `<runs>/.eval-run.lock`); after
-  a Claude run that called the API it runs a check for unrecorded batches after the run (up to
-  five minutes) and names any batch that no run recorded, without changing the exit code (exit
+  need the reviewer is held (also for a result error that a repeat cannot fix), and every run
+  stops until `--yes --release <id>` after the reviewer's decision, which first records what the
+  batch's kept results hold; a run never sends a scenario whose earlier answer could not be saved
+  (`response.json.tmp`); one `--yes` run at a time (the lock file `<runs>/.eval-run.lock`); after
+  a Claude run that called the API and was not interrupted it runs a check for unrecorded
+  batches after the run (up to five minutes) and names any batch that no run recorded, without
+  changing the exit code (exit
   code 0 all recorded or plan printed, 1 run stopped, a held batch, missing or invalid key, order
   refused, another run active, a `--release` of a batch that is not held, missing directory, a
   corpus without a scenario, an unexpected error (its type only) or interrupted, 2 usage error,

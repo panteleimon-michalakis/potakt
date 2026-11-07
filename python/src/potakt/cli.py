@@ -243,8 +243,9 @@ def eval_prompt(
         typer.Option("--model", help=f"Model id: {', '.join(REGISTERED_MODELS)}."),
     ] = STRONG_MODEL,
 ) -> None:
-    """Print the exact JSON request payload of the Test A request for one scenario (ADR-0007 §7),
-    with no credentials; nothing is sent.
+    """Print the exact JSON payload of one scenario's Test A request; nothing is sent.
+
+    The payload of the Test A request for one scenario (ADR-0007 §7), with no credentials.
 
     The registered models are claude-haiku-5-5, gemini-3.8-flash, claude-opus-5-5 (in run
     order); the Claude ones get the Anthropic Messages API body, gemini-3.8-flash the Gemini
@@ -273,7 +274,9 @@ def eval_compare(
         Path, typer.Argument(help="Candidate DM text file (UTF-8).", show_default=False)
     ],
 ) -> None:
-    """Validate a candidate against the scenario's CSV files only, compare it with the truth and
+    """Compare a candidate with a scenario's truth and print the comparison JSON.
+
+    Validate a candidate against the scenario's CSV files only, compare it with the truth and
     print the comparison JSON (ADR-0007 §5, §7).
 
     Exit code 0: comparison printed, for valid and invalid candidates alike (both are results);
@@ -311,7 +314,9 @@ def eval_summary(
     ] = CORPUS_PATH,
     as_json: Annotated[bool, typer.Option("--json", help="Print the summary as JSON.")] = False,
 ) -> None:
-    """Summarize one model's recorded Test A runs: recall, merged recall, precision, validity,
+    """Summarize one model's recorded Test A runs.
+
+    Summarize one model's recorded Test A runs: recall, merged recall, precision, validity,
     completeness (the corpus scenarios still missing), breakdowns, diagnostics, how the answers
     stopped, usage and cost at the batch prices (ADR-0007 §7 «Records» and its amendment).
 
@@ -345,7 +350,9 @@ def eval_rescore(
         ),
     ] = CORPUS_PATH,
 ) -> None:
-    """Recompute candidate.txt and comparison.json of one model's recorded Test A runs from
+    """Recompute one model's Test A scores from response.json alone; nothing is sent.
+
+    Recompute candidate.txt and comparison.json of one model's recorded Test A runs from
     response.json alone (ADR-0007 §7 amendment «Records»); no request is sent.
 
     One line per scenario directory, in byte order of its name: unchanged, updated (<files>) or
@@ -484,21 +491,26 @@ def eval_run(
         ),
     ] = None,
 ) -> None:
-    """Run Test A for one model: send every corpus scenario without a recorded answer and record
-    the answers (ADR-0007 §7 and its amendments).
+    """Run Test A for one model; without --yes, print the plan and send nothing.
+
+    Send every corpus scenario without a recorded answer and record the answers (ADR-0007 §7
+    and its amendments). Every run first checks the prompt file and the schema section against
+    the SHA256 values that ADR-0007 §7 pins, and stops, sending nothing, if one differs.
 
     Without --yes, print the plan and the cost upper bound; nothing is sent and no key is read.
     With --yes, read the key from POTAKT_ANTHROPIC_API_KEY (Claude models, Message Batches API)
     or POTAKT_GEMINI_API_KEY (gemini-3.8-flash, generateContent), send, record, then print the
     model's summary. A Claude run first compares the laptop clock with the API's (the Date header
     of one free call) and stops, sending nothing, if they differ by more than 2 minutes.
-    claude-opus-5-5 runs only after claude-haiku-5-5 has a complete run. The
-    same command again resumes; a recorded scenario is never sent again. A batch whose results
-    need the reviewer is held: every run stops until --yes --release <id> after the reviewer's
-    decision. Only one --yes run at a time: it holds the lock file <runs>/.eval-run.lock while
-    it runs. After a Claude run that called the API and was not interrupted, it runs a check for
-    unrecorded batches after the run (up to 5 minutes later) and names every batch that no run
-    recorded, so a paid duplicate can be cancelled; this check never changes the exit code.
+    claude-opus-5-5 runs only after claude-haiku-5-5 has a complete run. The same command again
+    resumes; a recorded scenario is never sent again. A batch whose results need the reviewer is
+    held: every run stops until --yes --release <id> after the reviewer's decision, which first
+    records what the batch's kept results already hold. Only one --yes run at a time: it holds
+    the lock file <runs>/.eval-run.lock while it runs. After a Claude run that called the API and
+    was not interrupted, it runs a check for unrecorded batches after the run (up to 5 minutes
+    later) and names every batch that no run recorded, so the reviewer can decide about a paid
+    duplicate (only a batch still in progress can be cancelled); this check never changes the
+    exit code.
 
     Files: <runs>/<model dir>/<scenario id>/ with request.json, response.json, candidate.txt,
     comparison.json; for Claude models also <runs>/<model dir>/ batches.json and
@@ -629,7 +641,9 @@ def eval_preflight(
         ),
     ],
 ) -> None:
-    """Check the key and the model with free, read-only calls before a paid run (ADR-0007 §7,
+    """Check the key and the model with free, read-only calls before a paid run.
+
+    Free, read-only calls with the key of the run (ADR-0007 §7,
     amendment of TASK-005c3e): for a Claude model GET /v1/models/<id> and one page of the batch
     list, for gemini-3.8-flash GET /v1beta/models/<id>; no prompt is sent, nothing is written
     and nothing is charged.

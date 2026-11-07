@@ -15,13 +15,23 @@ Rules for the whole runbook:
   different models. A second `--yes` run is refused while the first one holds the lock (§8).
 - Keep the laptop awake and plugged in while a batch runs. If it sleeps anyway, run the same
   command again.
+- The run compares the laptop clock with the API's and stops if they differ by more than two
+  minutes. If it stops for that, sync the Windows clock (Settings, Time & language, Date & time,
+  "Sync now") and run again.
+- Never delete, move or edit anything under `docs/validation/runs/test-a/` (in particular
+  `batches.json` and any `.tmp` file), never run `git clean` or `git stash -u` before the
+  records are committed, and never run a model from a second clone or with another `--runs`:
+  the run would send its pending scenarios again, and no check would see the duplicate.
 
 ## 1. Keys
 
 **Anthropic**
 1. In the Claude Console, create a workspace `potakt-phase0`.
-2. Set its monthly spend limit to $10 (a non-default workspace: "Spend limits"). When the limit is
-   reached the API answers with a 400 error, and the run stops with no record.
+2. Set its monthly spend limit to $10 (a non-default workspace: "Spend limits"). If the limit is
+   already reached when a batch is created, the API answers with a 400 error and the run stops
+   with no record. If it is reached while a batch runs, the documentation does not say how the
+   remaining requests end: send the run's output to the reviewer. The dry runs' cost upper
+   bounds fit under the limit.
 3. Create a **personal** API key (Claude Console, API keys, Create key):
    - Linked account: yourself;
    - **restricted to the workspace `potakt-phase0`**;
@@ -35,10 +45,16 @@ Rules for the whole runbook:
    the other header legacy too: "You can also send the key in the legacy `x-api-key:
    YOUR_API_KEY` header in place of `Authorization`." See the Claude authentication page,
    <https://platform.claude.com/docs/en/manage-claude/authentication> (checked on 2026-11-06).
+4. In the Console's API keys list, check that the key's workspace is `potakt-phase0`. In
+   Billing, check that the credit balance is at least $1 before Haiku and $8 before Opus.
 
 **Gemini**
 1. Create a key in Google AI Studio.
 2. Restrict it to the Gemini API ("Restrict to Gemini API only").
+3. In Google AI Studio, Projects, check that the key's project shows **Free** in the Billing
+   Tier column. A project linked to a Cloud Billing account is on a paid tier: every request is
+   billed and a repeated one twice, although the dry run says $0. If it is not Free, stop and ask
+   the reviewer.
 
 Never paste a key into Claude Code, a chat, a file or a commit.
 
@@ -70,17 +86,24 @@ Open a **new Windows PowerShell 5.1 window**, not the one running Claude Code, a
 ```powershell
 cd <repo>\python
 $secure = Read-Host "Anthropic API key" -AsSecureString
-$env:POTAKT_ANTHROPIC_API_KEY = [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure))
-Remove-Variable secure
+$bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+$env:POTAKT_ANTHROPIC_API_KEY = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+[Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+Remove-Variable secure, bstr
 ```
 
 Then the same block for the Gemini key:
 
 ```powershell
 $secure = Read-Host "Gemini API key" -AsSecureString
-$env:POTAKT_GEMINI_API_KEY = [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure))
-Remove-Variable secure
+$bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+$env:POTAKT_GEMINI_API_KEY = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+[Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+Remove-Variable secure, bstr
 ```
+
+Copy messages from the window itself; do not redirect the output with `>` (Windows PowerShell
+5.1 garbles non-ASCII characters in files).
 
 The variables exist only in this window. At the end of the session, run:
 
@@ -104,11 +127,17 @@ The dry run prints the plan and the cost upper bound. The `--yes` run sends one 
 polls it every 60 seconds until it ends (usually well under an hour), then records the answers and
 prints the summary. While the batch is in progress, the line `batch <id>: in_progress (…)` is
 printed when it changes and again after every 10 polls without a change (every 10 minutes), so the
-window shows that the run is alive. This first batch also confirms the API version
-(`anthropic-version: 2026-10-21`) and the `output_config` field: a 400 or a 401 here stops the run
-with no charge and no record, and the reason is printed. If a key problem slips past the
-preflight anyway, the run waits up to five minutes for the check below before it prints the 400
-or the 401: this is normal; wait for the message.
+window shows that the run is alive. This first batch also confirms the `output_config` field. The
+API checks each request of a batch only while it processes the batch ("Validation of the
+`params` object for each message request is performed asynchronously"), so a refused field comes
+back as `<scenario>: invalid_request_error: …` for every scenario and the batch is held (§8);
+such results are not billed. A wrong API version or key is refused at once with a 400 or a 401,
+before any batch exists: the run stops with no charge and no record, and the reason is printed.
+A key problem that slips past the preflight stops the run at its first call, the clock check:
+`listing batches failed: HTTP 401 (…)` (or a 400), with nothing sent and no check of the batch
+list after it. A 400 at the batch creation itself (for example the spend limit, §1) is printed
+only after the check for unrecorded batches below, up to five minutes later: this is normal;
+wait for the message.
 
 If the answer to the batch creation is lost or unclear (no answer, a redirect, a 408 or a 5xx),
 the run may pause about two minutes; this is normal. It first prints
@@ -122,9 +151,12 @@ recorded: it prints `waiting <n> s before checking for batches that no run recor
 five minutes after the last batch creation), lists the recent batches and only then prints the
 stop message or the summary, also after an unexpected error. This check never changes the
 records or the exit code. It looks back to the first batch creation of any model, so a batch it
-once named is named again by every later run, of any model, until the reviewer has decided about
-it. If it prints `warning: batch <id> (<n> requests, created <time>) is recorded by no run: …`,
-see §8.
+once named is named again by every later run, of any model, unless it is cancelled. Only a batch
+still in progress can be cancelled ("Batches may be canceled any time before processing ends.");
+a batch that has already ended stays in the batch list and is named again on every later run.
+Once the reviewer has decided about a named batch, its warning on later runs is expected: send a
+warning again only if it names a new batch id. If it prints
+`warning: batch <id> (<n> requests, created <time>) is recorded by no run: …`, see §8.
 
 **Check the Console after each model's run** (here and in §6):
 1. Open the Claude Console, Batches, for the workspace `potakt-phase0`.
@@ -148,6 +180,11 @@ uv run potakt eval summary ../docs/validation/runs/test-a/claude-haiku-5-5
 
 ## 5. Gemini
 
+If the key or the day changed since the check of §1, run
+`uv run potakt eval preflight --model gemini-3.8-flash` again first. For Gemini the preflight
+proves only that the key exists: Google's documentation says that read-only metadata calls "only
+validate that your API key exists and don't check project tier eligibility or billing status".
+
 ```powershell
 uv run potakt eval run --model gemini-3.8-flash
 uv run potakt eval run --model gemini-3.8-flash --yes
@@ -155,6 +192,12 @@ uv run potakt eval run --model gemini-3.8-flash --yes
 
 The free tier may answer 503 (overloaded) or 429 (quota); the run retries and then stops. Run the
 same command again later: only the scenarios still pending are sent.
+
+A 403 (for example `PERMISSION_DENIED` with `FREE_TIER_VERIFICATION_REQUIRED`), a 400
+`FAILED_PRECONDITION` or a 402 stops the run at once with no record: the project cannot use the
+free tier as it is. Fix it in AI Studio (for example, verify the account) or send the message to
+the reviewer. Daily quotas reset at midnight Pacific time (10:00 in Athens in November and
+December).
 
 ## 6. Opus
 
@@ -173,14 +216,22 @@ After the run, do the Console check of §3 for both `batches.json` files.
 
 ## 7. Commit the records
 
-For each model, from the repository root:
+Commit each model's records right after its run and its checks, before the next model:
+- from `python/`, go to the repository root (`cd ..`) and run `git status`;
+- only files under `docs/validation/runs/test-a/` may appear, and no `*.tmp` file: git ignores
+  a leftover `.tmp`, so also run `git status --ignored docs/validation/runs/test-a`; if it shows
+  a `.tmp` file, do not commit, and see §8;
+- then commit them:
 
-```powershell
-git add docs/validation/runs/test-a
-git commit -m "docs(validation): record Test A runs (<model>)"
-```
+  ```powershell
+  git add docs/validation/runs/test-a
+  git commit -m "docs(validation): record Test A runs (<model>)"
+  ```
 
-Push only after the reviewer's check of a fresh clone.
+- push the commits the same day to the review branch the reviewer names, for the check of a fresh
+  clone; push to `main` only after that check;
+- until a commit is pushed, the records exist only on this laptop (Anthropic keeps batch results
+  for 29 days after the batch was created).
 
 ## 8. If something goes wrong
 
@@ -188,7 +239,12 @@ Push only after the reviewer's check of a fresh clone.
   run the same command again; it resumes the open batch or sends only the pending scenarios.
   Nothing that was recorded is lost, and no batch is paid for twice: before a Claude run sends a
   batch it records an unconfirmed create request in `batches.json`, and the next run first looks
-  for that batch in the Claude batch list.
+  for that batch in the Claude batch list. On Windows, Ctrl+C takes effect only when the current
+  network call returns: up to a minute while a batch is created, polled or listed, up to five
+  minutes while results download, up to ten minutes during a Gemini request. Wait for
+  `interrupted: run the same command again to resume (nothing is lost)`; do not close the window
+  instead (a closed window leaves the lock). A Gemini answer that arrives during that wait is
+  discarded, and that scenario is sent again by the next run.
 - **What these lines mean:**
   - `adopted batch <id> created by an earlier create request`: an earlier create request (in
     this run, when its answer was lost, a redirect, a 408 or a 5xx, or in an interrupted run) did
@@ -236,7 +292,54 @@ Push only after the reviewer's check of a fresh clone.
      cannot be read, it prints
      `the kept results of batch <id> cannot be read; its pending scenarios will be sent again`.
      Then it prints `batch <id> released after review` and continues: the scenarios still
-     pending are sent in a new batch.
+     pending are sent in a new batch. If one of those recordings fails, it stops with
+     `<scenario>: could not be recorded (<type>); batch <id> is still held: send this message to
+     the reviewer`: the batch stays held and nothing was sent; send the message to the reviewer.
+- **Errored, expired and canceled results.** `<scenario>: errored (<type>); pending` (only the
+  four transient types), `<scenario>: expired; pending` and `<scenario>: canceled; pending`:
+  - that request got no answer and is not billed;
+  - the run sends it again in a new batch after a short pause.
+
+  `<scenario>: errored (<type>); it would fail again`: the batch is held; send the message to the
+  reviewer.
+- **The 4-batch cap.** `<scenario> was sent in 4 batches without an answer; it is not sent
+  again`: do not edit `batches.json`; send the message and `batches.json` to the reviewer.
+- **Four failures in a row.** `the request failed 4 times; last: …`, `creating a batch failed 4
+  times; last: …` and `listing batches failed: …`:
+  - the network or the API failed four times in a row;
+  - nothing was lost and nothing is paid twice;
+  - wait a few minutes and run the same command again. If it fails again, send the message to
+    the reviewer.
+- **A refused batch.** `creating a batch failed: HTTP <status> (<type>: …)`: the API refused the
+  batch, and nothing was created or charged.
+  - A 400 or a 401 is the key or the spend limit (§1).
+  - A 402 `billing_error` is the organisation's credit balance.
+  - For anything else, send the message to the reviewer.
+- **The key variable.** `POTAKT_ANTHROPIC_API_KEY is not set in this shell` (or
+  `POTAKT_GEMINI_API_KEY`): this window has no key, so run the block of §2 in this window. `… is
+  not a valid key`: the pasted value holds a space, a line break or a character that is not plain
+  ASCII, so set it again (§2).
+- **The batch state.** `<path> is not a valid batch state; it was not changed`: do not edit it;
+  send it with the message to the reviewer.
+- **The lock file.** `cannot create <path>: …` or `cannot write <path>: …`: the runs directory
+  cannot be written (a full disk, or a folder the antivirus protects); fix that and run again.
+- **The laptop clock.** `the laptop clock differs from the API's by <n> s (more than 120 s): sync
+  the Windows clock (Settings, Time & language, Date & time, Sync now) and run again; nothing was
+  sent`: a laptop clock that is wrong by more than two minutes would misplace the checks that
+  keep a batch from being paid twice. Sync the clock and run the same command again.
+  `the API answer has no readable Date header, so the laptop clock cannot be checked; send this
+  message to the reviewer`: nothing was sent; send the message to the reviewer.
+- **An answer that could not be saved.** `<scenario>: an answer that could not be saved is kept
+  in <path>; nothing was sent; send this message to the reviewer and do not delete or rename the
+  file`: an earlier run received this answer but Windows refused to save it (another program held
+  the file for longer than the run retries, about 3 seconds). The answer is kept in that `.tmp`
+  file; sending the scenario again would pay twice and lose it, so every run stops first. Send the
+  message to the reviewer and leave the file where it is.
+- **A changed prompt or schema.** `the prompt file differs from the one ADR-0007 §7 pins (SHA256
+  <sha256>); nothing was sent` or `the schema section differs from the one ADR-0007 §7 pins
+  (SHA256 <sha256>); nothing was sent` (every run, the dry run too): the prompt or the code is
+  not the one pre-registered, so no answer would count. Run `git status` from the repository
+  root, do not run `--yes`, and send both outputs to the reviewer.
 - **`warning: batch <id> (<n> requests, created <time>) is recorded by no run: it may be a paid
   duplicate; send this warning to the reviewer, who decides whether to cancel it in the Claude
   Console (Batches)`**: a batch exists in the workspace that no run recorded, for example a

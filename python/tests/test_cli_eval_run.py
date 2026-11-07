@@ -7,11 +7,12 @@ No test reads a real key or opens a connection: ``--yes`` runs get the fake key 
 import ast
 import json
 import os
+import re
 import time
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import typer
@@ -686,6 +687,51 @@ def test_the_repository_lock_is_ignored_by_git() -> None:
     assert "docs/validation/runs/test-a/.eval-run.lock" in lines
     repository = Path(__file__).resolve().parents[2]
     assert repository / "docs/validation/runs/test-a/.eval-run.lock" == RUNS_PATH / LOCK
+
+
+TMP_RULE = "docs/validation/runs/test-a/**/*.tmp"
+
+
+def gitignore_matches(rule: str, path: str) -> bool:
+    """The gitignore rule (with a leading path, so anchored) matches ``path``: ``**/`` is zero or
+    more directories, ``*`` any characters but ``/`` (gitignore(5), "Two consecutive
+    asterisks")."""
+    pattern = "".join(
+        "(?:[^/]+/)*" if part == "**/" else "[^/]*" if part == "*" else re.escape(part)
+        for part in re.split(r"(\*\*/|\*)", rule)
+    )
+    return re.fullmatch(pattern, path) is not None
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "docs/validation/runs/test-a/claude-haiku-5-5/01-pharmacy/response.json.tmp",
+        "docs/validation/runs/test-a/claude-haiku-5-5/batches.json.tmp",
+        "docs/validation/runs/test-a/.eval-run.lock.tmp",
+    ],
+    ids=["scenario", "model", "test-a"],
+)
+def test_a_leftover_temporary_file_is_ignored_by_git(path: str) -> None:
+    # TASK-005c3g G11: a leftover *.tmp (G5 keeps an unsaved answer in one) is never committed.
+    gitignore = Path(__file__).resolve().parents[2] / ".gitignore"
+
+    assert TMP_RULE in gitignore.read_text(encoding="utf-8").splitlines()
+    assert gitignore_matches(TMP_RULE, path)
+    assert (Path(__file__).resolve().parents[2] / path).is_relative_to(RUNS_PATH)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "docs/validation/runs/test-a/claude-haiku-5-5/01-pharmacy/response.json",
+        "docs/validation/runs/test-a/claude-haiku-5-5/batches.json",
+        "docs/validation/runs/test-a/claude-haiku-5-5/batch-msgbatch_01.results.jsonl",
+        "docs/validation/scenarios/01-pharmacy/x.tmp",
+    ],
+)
+def test_the_records_are_not_ignored_by_the_tmp_rule(path: str) -> None:
+    assert not gitignore_matches(TMP_RULE, path)
 
 
 def test_a_lock_that_cannot_be_read_still_blocks_with_the_message(
@@ -1694,6 +1740,12 @@ def test_the_run_help_states_the_exit_codes_and_files() -> None:
         "A Claude run first compares the laptop clock with the API's (the Date header of one "
         "free call) and stops, sending nothing, if they differ by more than 2 minutes"
     ) in text
+    # TASK-005c3g G12 (R1): an ended batch cannot be cancelled.
+    assert (
+        "so the reviewer can decide about a paid duplicate (only a batch still in progress can "
+        "be cancelled)"
+    ) in text
+    assert "so a paid duplicate can be cancelled" not in text
     assert "POTAKT_ANTHROPIC_API_KEY" in text
     assert "POTAKT_GEMINI_API_KEY" in text
     assert "request.json, response.json, candidate.txt, comparison.json" in text
@@ -1718,16 +1770,46 @@ def test_the_run_help_states_the_exit_codes_and_files() -> None:
     assert str(RUNS_PATH) not in text
 
 
+@pytest.mark.parametrize("name", ["prompt", "compare", "summary", "rescore", "run", "preflight"])
+def test_each_eval_command_has_a_one_line_summary(name: str) -> None:
+    # TASK-005c3g G12 (n7): Typer lists the first paragraph of the docstring with its own line
+    # breaks, so a two-line first paragraph broke the command list mid-sentence.
+    command = cast(Any, typer.main.get_command(eval_app)).commands[name]
+    summary = command.help.split("\n\n")[0]
+
+    assert "\n" not in summary.strip()
+    assert summary.strip().endswith(".")
+    assert len(summary.strip()) <= 84  # fits the box of `potakt eval --help` at 100 columns
+
+
+REPO = Path(__file__).resolve().parents[2]
+
+
+def test_the_readmes_have_the_texts_of_the_pre_run_audit() -> None:
+    # TASK-005c3g G12: n3 (the validation README) and n7 (the README).
+    validation = " ".join((REPO / "docs/validation/README.md").read_text(encoding="utf-8").split())
+    readme = " ".join((REPO / "README.md").read_text(encoding="utf-8").split())
+
+    assert (
+        "The summary's cost counts every answer's tokens at the pinned prices. A refusal outside "
+        "the billed categories is not billed, so the summary may overstate the cost."
+    ) in validation
+    assert "after a Claude run that called the API and was not interrupted it runs a check" in (
+        readme
+    )
+
+
 # --- the runbook (F6) -------------------------------------------------------------------------
 
 RUNBOOK = Path(__file__).resolve().parents[2] / "docs" / "validation" / "test-a-runbook.md"
-SESSION_BLOCK = (
+SESSION_BLOCK = (  # TASK-005c3g G12 (n8): the BSTR is freed
     "```powershell\n"
     "cd <repo>\\python\n"
     '$secure = Read-Host "Anthropic API key" -AsSecureString\n'
-    "$env:POTAKT_ANTHROPIC_API_KEY = [Runtime.InteropServices.Marshal]::PtrToStringBSTR("
-    "[Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure))\n"
-    "Remove-Variable secure\n"
+    "$bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)\n"
+    "$env:POTAKT_ANTHROPIC_API_KEY = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)\n"
+    "[Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)\n"
+    "Remove-Variable secure, bstr\n"
     "```\n"
 )
 
@@ -1844,7 +1926,6 @@ def test_the_runbook_quotes_the_reconciliation_messages_and_the_new_rules() -> N
         "`" + cli.PREFLIGHT_INTERRUPTED + "`",
         "`" + cli.PREFLIGHT_UNEXPECTED.format(kind="<type>") + "`",
         "If the key or the day changed since the check of §1, run the preflight again first",
-        "the run waits up to five minutes for the check below before it prints the 400 or the 401",
         "**Check the Console after each model's run** (here and in §6)",
         "Open the Claude Console, Batches, for the workspace `potakt-phase0`",
         "Compare the batch ids listed there with the ids in "
@@ -1875,7 +1956,125 @@ def test_the_runbook_quotes_the_reconciliation_messages_and_the_new_rules() -> N
     assert "twice and a minute apart" not in text
     assert "check 2" not in text
     lines = RUNBOOK.read_text(encoding="utf-8").splitlines()
-    long_lines = [line for line in lines if len(line) > 100]
-    # The two verbatim PowerShell lines of §2 only (checked by content, not line number).
-    assert len(long_lines) == 2
-    assert all(line.startswith("$env:POTAKT_") and "PtrToStringBSTR" in line for line in long_lines)
+    # TASK-005c3g n8: the PowerShell blocks of §2 are short now; no line is wider than 100.
+    assert [line for line in lines if len(line) > 100] == []
+
+
+def test_the_runbook_has_the_texts_of_the_pre_run_audit() -> None:
+    # TASK-005c3g G12: R1-R8 and n8, as the task gives them (adapted only where G1-G9 changed a
+    # fact), and the messages of §8 as the code prints them.
+    text = " ".join(RUNBOOK.read_text(encoding="utf-8").split())
+    gemini_block = SESSION_BLOCK.replace("cd <repo>\\python\n", "").replace("Anthropic", "Gemini")
+
+    for quoted in (
+        # R1
+        "It looks back to the first batch creation of any model, so a batch it once named is "
+        "named again by every later run, of any model, unless it is cancelled. Only a batch still "
+        'in progress can be cancelled ("Batches may be canceled any time before processing '
+        'ends."); a batch that has already ended stays in the batch list and is named again on '
+        "every later run. Once the reviewer has decided about a named batch, its warning on later "
+        "runs is expected: send a warning again only if it names a new batch id.",
+        # R2, §3 and §1 step 2
+        "This first batch also confirms the `output_config` field. The API checks each request of "
+        'a batch only while it processes the batch ("Validation of the `params` object for each '
+        'message request is performed asynchronously"), so a refused field comes back as '
+        "`<scenario>: invalid_request_error: …` for every scenario and the batch is held (§8); "
+        "such results are not billed. A wrong API version or key is refused at once with a 400 or "
+        "a 401, before any batch exists: the run stops with no charge and no record, and the "
+        "reason is printed.",
+        "If the limit is already reached when a batch is created, the API answers with a 400 "
+        "error and the run stops with no record. If it is reached while a batch runs, the "
+        "documentation does not say how the remaining requests end: send the run's output to the "
+        "reviewer. The dry runs' cost upper bounds fit under the limit.",
+        # R3
+        "3. In Google AI Studio, Projects, check that the key's project shows **Free** in the "
+        "Billing Tier column. A project linked to a Cloud Billing account is on a paid tier: every "
+        "request is billed and a repeated one twice, although the dry run says $0. If it is not "
+        "Free, stop and ask the reviewer.",
+        "If the key or the day changed since the check of §1, run `uv run potakt eval preflight "
+        "--model gemini-3.8-flash` again first. For Gemini the preflight proves only that the key "
+        "exists: Google's documentation says that read-only metadata calls \"only validate that "
+        "your API key exists and don't check project tier eligibility or billing status\".",
+        "A 403 (for example `PERMISSION_DENIED` with `FREE_TIER_VERIFICATION_REQUIRED`), a 400 "
+        "`FAILED_PRECONDITION` or a 402 stops the run at once with no record: the project cannot "
+        "use the free tier as it is. Fix it in AI Studio (for example, verify the account) or send "
+        "the message to the reviewer. Daily quotas reset at midnight Pacific time (10:00 in Athens "
+        "in November and December).",
+        # R4
+        "`<scenario>: errored (<type>); pending` (only the four transient types), "
+        "`<scenario>: expired; pending` and `<scenario>: canceled; pending`",
+        "that request got no answer and is not billed",
+        "the run sends it again in a new batch after a short pause",
+        "`<scenario>: errored (<type>); it would fail again`: the batch is held; send the message "
+        "to the reviewer.",
+        "`<scenario> was sent in 4 batches without an answer; it is not sent again`: do not edit "
+        "`batches.json`; send the message and `batches.json` to the reviewer.",
+        "`the request failed 4 times; last: …`, `creating a batch failed 4 times; last: …` and "
+        "`listing batches failed: …`",
+        "the network or the API failed four times in a row",
+        "nothing was lost and nothing is paid twice",
+        "wait a few minutes and run the same command again. If it fails again, send the message "
+        "to the reviewer.",
+        "`creating a batch failed: HTTP <status> (<type>: …)`: the API refused the batch, and "
+        "nothing was created or charged.",
+        "A 400 or a 401 is the key or the spend limit (§1).",
+        "A 402 `billing_error` is the organisation's credit balance.",
+        "`POTAKT_ANTHROPIC_API_KEY is not set in this shell` (or `POTAKT_GEMINI_API_KEY`): this "
+        "window has no key, so run the block of §2 in this window. `… is not a valid key`: the "
+        "pasted value holds a space, a line break or a character that is not plain ASCII, so set "
+        "it again (§2).",
+        "`<path> is not a valid batch state; it was not changed`: do not edit it; send it with the "
+        "message to the reviewer.",
+        "`cannot create <path>: …` or `cannot write <path>: …`: the runs directory cannot be "
+        "written (a full disk, or a folder the antivirus protects); fix that and run again.",
+        "`" + runner_module.CLOCK_STOP.format(seconds="<n>", limit=120) + "`",
+        "`" + runner_module.NO_DATE + "`",
+        "`" + runner_module.UNSAVED.format(name="<scenario>", path="<path>") + "`",
+        "`" + runner_module.PIN_DIFFERS.format(what="prompt file", pinned="<sha256>") + "`",
+        "`" + runner_module.PIN_DIFFERS.format(what="schema section", pinned="<sha256>") + "`",
+        "`"
+        + runner_module.UNEXPECTED_RECORD.format(name="<scenario>", kind="<type>")
+        + runner_module.STILL_HELD.format(id="<id>")
+        + "`",
+        # R5
+        "On Windows, Ctrl+C takes effect only when the current network call returns: up to a "
+        "minute while a batch is created, polled or listed, up to five minutes while results "
+        "download, up to ten minutes during a Gemini request. Wait for `interrupted: run the same "
+        "command again to resume (nothing is lost)`; do not close the window instead (a closed "
+        "window leaves the lock). A Gemini answer that arrives during that wait is discarded, and "
+        "that scenario is sent again by the next run.",
+        # R6
+        "The run compares the laptop clock with the API's and stops if they differ by more than "
+        "two minutes. If it stops for that, sync the Windows clock (Settings, Time & language, "
+        'Date & time, "Sync now") and run again.',
+        "Never delete, move or edit anything under `docs/validation/runs/test-a/` (in particular "
+        "`batches.json` and any `.tmp` file), never run `git clean` or `git stash -u` before the "
+        "records are committed, and never run a model from a second clone or with another "
+        "`--runs`: the run would send its pending scenarios again, and no check would see the "
+        "duplicate.",
+        # R7
+        "Commit each model's records right after its run and its checks, before the next model",
+        "from `python/`, go to the repository root (`cd ..`) and run `git status`",
+        "only files under `docs/validation/runs/test-a/` may appear",
+        "push the commits the same day to the review branch the reviewer names, for the check of "
+        "a fresh clone; push to `main` only after that check",
+        "until a commit is pushed, the records exist only on this laptop (Anthropic keeps batch "
+        "results for 29 days after the batch was created)",
+        # R8
+        "In the Console's API keys list, check that the key's workspace is `potakt-phase0`. In "
+        "Billing, check that the credit balance is at least $1 before Haiku and $8 before Opus.",
+        # n8
+        "Copy messages from the window itself; do not redirect the output with `>` (Windows "
+        "PowerShell 5.1 garbles non-ASCII characters in files).",
+        " ".join(gemini_block.replace("ANTHROPIC", "GEMINI").split()),
+    ):
+        assert quoted in text, quoted
+    # Gone: the R1 and R2 sentences they replace, and the wait that G2 made untrue for a key.
+    assert "until the reviewer has decided about it" not in text
+    assert "This first batch also confirms the API version" not in text
+    assert "When the limit is reached the API answers with a 400 error" not in text
+    assert "the run waits up to five minutes for the check below before it prints" not in text
+    assert "PtrToStringBSTR([Runtime" not in text
+    # R3: midnight Pacific winter time (UTC-8) is 08:00 UTC, 10:00 in Athens winter time (UTC+2).
+    pacific, athens = timezone(timedelta(hours=-8)), timezone(timedelta(hours=2))
+    assert datetime(2026, 11, 8, 0, 0, tzinfo=pacific).astimezone(athens).hour == 10

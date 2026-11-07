@@ -31,6 +31,8 @@ Thumbs.db
 
 # The lock of a running `potakt eval run --yes`: a stale one is never committed
 docs/validation/runs/test-a/.eval-run.lock
+# A leftover temporary file of a record (an unsaved answer is kept in one): never committed
+docs/validation/runs/test-a/**/*.tmp
 
 # Local agent files
 .claude/

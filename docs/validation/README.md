@@ -22,13 +22,17 @@ and stops, sending nothing, if they differ by more than two minutes.
 `claude-opus-5-5` runs only after `claude-haiku-5-5` has a complete run; the same command again
 resumes, after any interruption: a batch whose creation was not confirmed is looked up in the
 list of batches before anything is sent, so no batch is paid for twice. A batch whose results
-need the reviewer is held: every run stops before sending anything until the owner runs
-`--yes --release <id>` after the reviewer's decision. Only one `--yes` run at a time: it holds
-the lock file `runs/test-a/.eval-run.lock` (never committed). After a Claude run that called the
-API and was not interrupted, it runs a check for unrecorded batches after the run: up to five
-minutes after the last batch creation it lists the batches again and names each one that no run
-recorded (a paid duplicate the reviewer may cancel); this never changes the records or the exit
-code. Exit code 0: all recorded or the
+need the reviewer is held (also for a result error that a repeat cannot fix): every run stops
+before sending anything until the owner runs `--yes --release <id>` after the reviewer's
+decision, which first records what the batch's kept results file holds. Every run checks the
+prompt file and the schema section against the SHA256 values that ADR-0007 §7 pins, and no run
+sends a scenario whose earlier answer could not be saved (`response.json.tmp`, never committed).
+Only one `--yes` run at a time: it holds the lock file `runs/test-a/.eval-run.lock` (never
+committed). After a Claude run that called the API and was not interrupted, it runs a check for
+unrecorded batches after the run: up to five minutes after the last batch creation it lists the
+batches again and names each one that no run recorded (a paid duplicate the reviewer decides
+about; only a batch still in progress can be cancelled); this never changes the records or the
+exit code. Exit code 0: all recorded or the
 plan printed; 1: the run stopped (the reason on stderr), a held batch, a missing or invalid key,
 the order refused, another run active, a `--release` of a batch that is not held, a missing
 directory, a corpus without a scenario, an unexpected error (its type only, never its text) or
@@ -49,6 +53,8 @@ a harness fix, without a new request; it prints `unchanged`, `updated (<files>)`
 `skipped (no response.json)` per scenario and exits 1 for a missing directory, a directory not
 named after a registered model or a scenario not in the corpus. `potakt eval summary` reports a
 model's results; the Test A gate is read only from a complete summary of `claude-opus-5-5`.
+The summary's cost counts every answer's tokens at the pinned prices. A refusal outside the
+billed categories is not billed, so the summary may overstate the cost.
 
 Each scenario is one directory, `scenarios/<NN>-<slug>/`:
 - `request.md`: the manager's message, the only free text the LLM sees;
