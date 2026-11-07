@@ -216,8 +216,10 @@ Push only after the reviewer's check of a fresh clone.
   all of them but the oldest, then run the same command again; it adopts the one left. Requests
   that a cancelled batch already processed are billed, the others are not.
 - **A held batch.** Some results need the reviewer: `batch <id>: no result for <scenario>`, a
-  malformed results line, or `<scenario>: invalid_request_error: …` (the API refused that request
-  itself, so it would fail again). The run records every other line, keeps the raw results in
+  malformed results line, `<scenario>: invalid_request_error: …` (the API refused that request
+  itself, so it would fail again) or `<scenario>: errored (<type>); it would fail again` (an
+  error that a repeat cannot fix, such as `billing_error`, or an unknown one). The run records
+  every other line, keeps the raw results in
   `batch-<id>.results.jsonl` and stops with a message that ends with
   `batch <id> is held: send batch-<id>.results.jsonl and this message to the reviewer`. The batch
   is now **held**: no scenario of it is sent again, and every run, also the same command, stops

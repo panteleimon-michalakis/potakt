@@ -173,6 +173,9 @@ _STATUSES = ("in_progress", "canceling", "ended")
 _COUNTS = ("processing", "succeeded", "errored", "expired", "canceled")
 _RESULT_TYPES = ("succeeded", "errored", "expired", "canceled")
 _ERROR_TYPE = re.compile(r"[a-z_]{1,64}")  # an API error type, safe to echo
+# TASK-005c3g G7: the errored results that are sent again (not billed: the API's own failures);
+# a result errored with any other type, an unknown one included, holds its batch.
+TRANSIENT_ERRORS = frozenset({"api_error", "overloaded_error", "rate_limit_error", "timeout_error"})
 
 Sleep = Callable[[float], object]
 Echo = Callable[[str], object]
@@ -1165,6 +1168,9 @@ class _AnthropicRun:
                 return f"{name}: invalid_request_error: {detail}"
             known_type = isinstance(error_type, str) and _ERROR_TYPE.fullmatch(error_type)
             shown = error_type if known_type else "unknown error"
+            if error_type not in TRANSIENT_ERRORS:
+                # TASK-005c3g G7: a repeat cannot fix it (or it is unknown): the reviewer decides.
+                return f"{name}: errored ({shown}); it would fail again"
             self.echo(f"{name}: errored ({shown}); pending")
             return None
         self.echo(f"{name}: {kind}; pending")  # expired or canceled

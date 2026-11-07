@@ -1779,6 +1779,8 @@ def test_the_runbook_quotes_the_reconciliation_messages_and_the_new_rules() -> N
         "`" + runner_module.KEPT_UNREADABLE.format(id="<id>") + "`",
         # TASK-005c3g G2: the preflight's clock line.
         "`clock: within <n> s of api.anthropic.com`",
+        # TASK-005c3g G7: an error type that a repeat cannot fix holds the batch.
+        "`<scenario>: errored (<type>); it would fail again`",
     ):
         assert quoted in text, quoted
     assert "deprecated" not in text  # F5: the English page says "legacy"

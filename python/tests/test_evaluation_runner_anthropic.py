@@ -1380,9 +1380,10 @@ def test_a_key_across_the_cut_of_an_http_error_is_redacted(tmp_path: Path) -> No
     assert KEY[:5] not in str(raised.value)
 
 
-@pytest.mark.parametrize("kind", ["\x1b[2J", "a" * 65, 7])
-def test_an_odd_error_type_is_not_echoed(tmp_path: Path, kind: object) -> None:
-    # Minor 3: the error type of a result line was echoed as the server sent it.
+@pytest.mark.parametrize("kind", ["\x1b[2J", "a" * 65, 7, None])
+def test_an_odd_error_type_is_not_echoed_and_holds_the_batch(tmp_path: Path, kind: object) -> None:
+    # Minor 3: the error type of a result line was echoed as the server sent it. TASK-005c3g G7:
+    # an unknown type holds the batch (it may fail again).
     def outcome(number: int, scenario: str) -> dict[str, Any]:
         if number > 1:
             return succeeded()
@@ -1390,9 +1391,83 @@ def test_an_odd_error_type_is_not_echoed(tmp_path: Path, kind: object) -> None:
 
     run = make_run(tmp_path, FakeBatches(outcome=outcome), ALL_SCENARIOS[:1])
 
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == "01-pharmacy: errored (unknown error); it would fail again" + HELD
+    assert run.states() == ["held"]
+
+
+# --- TASK-005c3g G7: which errored results are sent again ------------------------------------
+
+TRANSIENT = ["api_error", "overloaded_error", "rate_limit_error", "timeout_error"]
+# The other documented types of a result (api/errors), two newer ones and an unknown one.
+LASTING = [
+    "invalid_request_error",
+    "authentication_error",
+    "billing_error",
+    "permission_error",
+    "not_found_error",
+    "conflict_error",
+    "request_too_large",
+    "some_new_error",
+]
+
+
+def first_errored(kind: str) -> Outcome:
+    """01-pharmacy errored with ``kind`` in the first batch; everything else succeeds."""
+
+    def outcome(number: int, scenario: str) -> dict[str, Any]:
+        if number == 1 and scenario == "01-pharmacy":
+            return errored(kind, "details")
+        return succeeded()
+
+    return outcome
+
+
+@pytest.mark.parametrize("kind", TRANSIENT)
+def test_a_transient_error_type_is_sent_again_in_a_new_batch(tmp_path: Path, kind: str) -> None:
+    run = make_run(tmp_path, FakeBatches(outcome=first_errored(kind)), ALL_SCENARIOS[:2])
+
     run()
 
-    assert "01-pharmacy: errored (unknown error); pending" in run.echo
+    assert f"01-pharmacy: errored ({kind}); pending" in run.echo
+    assert run.server.creates() == [list(ALL_SCENARIOS[:2]), ["01-pharmacy"]]
+    assert run.states() == ["done", "done"]
+    assert run.recorded() == list(ALL_SCENARIOS[:2])
+
+
+@pytest.mark.parametrize("kind", LASTING)
+def test_any_other_error_type_holds_the_batch(tmp_path: Path, kind: str) -> None:
+    run = make_run(tmp_path, FakeBatches(outcome=first_errored(kind)), ALL_SCENARIOS[:2])
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    problem = (
+        "01-pharmacy: invalid_request_error: details"  # its message, as before (§8)
+        if kind == "invalid_request_error"
+        else f"01-pharmacy: errored ({kind}); it would fail again"
+    )
+    assert str(raised.value) == problem + HELD
+    assert run.server.creates() == [list(ALL_SCENARIOS[:2])]
+    assert run.states() == ["held"]
+    assert problems_of(run) == [problem]
+    assert run.recorded() == ["02-hotel-reception"]
+
+
+def test_a_billing_error_holds_after_one_batch_so_the_cap_is_never_reached(
+    tmp_path: Path,
+) -> None:
+    run = make_run(tmp_path, FakeBatches(outcome=lambda n, s: errored("billing_error")))
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert "without an answer" not in str(raised.value)
+    assert str(raised.value).startswith("01-pharmacy: errored (billing_error); it would fail again")
+    assert len(run.server.creates()) == 1
+    assert run.states() == ["held"]
 
 
 def test_an_invalid_request_message_loses_its_control_characters(tmp_path: Path) -> None:
