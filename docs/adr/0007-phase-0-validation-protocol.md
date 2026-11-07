@@ -338,6 +338,19 @@ recorded. This amendment also corrects the TASK-005c3d amendment above, before a
 "legacy" (the documentation's term) and the audit window, which starts at the first create request
 of any model.
 
+**Amendment (2026-11-07, TASK-005c3g, before any LLM run).** Every model gets the same output
+budget, thinking included: `max_tokens` 64000 for Haiku as for Opus, and `maxOutputTokens` 64000 for
+Gemini. Before any other request, a `--yes` run of a Claude model, and its preflight, read the
+`Date` header of one free API answer and stop if the laptop clock differs from it by more than 2
+minutes; the audit also looks back to 10 minutes before the earliest `created_at` of a recorded
+batch. A result errored with `api_error`, `overloaded_error`, `rate_limit_error` or
+`timeout_error`, or one that is canceled or expired, is sent again; a result errored with any other
+type holds its batch. Releasing a held batch first records, from its kept results file, each of
+its pending scenarios that has exactly one succeeded line there; only the others are sent again. A
+run stops before it sends anything if the prompt file or the schema section differs from the
+SHA256 pinned in this section, or if a pending scenario keeps an answer that could not be saved
+(`response.json.tmp`).
+
 ## Consequences
 - Results can be compared across models and over time, because every rule of the measurement is fixed
   in advance and implemented once, in tested code.
