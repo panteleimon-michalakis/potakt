@@ -489,7 +489,9 @@ def eval_run(
     Without --yes, print the plan and the cost upper bound; nothing is sent and no key is read.
     With --yes, read the key from POTAKT_ANTHROPIC_API_KEY (Claude models, Message Batches API)
     or POTAKT_GEMINI_API_KEY (gemini-3.8-flash, generateContent), send, record, then print the
-    model's summary. claude-opus-5-5 runs only after claude-haiku-5-5 has a complete run. The
+    model's summary. A Claude run first compares the laptop clock with the API's (the Date header
+    of one free call) and stops, sending nothing, if they differ by more than 2 minutes.
+    claude-opus-5-5 runs only after claude-haiku-5-5 has a complete run. The
     same command again resumes; a recorded scenario is never sent again. A batch whose results
     need the reviewer is held: every run stops until --yes --release <id> after the reviewer's
     decision. Only one --yes run at a time: it holds the lock file <runs>/.eval-run.lock while
@@ -546,7 +548,10 @@ def _eval_run(
         if release is not None and not anthropic:
             raise RunStopped(f"{server_text(release)} is not a held batch of {model}")
         key = read_key(ANTHROPIC_KEY_VARIABLE if anthropic else GEMINI_KEY_VARIABLE)
-        transport = _Counting(make_transport())
+        # TASK-005c3g G2: the clock call goes through the raw transport, so it is not counted:
+        # a run that made no other call (stopped by the clock, or nothing to run) has no audit.
+        raw = make_transport()
+        transport = _Counting(raw)
         lock = take_lock(runs, model, utc_now())  # E5: before anything else that writes
         try:
             if anthropic:
@@ -563,6 +568,7 @@ def _eval_run(
                         poll_seconds=poll_seconds,
                         echo=typer.echo,
                         release=release,
+                        clock_transport=raw,
                     )
                 except Exception as error:  # a stop, or an unexpected error (H16 review)
                     stopped = error
@@ -629,8 +635,9 @@ def eval_preflight(
     Reads the key from POTAKT_ANTHROPIC_API_KEY (Claude models) or POTAKT_GEMINI_API_KEY
     (gemini-3.8-flash) and prints one line per check. A check fails only on a definite
     contradiction (an answer for another model, batches or effort high not supported, an output
-    limit below the run's, an unreadable batch list); a field the API does not report is shown
-    as not reported.
+    limit below the run's, an unreadable batch list, a laptop clock more than 2 minutes from the
+    API's (the Date header) for a Claude model); a field the API does not report is shown as not
+    reported.
 
     Exit code 0: every check passed; 1: a failed check (preflight failed: <check>: <reason> on
     stderr), a missing or invalid key, a request that failed after its retries, an unexpected
@@ -653,7 +660,7 @@ def _eval_preflight(model: str) -> None:
     anthropic = model.startswith(ANTHROPIC_PREFIX)
     key = read_key(ANTHROPIC_KEY_VARIABLE if anthropic else GEMINI_KEY_VARIABLE)
     try:
-        preflight(model, key, make_transport(), sleep=time.sleep, echo=typer.echo)
+        preflight(model, key, make_transport(), sleep=time.sleep, echo=typer.echo, now=utc_now)
     except RunStopped as error:
         _stop(1, str(error))
     except KeyboardInterrupt:

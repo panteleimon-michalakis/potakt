@@ -29,8 +29,10 @@ one that calls them (free, read-only); the owner runs both by following
 - `potakt eval preflight --model ID` checks the key and the model before a paid run with free,
   read-only calls (Claude: `GET /v1/models/<id>` and one page of the batch list; Gemini:
   `GET /v1beta/models/<id>`), with the key from the same variable as `eval run`; no prompt is
-  sent and nothing is written; it prints one line per check and fails only on a definite
-  contradiction, a field the API does not report being shown as `not reported` (exit code 0
+  sent and nothing is written; for Claude it also compares the laptop clock with the API's
+  `Date` header (more than 2 minutes apart fails); it prints one line per check and fails only on
+  a definite contradiction, a field the API does not report being shown as `not reported` (exit
+  code 0
   every check passed, 1 a failed check (`preflight failed: <check>: <reason>`), missing or
   invalid key, a request that failed after its retries, an unexpected error (its type only) or
   interrupted, 2 usage error, also for an unregistered model id);
@@ -42,7 +44,9 @@ one that calls them (free, read-only); the owner runs both by following
   (`gemini-3.8-flash`), records every pending
   scenario under `docs/validation/runs/test-a/<model>/` (`request.json`, `response.json`,
   `candidate.txt`, `comparison.json`, and for Claude models `batches.json` and
-  `batch-<id>.results.jsonl`) and prints the summary; `claude-opus-5-5` runs only after
+  `batch-<id>.results.jsonl`) and prints the summary; a Claude run first compares the laptop
+  clock with the API's and stops, sending nothing, if they differ by more than 2 minutes;
+  `claude-opus-5-5` runs only after
   `claude-haiku-5-5` has a complete run, and the same command again resumes, also after an
   interrupted batch creation, which it reconciles before sending anything; a batch whose results
   need the reviewer is held, and every run stops until `--yes --release <id>` after the

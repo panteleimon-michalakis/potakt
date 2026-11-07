@@ -6,9 +6,11 @@ definite contradiction; a field the API does not report (missing, or of an unexp
 printed as ``not reported``.
 """
 
+import email.utils
 import json
 import os
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -149,6 +151,7 @@ def test_a_haiku_preflight_passes_with_exactly_its_two_free_calls(
     assert result.exit_code == 0, result.output
     assert result.stdout.splitlines() == [
         "key: accepted by api.anthropic.com",
+        "clock: not reported",  # TASK-005c3g G2: this fake sends no Date header
         "model: claude-haiku-5-5 (Claude Haiku 5.5), created 2026-10-07T00:00:00Z, lifecycle "
         "active",
         "batch: supported",
@@ -291,7 +294,8 @@ def test_a_claude_check_fails_only_on_a_definite_contradiction(
 
     assert result.exit_code == 1
     assert result.stderr == f"preflight failed: {reason}\n"
-    assert len(result.stdout.splitlines()) == lines  # the earlier lines stay on stdout
+    # The earlier lines stay on stdout; TASK-005c3g G2: "clock: not reported" follows the key line.
+    assert len(result.stdout.splitlines()) == lines + (1 if lines else 0)
     assert PASSED not in result.stdout
     assert len(server.calls) == len(answers)  # nothing after the failed check
     assert KEY not in result.output
@@ -372,6 +376,7 @@ def test_a_claude_answer_with_only_its_id_reports_nothing_else_and_passes(
     assert result.exit_code == 0, result.output
     assert result.stdout.splitlines() == [
         "key: accepted by api.anthropic.com",
+        "clock: not reported",
         "model: claude-haiku-5-5 (not reported), created not reported, lifecycle not reported",
         "batch: not reported",
         "effort high: not reported",
@@ -452,7 +457,7 @@ def test_server_strings_are_shown_safely_and_the_key_never(monkeypatch: pytest.M
     result, _ = preflight(monkeypatch, HAIKU, ok(odd), ok(list_page()))
 
     assert result.exit_code == 0, result.output
-    assert result.stdout.splitlines()[1] == (
+    assert result.stdout.splitlines()[2] == (
         "model: claude-haiku-5-5 (Claude?[2J [redacted]), created 2026-10-07T00:00:00Z, "
         "lifecycle active?second line"
     )
@@ -598,6 +603,8 @@ def test_the_preflight_help_states_the_calls_and_the_exit_codes() -> None:
     assert "POTAKT_ANTHROPIC_API_KEY" in text
     assert "POTAKT_GEMINI_API_KEY" in text
     assert "a field the API does not report is shown as not reported" in text
+    # TASK-005c3g G2
+    assert "a laptop clock more than 2 minutes from the API's (the Date header)" in text
     assert (
         "Exit code 0: every check passed; 1: a failed check (preflight failed: <check>: <reason> "
         "on stderr), a missing or invalid key, a request that failed after its retries, an "
@@ -612,3 +619,84 @@ def test_the_eval_group_names_the_commands_that_send_requests() -> None:
     assert "eval run calls the model APIs" in text
     assert "eval preflight makes free, read-only calls with the same keys (no prompt)" in text
     assert "the other commands are offline: no model calls, no credentials" in text
+
+
+# --- TASK-005c3g G2: the laptop clock against the API's ---------------------------------------
+
+API_TIME = datetime(2026, 11, 7, 15, 20, 0, tzinfo=UTC)
+
+
+def dated(response: HttpResponse, date: str | None) -> HttpResponse:
+    """``response`` with a ``date`` header (none if ``None``)."""
+    headers = dict(response.headers)
+    if date is not None:
+        headers["date"] = date
+    return HttpResponse(response.status, headers, response.body)
+
+
+API_DATE = email.utils.format_datetime(API_TIME, usegmt=True)  # Sat, 07 Nov 2026 15:20:00 GMT
+
+
+@pytest.mark.parametrize(
+    ("seconds", "shown"), [(0, 0), (3, 3), (-3, 3), (119.4, 120), (120, 120), (-120, 120)]
+)
+def test_the_preflight_prints_how_close_the_laptop_clock_is(
+    monkeypatch: pytest.MonkeyPatch, seconds: float, shown: int
+) -> None:
+    monkeypatch.setattr(cli, "utc_now", lambda: API_TIME + timedelta(seconds=seconds))
+
+    result, server = preflight(
+        monkeypatch, HAIKU, dated(ok(claude_model()), API_DATE), ok(list_page())
+    )
+
+    assert result.exit_code == 0, result.output
+    lines = result.stdout.splitlines()
+    assert lines[:2] == [
+        "key: accepted by api.anthropic.com",
+        f"clock: within {shown} s of api.anthropic.com",
+    ]
+    assert len(server.calls) == 2
+
+
+@pytest.mark.parametrize(("seconds", "shown"), [(121, 121), (-121, 121), (900, 900)])
+def test_a_wrong_laptop_clock_fails_the_preflight_after_one_call(
+    monkeypatch: pytest.MonkeyPatch, seconds: int, shown: int
+) -> None:
+    monkeypatch.setattr(cli, "utc_now", lambda: API_TIME + timedelta(seconds=seconds))
+
+    result, server = preflight(
+        monkeypatch, HAIKU, dated(ok(claude_model()), API_DATE), ok(list_page())
+    )
+
+    assert result.exit_code == 1
+    assert result.stdout == "key: accepted by api.anthropic.com\n"
+    assert result.stderr == (
+        f"preflight failed: clock: the laptop clock differs from the API's by {shown} s (more "
+        "than 120 s): sync the Windows clock (Settings, Time & language, Date & time, Sync now) "
+        "and run again; nothing was sent\n"
+    )
+    assert len(server.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "date",
+    [None, "", "yesterday", "Sat, 07 Nov 2026 25:00:00 GMT", "Sat, 07 Nov 2026 15:20:00 -0000"],
+)
+def test_a_missing_or_unreadable_date_is_not_reported_by_the_preflight(
+    monkeypatch: pytest.MonkeyPatch, date: str | None
+) -> None:
+    monkeypatch.setattr(cli, "utc_now", lambda: API_TIME + timedelta(hours=5))
+
+    result, _ = preflight(monkeypatch, HAIKU, dated(ok(claude_model()), date), ok(list_page()))
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.splitlines()[1] == "clock: not reported"
+
+
+def test_the_gemini_preflight_has_no_clock_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "utc_now", lambda: API_TIME + timedelta(hours=5))
+
+    result, _ = preflight(monkeypatch, GEMINI, dated(ok(gemini_model()), API_DATE))
+
+    assert result.exit_code == 0, result.output
+    assert not any(line.startswith("clock:") for line in result.stdout.splitlines())

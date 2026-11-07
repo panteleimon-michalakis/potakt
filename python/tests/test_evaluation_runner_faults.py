@@ -27,11 +27,12 @@ processed some requests (a cancelled batch counts as unpaid). A batch the runner
 still counts as paid: on the real API it runs anyway.
 """
 
+import email.utils
 import json
 import os
 import tempfile
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -40,7 +41,7 @@ import pytest
 from hypothesis import given, note, settings
 from hypothesis import strategies as st
 from runner_helpers import ALL_SCENARIOS, KEY, NOW, Sleeps, corpus_copy, files_containing
-from test_evaluation_runner_anthropic import errored, page_of, succeeded
+from test_evaluation_runner_anthropic import CLOCK_URL, errored, page_of, succeeded
 from typer.testing import CliRunner
 
 import potakt.cli as cli
@@ -216,7 +217,17 @@ class FakeApi:
     def send(
         self, method: str, url: str, headers: dict[str, str], body: bytes | None, timeout: float
     ) -> HttpResponse:
+        """TASK-005c3g G2: every answer carries the API's ``date`` (its clock is the run's: the
+        laptop clock is right here)."""
+        response = self._answer(method, url, body)
+        moment = self.clock.now().replace(microsecond=0)
+        date = email.utils.format_datetime(moment, usegmt=True)
+        return replace(response, headers={**response.headers, "date": date})
+
+    def _answer(self, method: str, url: str, body: bytes | None) -> HttpResponse:
         self.calls += 1
+        if url == CLOCK_URL:  # TASK-005c3g G2: the clock call before any other request
+            return ok({"data": [], "has_more": False, "first_id": None, "last_id": None})
         if method == "POST":
             assert url == BATCHES_URL
             return self._create(json.loads(body or b"{}"))

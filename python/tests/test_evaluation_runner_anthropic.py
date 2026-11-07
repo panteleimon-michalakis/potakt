@@ -6,6 +6,7 @@
 run is its ``Sleeps``: ``now()`` moves only by the seconds slept (TASK-005c3b D2).
 """
 
+import email.utils
 import http.client
 import json
 import math
@@ -14,7 +15,7 @@ import time
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, cast
@@ -40,7 +41,14 @@ from typer.testing import CliRunner
 import potakt.evaluation.runner as runner_module
 from potakt import __version__
 from potakt.cli import app
-from potakt.evaluation import load_scenario, summarize, write_answer
+from potakt.evaluation import (
+    load_scenario,
+    render_test_a,
+    request_payload,
+    summarize,
+    write_answer,
+    write_request,
+)
 from potakt.evaluation.runner import (
     ANTHROPIC_VERSION,
     BATCH_STATE_FILE,
@@ -56,6 +64,10 @@ CREATED_AT = "2026-11-02T10:00:05.123456Z"
 LIST_URL = f"{BATCHES_URL}?limit=100"
 
 Outcome = Callable[[int, str], dict[str, Any]]
+API_CLOCK = "<the API's clock>"  # FakeBatches.date_header: the fake's own clock
+# TASK-005c3g G2: the one free call that reads the API's clock before any other request. Spelled
+# out here (not imported) so a changed URL in the runner fails a test instead of following it.
+CLOCK_URL = f"{BATCHES_URL}?limit=1"
 
 
 def succeeded(text: str | None = None, model: str = HAIKU) -> dict[str, Any]:
@@ -136,6 +148,13 @@ class FakeBatches:
     created_at: dict[str, str] = field(default_factory=dict[str, str])
     posted: set[str] = field(default_factory=set[str])  # the batches created by create calls
     lists: int = 0
+    # TASK-005c3g G2: every answer carries a ``date`` header from the API's clock (``now()``, at
+    # whole seconds, as RFC 9110 IMF-fixdate); ``None`` sends none, any other string as it is.
+    date_header: str | None = API_CLOCK
+    # The clock calls (``CLOCK_URL``) answer these first, then an empty page.
+    clock_answers: list[HttpResponse] = field(default_factory=list[HttpResponse])
+    clock_seconds: float = 0.0  # seconds both clocks move while a clock call is answered
+    clock_checks: list[datetime] = field(default_factory=list[datetime])  # API time of each
 
     def register(self, scenarios: list[str], created_at: str | None = None) -> str:
         """A new batch, created at ``created_at``: by default ``CREATED_AT``, or the clock's
@@ -191,7 +210,25 @@ class FakeBatches:
     def send(
         self, method: str, url: str, headers: dict[str, str], body: bytes | None, timeout: float
     ) -> HttpResponse:
+        response = self._answer(method, url, headers, body, timeout)
+        if self.date_header is None:
+            return response
+        date = self.date_header
+        if date == API_CLOCK:
+            date = email.utils.format_datetime(self.now().replace(microsecond=0), usegmt=True)
+        return replace(response, headers={**response.headers, "date": date})
+
+    def _answer(
+        self, method: str, url: str, headers: dict[str, str], body: bytes | None, timeout: float
+    ) -> HttpResponse:
         self.calls.append(Call(method, url, headers, body, timeout))
+        if method == "GET" and url == CLOCK_URL:
+            if self.clock is not None:
+                self.clock.advance(self.clock_seconds)
+            self.clock_checks.append(self.now())
+            if self.clock_answers:
+                return self.clock_answers.pop(0)
+            return ok({"data": [], "has_more": False, "first_id": None, "last_id": None})
         if method == "POST" and url == BATCHES_URL:
             return self._create(body)
         if method == "GET" and url.startswith(LIST_URL):
@@ -312,10 +349,16 @@ class Run:
     sleeps: Sleeps
     echo: Echo
     model: str = HAIKU
+    # TASK-005c3g G2: the laptop clock minus the API's (the server's ``Sleeps`` clock).
+    skew: timedelta = timedelta(0)
 
     @property
     def model_dir(self) -> Path:
         return self.runs / self.model
+
+    def now(self) -> datetime:
+        """The runner's clock: the API's, plus ``skew``."""
+        return self.sleeps.now() + self.skew
 
     def __call__(self, release: str | None = None) -> None:
         run_anthropic(
@@ -325,7 +368,7 @@ class Run:
             KEY,
             self.server,
             sleep=self.sleeps,
-            now=self.sleeps.now,
+            now=self.now,
             poll_seconds=60,
             echo=self.echo,
             release=release,
@@ -390,7 +433,8 @@ def test_the_happy_path_records_all_ten_scenarios(tmp_path: Path) -> None:
     assert run.state()["batches"][0]["state"] == "done"
     raw = run.model_dir / "batch-msgbatch_01.results.jsonl"
     assert raw.read_bytes() == server.results("msgbatch_01")
-    assert [call.method for call in server.calls] == ["POST", "GET", "GET", "GET"]
+    assert [call.method for call in server.calls] == ["GET", "POST", "GET", "GET", "GET"]
+    assert server.calls[0].url == CLOCK_URL  # TASK-005c3g G2: the clock first
     assert run.sleeps == [60]
     assert run.echo[0] == "batch msgbatch_01 created for 10 scenarios"
     assert run.echo[1] == (
@@ -461,6 +505,7 @@ def test_every_call_carries_the_key_the_pinned_version_and_the_timeouts(tmp_path
         (call.method, call.url.endswith("/results"), call.timeout) for call in run.server.calls
     ]
     assert timeouts == [
+        ("GET", False, 60.0),  # TASK-005c3g G2: the clock call
         ("POST", False, 60.0),
         ("GET", False, 60.0),
         ("GET", False, 60.0),
@@ -520,8 +565,15 @@ def test_nothing_pending_prints_nothing_to_run_and_sends_nothing(tmp_path: Path)
 
     run()
 
-    assert run.server.calls == []
+    assert after_the_clock(run.server) == []
     assert run.echo == ["nothing to run"]
+
+
+def after_the_clock(server: "FakeBatches") -> list[Call]:
+    """The calls of a run after its first, which must be the clock call (TASK-005c3g G2): a run
+    that stops "before any call" now makes that one free call first."""
+    assert server.calls[0].url == CLOCK_URL
+    return server.calls[1:]
 
 
 # --- resume and pending ----------------------------------------------------------------------
@@ -535,7 +587,7 @@ def test_an_open_batch_is_resumed_without_a_create_call(tmp_path: Path) -> None:
 
     run()
 
-    assert [call.method for call in server.calls] == ["GET", "GET", "GET"]
+    assert [call.method for call in after_the_clock(server)] == ["GET", "GET", "GET"]
     assert run.echo[0] == "resuming batch msgbatch_01"
     assert run.recorded() == list(ALL_SCENARIOS[:3])
     assert run.state()["batches"][0]["state"] == "done"
@@ -638,7 +690,7 @@ def test_the_attempt_cap_holds_across_invocations(tmp_path: Path) -> None:
     with pytest.raises(RunStopped, match="02-hotel-reception was sent in 4 batches"):
         run()
 
-    assert run.server.calls == []
+    assert after_the_clock(run.server) == []
 
 
 def test_a_failed_create_is_not_counted_as_a_batch(tmp_path: Path) -> None:
@@ -1171,7 +1223,7 @@ def test_an_invalid_scenario_stops_before_any_call(tmp_path: Path) -> None:
     with pytest.raises(RunStopped, match=r"^01-pharmacy: invalid scenario: "):
         run()
 
-    assert run.server.calls == []
+    assert after_the_clock(run.server) == []
 
 
 def test_a_scenario_id_that_is_no_custom_id_stops(tmp_path: Path) -> None:
@@ -1182,7 +1234,7 @@ def test_a_scenario_id_that_is_no_custom_id_stops(tmp_path: Path) -> None:
     with pytest.raises(RunStopped, match="01 pharmacy: not a valid custom_id"):
         run()
 
-    assert run.server.calls == []
+    assert after_the_clock(run.server) == []
 
 
 def test_a_different_existing_request_stops(tmp_path: Path) -> None:
@@ -1193,7 +1245,7 @@ def test_a_different_existing_request_stops(tmp_path: Path) -> None:
     with pytest.raises(RunStopped, match="exists with a different request"):
         run()
 
-    assert run.server.calls == []
+    assert after_the_clock(run.server) == []
 
 
 def test_only_claude_models_run_on_batches(tmp_path: Path) -> None:
@@ -1248,7 +1300,7 @@ def test_a_half_written_record_is_completed_when_nothing_is_pending(tmp_path: Pa
         "01-pharmacy: record completed (candidate.txt, comparison.json)",
         "nothing to run",
     ]
-    assert run.server.calls == []
+    assert after_the_clock(run.server) == []
 
 
 def test_an_interrupt_during_the_create_call_is_left_to_the_caller(tmp_path: Path) -> None:
@@ -1417,7 +1469,9 @@ def test_the_creating_entry_is_saved_before_the_first_post(tmp_path: Path) -> No
 
 
 def test_started_at_is_the_utc_instant_in_whole_seconds(tmp_path: Path) -> None:
-    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:1])
+    # TASK-005c3g G2: the API's clock agrees with this run's (the clock check passes).
+    server = FakeBatches(date_header="Mon, 02 Nov 2026 10:15:03 GMT")
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
     athens = timezone(timedelta(hours=2))
 
     run_anthropic(
@@ -1862,7 +1916,7 @@ def test_the_attempt_cap_counts_held_batches(tmp_path: Path) -> None:
     with pytest.raises(RunStopped, match="02-hotel-reception was sent in 4 batches"):
         run(release="msgbatch_99")  # released, it still counts
 
-    assert run.server.calls == []
+    assert after_the_clock(run.server) == []
     # A held entry counts like open and done (it is checked first, so this is the rule itself).
     entry = runner_module._Batch  # the private entry type: no public way to build one
     held_entries = [
@@ -2039,7 +2093,7 @@ def test_a_release_with_every_scenario_recorded_reads_nothing_and_says_nothing_a
     run(release="msgbatch_01")
 
     assert run.echo == ["batch msgbatch_01 released after review", "nothing to run"]
-    assert run.server.calls == []
+    assert after_the_clock(run.server) == []
 
 
 def test_an_unreadable_kept_results_file_releases_as_before_and_says_so(
@@ -2591,7 +2645,7 @@ def test_a_record_that_cannot_be_completed_stops_before_any_call(
         "01-pharmacy: the record could not be completed (PermissionError); send this message to "
         "the reviewer"
     )
-    assert run.server.calls == []
+    assert after_the_clock(run.server) == []
 
 
 # --- TASK-005c3d H12: a held batch keeps at most 20 problems -------------------------------------
@@ -3101,3 +3155,204 @@ def test_a_plain_os_error_after_a_create_is_an_unclear_create_and_adopts_its_bat
     assert "adopted batch msgbatch_01 created by an earlier create request" in run.echo
     assert run.recorded() == list(ALL_SCENARIOS[:2])
     assert run.states() == ["done"]
+
+
+# --- TASK-005c3g G2: the laptop clock against the API's ---------------------------------------
+# The fake's Date header and created_at follow the API's clock (the Sleeps clock); the runner's
+# now() is that clock plus Run.skew.
+
+
+def clock_stop(seconds: int) -> str:
+    return (
+        f"the laptop clock differs from the API's by {seconds} s (more than 120 s): sync the "
+        "Windows clock (Settings, Time & language, Date & time, Sync now) and run again; nothing "
+        "was sent"
+    )
+
+
+NO_DATE = (
+    "the API answer has no readable Date header, so the laptop clock cannot be checked; send this "
+    "message to the reviewer"
+)
+
+
+def with_one_request_file(run: Run) -> bytes:
+    """01-pharmacy's request.json, as an earlier run wrote it; returns its bytes."""
+    payload = request_payload(render_test_a(load_scenario(run.corpus / "01-pharmacy")), HAIKU)
+    write_request(run.model_dir / "01-pharmacy", payload)
+    return (run.model_dir / "01-pharmacy" / "request.json").read_bytes()
+
+
+def files_under(root: Path) -> list[str]:
+    return sorted(path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file())
+
+
+@pytest.mark.parametrize(
+    ("skew", "seconds"),
+    [
+        (timedelta(minutes=15), 900),
+        (timedelta(minutes=-15), 900),
+        (timedelta(minutes=120), 7200),
+        (timedelta(seconds=121), 121),
+        (timedelta(seconds=-121), 121),
+    ],
+    ids=["+15min", "-15min", "+120min", "+121s", "-121s"],
+)
+def test_a_wrong_laptop_clock_stops_after_one_free_call_and_writes_nothing(
+    tmp_path: Path, skew: timedelta, seconds: int
+) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:2])
+    run.skew = skew
+    request = with_one_request_file(run)
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == clock_stop(seconds)
+    assert [(call.method, call.url) for call in run.server.calls] == [("GET", CLOCK_URL)]
+    assert run.server.creates() == []
+    assert files_under(run.runs) == [f"{HAIKU}/01-pharmacy/request.json"]
+    assert (run.model_dir / "01-pharmacy" / "request.json").read_bytes() == request
+    assert run.sleeps == []
+
+
+@pytest.mark.parametrize("seconds", [119, -119, 120, -120])
+def test_a_laptop_clock_within_two_minutes_proceeds(tmp_path: Path, seconds: int) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:2])
+    run.skew = timedelta(seconds=seconds)
+
+    run()
+
+    assert run.server.calls[0].url == CLOCK_URL
+    assert run.server.creates() == [list(ALL_SCENARIOS[:2])]
+    assert run.recorded() == list(ALL_SCENARIOS[:2])
+
+
+def test_the_skew_is_measured_when_the_clock_answer_arrived(tmp_path: Path) -> None:
+    # The answer took 100 s: the Date header is the API's time at the end of the call.
+    # The answer takes 200 s and the laptop is 30 s fast: at arrival the laptop says 10:03:50
+    # and the header 10:03:20 (30 s, passes); a reading of the laptop clock taken before the call
+    # (10:00:30) would differ from the header by 170 s and stop.
+    run = make_run(tmp_path, FakeBatches(clock_seconds=200), ALL_SCENARIOS[:1])
+    run.skew = timedelta(seconds=30)
+
+    run()
+
+    assert run.server.clock_checks == [NOW + timedelta(seconds=200)]
+    assert run.server.creates() == [["01-pharmacy"]]
+
+
+@pytest.mark.parametrize(
+    "date",
+    [None, "", "yesterday", "Mon, 02 Nov 2026 25:00:00 GMT", "Mon, 02 Nov 2026 10:00:00 -0000"],
+    ids=["missing", "empty", "words", "hour-25", "naive"],
+)
+def test_an_answer_without_a_readable_date_stops_the_run(tmp_path: Path, date: str | None) -> None:
+    run = make_run(tmp_path, FakeBatches(date_header=date), ALL_SCENARIOS[:1])
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == NO_DATE
+    assert [call.url for call in run.server.calls] == [CLOCK_URL]
+
+
+def test_a_refused_clock_call_stops_with_the_listing_message_redacted(tmp_path: Path) -> None:
+    answer = HttpResponse(
+        401,
+        {},
+        json.dumps(
+            {"error": {"type": "authentication_error", "message": f"bad key {KEY}"}}
+        ).encode(),
+    )
+    run = make_run(tmp_path, FakeBatches(clock_answers=[answer]), ALL_SCENARIOS[:1])
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == (
+        "listing batches failed: HTTP 401 (authentication_error: bad key [redacted])"
+    )
+    assert [call.url for call in run.server.calls] == [CLOCK_URL]
+
+
+def test_a_transient_clock_answer_is_retried(tmp_path: Path) -> None:
+    server = FakeBatches(clock_answers=[HttpResponse(503, {}, b"")])
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+
+    run()
+
+    assert run.sleeps[0] == 15
+    assert [call.url for call in server.calls[:2]] == [CLOCK_URL, CLOCK_URL]
+    assert run.recorded() == ["01-pharmacy"]
+
+
+def test_the_clock_is_checked_before_any_other_request_and_before_a_record_is_completed(
+    tmp_path: Path,
+) -> None:
+    # A creating entry (reconcile), an open batch to poll and a half-written record: none is
+    # touched before the clock is checked.
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:2])
+    run.skew = timedelta(minutes=15)
+    scenario = load_scenario(run.corpus / "01-pharmacy")
+    write_answer(run.model_dir / "01-pharmacy", scenario, HAIKU, anthropic_message(HAIKU))
+    (run.model_dir / "01-pharmacy" / "candidate.txt").unlink()
+    write_state(run.model_dir, batch_entry(None, ["02-hotel-reception"], "creating"))
+    before = files_under(run.runs)
+
+    with pytest.raises(RunStopped, match=r"^the laptop clock differs from the API's by 900 s"):
+        run()
+
+    assert [call.url for call in run.server.calls] == [CLOCK_URL]
+    assert files_under(run.runs) == before
+    assert run.echo == []
+
+
+def test_the_held_release_and_future_checks_come_before_the_clock_check(tmp_path: Path) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:1])
+    run.skew = timedelta(minutes=15)
+    later = batch_entry(None, ["01-pharmacy"], "failed", started_at="2026-11-02T10:40:00Z")
+    write_state(run.model_dir, later)
+
+    with pytest.raises(RunStopped, match=r"in the future"):
+        run()  # the laptop is 15 min fast, so 10:40 is only 25 min ahead: still in the future
+
+    assert run.server.calls == []
+
+
+def test_the_audits_lost_create_at_a_fast_clock_cannot_happen_any_more(tmp_path: Path) -> None:
+    # The audit's p02: at +15 min the reconcile window missed the batch of a lost create, a
+    # second batch was created and the audit named nothing. Now the run stops first.
+    server = FakeBatches(create_script=["lost"], stamp_with_clock=True)
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:2])
+    run.skew = timedelta(minutes=15)
+
+    with pytest.raises(RunStopped, match=r"^the laptop clock differs from the API's by 900 s"):
+        run()
+
+    assert server.creates() == []
+    assert server.batches == {}
+
+
+def test_the_audit_looks_back_to_ten_minutes_before_the_earliest_created_at(
+    tmp_path: Path,
+) -> None:
+    # A batch recorded while the laptop clock was 30 minutes fast: its created_at (API time) is
+    # 30 minutes before its started_at (laptop time).
+    server = FakeBatches()
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+    created = iso(timedelta(minutes=-30))
+    write_state(run.model_dir, batch_entry("msgbatch_91", ["01-pharmacy"], "done", created))
+    server.listing = [
+        other_batch("msgbatch_dup", 1, iso(timedelta(minutes=-15))),
+        other_batch("msgbatch_91", 1, created),
+        other_batch("msgbatch_edge", 1, iso(timedelta(minutes=-40))),
+        other_batch("msgbatch_older", 1, iso(timedelta(minutes=-40, seconds=-1))),
+    ]
+
+    audit(run)
+
+    assert run.echo[1:] == [
+        unrecorded("msgbatch_dup", 1, "2026-11-02T09:45:00Z"),
+        unrecorded("msgbatch_edge", 1, "2026-11-02T09:20:00Z"),
+    ]

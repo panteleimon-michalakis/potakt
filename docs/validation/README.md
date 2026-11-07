@@ -8,15 +8,17 @@ corpus format, the input bundle and the metric are pre-registered in
 
 Before the first run of a model, the owner runs `potakt eval preflight --model <id>` (ADR-0007
 §7, amendment of TASK-005c3e): free, read-only calls that check the key and the model (its
-metadata and, for Claude, one page of the batch list); no prompt is sent and nothing is
-recorded, and a check fails only on a definite contradiction (`preflight failed: <check>:
-<reason>`, exit code 1).
+metadata and, for Claude, one page of the batch list, and the laptop clock against the API's
+`Date` header); no prompt is sent and nothing is recorded, and a check fails only on a definite
+contradiction (`preflight failed: <check>: <reason>`, exit code 1).
 
 The owner runs Test A with `potakt eval run`, step by step as described in
 [`test-a-runbook.md`](test-a-runbook.md): without `--yes` it prints the plan and the cost upper
 bound and sends nothing; with `--yes` it reads the key from `POTAKT_ANTHROPIC_API_KEY` or
 `POTAKT_GEMINI_API_KEY`, sends every scenario without a recorded answer (Claude models in one
-Message Batch, Gemini one request at a time), records the answers and prints the summary.
+Message Batch, Gemini one request at a time), records the answers and prints the summary. A
+Claude run first compares the laptop clock with the API's (the `Date` header of one free call)
+and stops, sending nothing, if they differ by more than two minutes.
 `claude-opus-5-5` runs only after `claude-haiku-5-5` has a complete run; the same command again
 resumes, after any interruption: a batch whose creation was not confirmed is looked up in the
 list of batches before anything is sent, so no batch is paid for twice. A batch whose results

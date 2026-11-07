@@ -26,6 +26,7 @@ from runner_helpers import (
     write_state,
 )
 from test_evaluation_runner_anthropic import (
+    CLOCK_URL,
     CreateStep,
     FakeBatches,
     batch_object,
@@ -415,7 +416,7 @@ def test_an_interruption_exits_1_and_says_how_to_resume(
             body: bytes | None,
             timeout: float,
         ) -> HttpResponse:
-            if method == "GET":
+            if method == "GET" and url != CLOCK_URL:  # TASK-005c3g G2: the clock call passes
                 raise KeyboardInterrupt
             return server.send(method, url, headers, body, timeout)
 
@@ -426,6 +427,7 @@ def test_an_interruption_exits_1_and_says_how_to_resume(
 
     assert result.exit_code == 1
     assert result.stderr == "interrupted: run the same command again to resume (nothing is lost)\n"
+    assert server.creates() == [["01-pharmacy"]]  # interrupted at the poll, after the create
 
 
 def test_an_interruption_during_the_create_call_is_resumed_by_the_same_command(
@@ -955,6 +957,7 @@ def test_a_missing_instruction_file_exits_1_with_the_eval_prompt_wording(
 ) -> None:
     monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
     monkeypatch.setenv(GEMINI_VARIABLE, KEY)
+    monkeypatch.setattr(cli, "make_transport", FakeBatches)  # TASK-005c3g G2: the clock call
     missing = tmp_path / "test-a.md"
     monkeypatch.setattr(test_a_module, "INSTRUCTION_PATH", missing)
     corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:1])
@@ -983,6 +986,7 @@ def test_an_undecodable_csv_exits_1_naming_the_scenario(
 ) -> None:
     monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
     monkeypatch.setenv(GEMINI_VARIABLE, KEY)
+    monkeypatch.setattr(cli, "make_transport", FakeBatches)  # TASK-005c3g G2: the clock call
     corpus = undecodable_unbound_csv(tmp_path)
 
     result = eval_run(tmp_path / "runs", model, *(["--yes"] if yes else []), corpus=corpus)
@@ -994,6 +998,7 @@ def test_a_request_that_cannot_be_written_exits_1(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
+    monkeypatch.setattr(cli, "make_transport", FakeBatches)  # TASK-005c3g G2: the clock call
     corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:1])
     runs = tmp_path / "runs"
 
@@ -1207,7 +1212,7 @@ def test_a_resume_after_an_interrupt_is_audited(
         def send(
             self, method: str, url: str, headers: dict[str, str], body: bytes | None, timeout: float
         ) -> HttpResponse:
-            if method == "GET":
+            if method == "GET" and url != CLOCK_URL:  # TASK-005c3g G2: the clock call passes
                 raise KeyboardInterrupt
             return server.send(method, url, headers, body, timeout)
 
@@ -1229,12 +1234,37 @@ def test_nothing_to_run_makes_no_audit_call(
     server = FakeBatches()
     corpus, runs = haiku_run(server)
     assert eval_run(runs, HAIKU, "--yes", corpus=corpus).exit_code == 0
-    monkeypatch.setattr(cli, "make_transport", NoTransport)  # any call fails the test
+    server.calls.clear()
 
     result = eval_run(runs, HAIKU, "--yes", corpus=corpus)
 
     assert result.exit_code == 0, result.output
     assert result.stdout.startswith("nothing to run\nTest A summary:")
+    # TASK-005c3g G2: the clock call alone is not counted for the audit.
+    assert [(call.method, call.url) for call in server.calls] == [("GET", CLOCK_URL)]
+
+
+def test_a_wrong_laptop_clock_stops_the_run_with_no_audit(
+    monkeypatch: pytest.MonkeyPatch, haiku_run: Setup, no_real_transport: Sleeps
+) -> None:
+    # TASK-005c3g G2: no audit follows the clock stop: it is not counted as a call.
+    server = FakeBatches()
+    corpus, runs = haiku_run(server)
+    monkeypatch.setattr(cli, "utc_now", lambda: no_real_transport.now() + timedelta(minutes=15))
+
+    result = eval_run(runs, HAIKU, "--yes", corpus=corpus)
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert result.stderr == (
+        "the laptop clock differs from the API's by 900 s (more than 120 s): sync the Windows "
+        "clock (Settings, Time & language, Date & time, Sync now) and run again; nothing was "
+        "sent\n"
+    )
+    assert [(call.method, call.url) for call in server.calls] == [("GET", CLOCK_URL)]
+    assert no_real_transport == []
+    assert not (runs / HAIKU).exists()
+    assert not (runs / ".eval-run.lock").exists()
 
 
 def test_a_held_batch_at_start_makes_no_call_at_all(
@@ -1443,12 +1473,17 @@ def test_a_run_whose_every_call_raised_is_still_audited(
     monkeypatch: pytest.MonkeyPatch, haiku_run: Setup
 ) -> None:
     # TASK-005c3e F3: a call that raised may have reached the API (a lost create), so it counts.
-    corpus, runs = haiku_run(FakeBatches())
+    server = FakeBatches()
+    corpus, runs = haiku_run(server)
 
     class Unreachable:
+        """Every call but the clock call (TASK-005c3g G2) raises."""
+
         def send(
             self, method: str, url: str, headers: dict[str, str], body: bytes | None, timeout: float
         ) -> HttpResponse:
+            if url == CLOCK_URL:
+                return server.send(method, url, headers, body, timeout)
             raise TransportError("TimeoutError: no response received")
 
     monkeypatch.setattr(cli, "make_transport", Unreachable)
@@ -1462,6 +1497,35 @@ def test_a_run_whose_every_call_raised_is_still_audited(
         "Claude Console (Batches)"
     )
     assert result.stderr == stop + "\n"
+    assert not (runs / LOCK).exists()
+
+
+def test_a_clock_call_that_fails_four_times_stops_the_run_with_no_audit(
+    monkeypatch: pytest.MonkeyPatch, haiku_run: Setup, no_real_transport: Sleeps
+) -> None:
+    # TASK-005c3g G2: the clock call is not counted, so a run that made no other call has no
+    # audit, also when the network is down from the start.
+    corpus, runs = haiku_run(FakeBatches())
+    calls: list[str] = []
+
+    class Unreachable:
+        def send(
+            self, method: str, url: str, headers: dict[str, str], body: bytes | None, timeout: float
+        ) -> HttpResponse:
+            calls.append(url)
+            raise TransportError("TimeoutError: no response received")
+
+    monkeypatch.setattr(cli, "make_transport", Unreachable)
+
+    result = eval_run(runs, HAIKU, "--yes", corpus=corpus)
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert result.stderr == (
+        "the request failed 4 times; last: TimeoutError: no response received\n"
+    )
+    assert calls == [CLOCK_URL] * 4
+    assert no_real_transport == [15, 45, 135]
     assert not (runs / LOCK).exists()
 
 
@@ -1544,6 +1608,11 @@ def test_the_run_help_states_the_exit_codes_and_files() -> None:
     text = help_text("eval", "run")
 
     assert "Without --yes, print the plan and the cost upper bound" in text
+    # TASK-005c3g G2
+    assert (
+        "A Claude run first compares the laptop clock with the API's (the Date header of one "
+        "free call) and stops, sending nothing, if they differ by more than 2 minutes"
+    ) in text
     assert "POTAKT_ANTHROPIC_API_KEY" in text
     assert "POTAKT_GEMINI_API_KEY" in text
     assert "request.json, response.json, candidate.txt, comparison.json" in text
@@ -1708,6 +1777,8 @@ def test_the_runbook_quotes_the_reconciliation_messages_and_the_new_rules() -> N
         # TASK-005c3g G4: the release records from the kept results first.
         "`" + runner_module.RECORDED_FROM_KEPT.format(name="<scenario>", id="<id>") + "`",
         "`" + runner_module.KEPT_UNREADABLE.format(id="<id>") + "`",
+        # TASK-005c3g G2: the preflight's clock line.
+        "`clock: within <n> s of api.anthropic.com`",
     ):
         assert quoted in text, quoted
     assert "deprecated" not in text  # F5: the English page says "legacy"

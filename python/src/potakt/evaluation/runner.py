@@ -18,6 +18,7 @@ the list of batches, by one list call at least 120 seconds after the later of th
 answer, before anything else is sent; the next run starts with that reconciliation.
 """
 
+import email.utils
 import json
 import math
 import os
@@ -175,6 +176,56 @@ _ERROR_TYPE = re.compile(r"[a-z_]{1,64}")  # an API error type, safe to echo
 
 Sleep = Callable[[float], object]
 Echo = Callable[[str], object]
+
+
+# --- the laptop clock against the API's (TASK-005c3g G2) ---------------------------------------
+
+# The one free call whose ``Date`` header is read before any other request of a Claude run.
+CLOCK_URL = f"{BATCHES_URL}?limit=1"
+MAX_CLOCK_SKEW = timedelta(minutes=2)
+CLOCK_STOP = (
+    "the laptop clock differs from the API's by {seconds} s (more than {limit} s): sync the "
+    "Windows clock (Settings, Time & language, Date & time, Sync now) and run again; nothing was "
+    "sent"
+)
+NO_DATE = (
+    "the API answer has no readable Date header, so the laptop clock cannot be checked; send this "
+    "message to the reviewer"
+)
+
+
+def _api_time(response: HttpResponse) -> datetime | None:
+    """The instant of the response's ``Date`` header (RFC 9110 §6.6.1, read with
+    ``email.utils.parsedate_to_datetime``); ``None`` if it is missing, unreadable or has no time
+    zone (``-0000``)."""
+    text = response.headers.get("date", "")
+    if not text:
+        return None
+    try:
+        moment = email.utils.parsedate_to_datetime(text)
+    except (ValueError, TypeError, IndexError, OverflowError):
+        return None
+    return moment if moment.tzinfo is not None else None
+
+
+def _skew(response: HttpResponse, arrived: datetime) -> timedelta | None:
+    """The laptop clock minus the API's, read when the answer arrived; ``None`` without a
+    readable ``Date`` header."""
+    api = _api_time(response)
+    return None if api is None else arrived - api
+
+
+def _skew_seconds(skew: timedelta) -> int:
+    """The size of a skew in whole seconds, rounded up."""
+    return math.ceil(abs(skew.total_seconds()))
+
+
+def _clock_stop(skew: timedelta) -> str | None:
+    """``CLOCK_STOP`` if the skew is beyond ``MAX_CLOCK_SKEW`` in either direction."""
+    if abs(skew) <= MAX_CLOCK_SKEW:
+        return None
+    limit = int(MAX_CLOCK_SKEW.total_seconds())
+    return CLOCK_STOP.format(seconds=_skew_seconds(skew), limit=limit)
 
 
 # --- files -----------------------------------------------------------------------------------
@@ -636,6 +687,7 @@ class _AnthropicRun:
     poll_seconds: float
     echo: Echo
     release: str | None = None
+    clock_transport: Transport | None = None  # G2: the clock call's, ``transport`` if None
 
     def run(self) -> None:
         if self.release is not None:
@@ -646,6 +698,7 @@ class _AnthropicRun:
             raise RunStopped(HELD_STOP.format(id=held.id, problems="; ".join(held.problems)))
         self._check_started_at()
         _check_unsaved(self.corpus_dir, self.model_dir)  # G5: after the release (G4)
+        self._check_clock()  # G2: before any other request
         _complete_records(self.corpus_dir, self.model_dir, self.model, self.echo)
         adopted = self._reconcile_earlier()
         pending = pending_scenarios(self.corpus_dir, self.model_dir)
@@ -672,6 +725,25 @@ class _AnthropicRun:
             batches = _load_state(self.model_dir)
             self.sleep(base_delay(self._next_attempt(pending, batches)))
             batch = self._create(pending, batches)
+
+    def _check_clock(self) -> None:
+        """TASK-005c3g G2: one ``GET CLOCK_URL`` (free) through ``send_with_retries`` before any
+        other request; ``RunStopped`` unless it is a 200 whose ``Date`` header, compared with
+        ``now()`` when the answer arrived, is within ``MAX_CLOCK_SKEW``. A laptop clock that is
+        wrong by more would shift every reconcile and audit window (the audit's p02)."""
+        transport = self.transport if self.clock_transport is None else self.clock_transport
+        response = send_with_retries(
+            transport, "GET", CLOCK_URL, self.headers, None, CALL_TIMEOUT_SECONDS, sleep=self.sleep
+        )
+        arrived = self.now()
+        if response.status != 200:
+            raise RunStopped(f"listing batches failed: {self._describe(response)}")
+        skew = _skew(response, arrived)
+        if skew is None:
+            raise RunStopped(NO_DATE)
+        stop = _clock_stop(skew)
+        if stop is not None:
+            raise RunStopped(stop)
 
     def _check_started_at(self) -> None:
         """TASK-005c3d H4: ``RunStopped`` before any call if an entry, of any state, started
@@ -919,9 +991,15 @@ class _AnthropicRun:
             self.echo(AUDIT_WAITING.format(seconds=math.ceil(wait)))
             self.sleep(wait)
         # J3: back to the first create request of any model, so a late duplicate of another
-        # model, listed only after that model's own audit, is still named.
-        earliest = min(cast(datetime, _started(batch.started_at)) for batch in every)
-        earliest -= ADOPTION_WINDOW
+        # model, listed only after that model's own audit, is still named; G2: and back to the
+        # earliest created_at of a recorded batch (the API's clock), whichever is earlier.
+        instants = [cast(datetime, _started(batch.started_at)) for batch in every]
+        instants += [
+            cast(datetime, _instant(batch.created_at))  # validated by _entry (J2)
+            for batch in every
+            if batch.created_at is not None
+        ]
+        earliest = min(instants) - ADOPTION_WINDOW
         listed = self._list_back_to(earliest)
         known = {batch.id for batch in every if batch.id is not None}
         pending = [batch for batch in every if batch.state == "creating"]
@@ -1105,6 +1183,7 @@ def run_anthropic(
     poll_seconds: float = 60,
     echo: Echo,
     release: str | None = None,
+    clock_transport: Transport | None = None,
 ) -> None:
     """Run every pending scenario of ``corpus_dir`` on a Claude model through the Message
     Batches API (TASK-005c3 F2, F3) and record the answers under
@@ -1113,8 +1192,11 @@ def run_anthropic(
     Returns once every corpus scenario is recorded. Raises ``RunStopped`` (its message is safe to
     print and never contains ``key``) when the run must stop; running the same call again
     resumes, except while a batch is held (TASK-005c3c E4): then every run stops before any
-    call until ``release`` names that batch, which marks it ``done`` first. Raises
-    ``ValueError`` for a model that is not a registered Claude model.
+    call until ``release`` names that batch, which marks it ``done`` first (after recording what
+    its kept results hold, TASK-005c3g G4). Before any other request the laptop clock is checked
+    against the API's ``Date`` header (TASK-005c3g G2), through ``clock_transport`` if given (the
+    CLI passes one that is not counted for the audit), else ``transport``. Raises ``ValueError``
+    for a model that is not a registered Claude model.
     """
     check_registered(model)
     if not model.startswith(ANTHROPIC_PREFIX):
@@ -1130,6 +1212,7 @@ def run_anthropic(
         poll_seconds=poll_seconds,
         echo=echo,
         release=release,
+        clock_transport=clock_transport,
     )
     try:
         run.run()
@@ -1181,7 +1264,8 @@ def audit_batches(
     Nothing if the model's ``batches.json`` has no entry. Otherwise it reads the ``batches.json``
     of every model, waits until ``AUDIT_DELAY_SECONDS`` after this model's latest ``started_at``
     (at most that long, announced), lists the batches back to the earliest ``started_at`` of any
-    model minus ``ADOPTION_WINDOW`` (``_list_back_to``; TASK-005c3e J3) and prints one warning for
+    model, or the earliest ``created_at`` of a recorded batch if that is earlier (TASK-005c3g G2),
+    minus ``ADOPTION_WINDOW`` (``_list_back_to``; TASK-005c3e J3) and prints one warning for
     each batch created since then that is not cancelled, is in no model's ``batches.json`` and is
     no candidate (``_is_candidate``) of a ``creating`` entry of any model, which the next run
     reconciles. It never cancels anything and never writes: the records,
@@ -1338,6 +1422,7 @@ class _Preflight:
     transport: Transport
     sleep: Sleep
     echo: Echo
+    now: Callable[[], datetime]
 
     def shown(self, value: object) -> str:
         """A server string, safe to print; ``not reported`` if it is not a non-empty string."""
@@ -1345,8 +1430,9 @@ class _Preflight:
             return server_text(value, secret_values(self.headers))
         return NOT_REPORTED
 
-    def get(self, url: str, check: str) -> dict[str, object]:
-        """One read-only call through ``send_with_retries``: its JSON object, or the failed
+    def get(self, url: str, check: str) -> tuple[dict[str, object], timedelta | None]:
+        """One read-only call through ``send_with_retries``: its JSON object and the clock skew
+        read when it arrived (``_skew``; ``None`` without a readable ``Date``), or the failed
         ``check`` for any other answer. ``check_url`` refusing the URL or a key header (H7) stops
         before any call."""
         try:
@@ -1361,12 +1447,24 @@ class _Preflight:
             )
         except ValueError as error:  # its message names the host only
             raise RunStopped(str(error)) from None
+        arrived = self.now()
         if response.status != 200:
             raise _failed(check, describe_response(response, secret_values(self.headers)))
         document = _json(response.body)
         if not isinstance(document, dict):
             raise _failed(check, "HTTP 200 without a JSON object")
-        return cast(dict[str, object], document)
+        return cast(dict[str, object], document), _skew(response, arrived)
+
+    def clock(self, skew: timedelta | None) -> None:
+        """TASK-005c3g G2: the laptop clock against the ``Date`` of the Models API answer; a
+        missing or unreadable header is not reported (the run checks it again)."""
+        if skew is None:
+            self.echo(f"clock: {NOT_REPORTED}")
+            return
+        stop = _clock_stop(skew)
+        if stop is not None:
+            raise _failed("clock", stop)
+        self.echo(f"clock: within {_skew_seconds(skew)} s of api.anthropic.com")
 
     def supported(self, check: str, value: object, reason: str) -> None:
         """A capability: ``false`` fails ``check``, ``true`` is supported, anything else is not
@@ -1384,8 +1482,9 @@ class _Preflight:
         self.echo(f"{check}: {shown} (the run asks for {wanted})")
 
     def claude(self) -> None:
-        document = self.get(f"{MODELS_URL}/{self.model}", "model metadata")
+        document, skew = self.get(f"{MODELS_URL}/{self.model}", "model metadata")
         self.echo("key: accepted by api.anthropic.com")
+        self.clock(skew)
         model_id = document.get("id")
         if model_id is None:
             raise _failed("model", "no id in the answer")
@@ -1407,7 +1506,7 @@ class _Preflight:
         reason = f"not supported by this model (the run sends effort {EFFORT})"
         self.supported(f"effort {EFFORT}", effort, reason)
         self.limit("max_tokens", document.get("max_tokens"), ANTHROPIC_MAX_TOKENS[self.model])
-        listing = self.get(f"{BATCHES_URL}?limit=1", "batch list")
+        listing, _ = self.get(CLOCK_URL, "batch list")  # the run's clock call (G2)
         try:
             page, _ = _read_page(listing)  # as the reconciliation and the audit read a page
         except ValueError as error:
@@ -1416,7 +1515,7 @@ class _Preflight:
         self.echo(f"batch list: readable ({count} on the first page)")
 
     def gemini(self) -> None:
-        document = self.get(GEMINI_MODEL_URL.format(model=self.model), "model metadata")
+        document, _ = self.get(GEMINI_MODEL_URL.format(model=self.model), "model metadata")
         self.echo("key: accepted by generativelanguage.googleapis.com")
         name, expected = document.get("name"), f"models/{self.model}"
         if isinstance(name, str) and name != expected:
@@ -1434,12 +1533,21 @@ class _Preflight:
         self.limit("outputTokenLimit", output, GEMINI_MAX_OUTPUT_TOKENS)
 
 
-def preflight(model: str, key: str, transport: Transport, *, sleep: Sleep, echo: Echo) -> None:
+def preflight(
+    model: str,
+    key: str,
+    transport: Transport,
+    *,
+    sleep: Sleep,
+    echo: Echo,
+    now: Callable[[], datetime],
+) -> None:
     """``potakt eval preflight`` (TASK-005c3e J7, ADR-0007 §7 amendment of TASK-005c3e): check
     the key and ``model`` with free, read-only calls before a paid run. No prompt is sent, no
     file is written, no lock is taken and no audit runs.
 
-    A Claude model: ``GET MODELS_URL/<id>`` and one page of the batch list (``limit=1``), read
+    A Claude model: ``GET MODELS_URL/<id>``, whose ``Date`` header is compared with ``now()``
+    (the ``clock`` check, TASK-005c3g G2), and one page of the batch list (``limit=1``), read
     as ``_read_page`` reads one; Gemini: ``GET GEMINI_MODEL_URL``. Each call goes through
     ``send_with_retries`` with the run's headers. One line per check goes to ``echo``, every
     server string through ``server_text``. A check fails only on a definite contradiction (a
@@ -1451,7 +1559,7 @@ def preflight(model: str, key: str, transport: Transport, *, sleep: Sleep, echo:
     check_registered(model)
     anthropic = model.startswith(ANTHROPIC_PREFIX)
     headers = anthropic_headers(key) if anthropic else gemini_headers(key)
-    checks = _Preflight(model, headers, transport, sleep, echo)
+    checks = _Preflight(model, headers, transport, sleep, echo, now)
     try:
         if anthropic:
             checks.claude()

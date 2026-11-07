@@ -55,10 +55,13 @@ Each command makes only free, read-only calls (the model's metadata and, for Cla
 the batch list): no prompt is sent, nothing is written and nothing is charged. It prints one line
 per check, starting with `key: accepted by api.anthropic.com` (or
 `generativelanguage.googleapis.com`), and ends with
-`preflight passed: no prompt was sent and nothing was charged`. A field shown as `not reported`
-is not a failure. A line `preflight failed: <check>: <reason>` (exit code 1) is a key or model
-problem found for free; an HTTP 401 or 400 there is the key (§1). Send the three outputs to the
-reviewer before any `--yes`.
+`preflight passed: no prompt was sent and nothing was charged`. For a Claude model the second
+line compares the laptop clock with the API's: `clock: within <n> s of api.anthropic.com`; more
+than 120 s fails the check `clock` (sync the Windows clock: Settings, Time & language, "Sync
+now"). A field shown as `not reported` is not a failure. A line
+`preflight failed: <check>: <reason>` (exit code 1) is a key or model problem found for free;
+an HTTP 401 or 400 there is the key (§1). Send the three outputs to the reviewer before any
+`--yes`.
 
 ## 2. Session-only variables
 
