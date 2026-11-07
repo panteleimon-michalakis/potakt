@@ -257,14 +257,16 @@ def server_text(text: str, secrets: list[str] | None = None, limit: int = _ERROR
 
 def describe_response(response: HttpResponse, secrets: list[str] | None = None) -> str:
     """``HTTP <status>``, plus ``(<type>: <message>)`` from an API error body: Anthropic's
-    ``error.type`` and ``error.message``, Gemini's ``error.status`` and ``error.message``.
-    Nothing else from the body; both go through ``server_text`` (``secrets`` redacted before the
-    message is cut to 300 characters)."""
+    ``error.type`` and ``error.message``, Gemini's ``error.status`` and ``error.message``, or,
+    without a ``status``, a string ``error.code`` (TASK-005c3g G10). Nothing else from the body;
+    both go through ``server_text`` (``secrets`` redacted before the message is cut to 300
+    characters)."""
     text = f"HTTP {response.status}"
     error = _json_error(response.body)
     if error is None:
         return text
-    kind = error.get("type") if isinstance(error.get("type"), str) else error.get("status")
+    kinds = (error.get(name) for name in ("type", "status", "code"))
+    kind = next((value for value in kinds if isinstance(value, str)), None)
     detail = error.get("message")
     if isinstance(kind, str) and isinstance(detail, str):
         return f"{text} ({server_text(kind, secrets)}: {server_text(detail, secrets)})"

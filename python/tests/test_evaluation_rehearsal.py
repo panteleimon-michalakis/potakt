@@ -12,7 +12,10 @@ directory holds exactly the expected files (no lock), the fake keys are in no fi
 and every ``request.json`` is the ``eval prompt`` payload.
 """
 
+import email.utils
 import json
+import os
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +23,7 @@ import pytest
 from runner_helpers import (
     ALL_SCENARIOS,
     KEY,
+    RefusedReplace,
     Sleeps,
     anthropic_message,
     corpus_copy,
@@ -73,10 +77,16 @@ class Router:
         if url.startswith(BATCHES_URL):
             assert headers["authorization"] == f"Bearer {KEY}"
             assert "x-api-key" not in headers and "x-goog-api-key" not in headers
-            return self.batches.send(method, url, headers, body, timeout)
+            response = self.batches.send(method, url, headers, body, timeout)
+            assert "date" in response.headers  # TASK-005c3g G2: the API's clock, every answer
+            return response
         assert headers["x-goog-api-key"] == GEMINI_KEY
         assert "authorization" not in headers and "x-api-key" not in headers
-        return self.gemini.send(method, url, headers, body, timeout)
+        response = self.gemini.send(method, url, headers, body, timeout)
+        # TASK-005c3g G13: Google's answers carry a Date too (the Gemini run does not read it).
+        moment = self.batches.now().replace(microsecond=0)
+        date = email.utils.format_datetime(moment, usegmt=True)
+        return replace(response, headers={**response.headers, "date": date})
 
 
 def test_the_runbook_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -124,8 +134,19 @@ def test_the_runbook_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
 
     # 2. Haiku --yes: one batch; 04 stops at max_tokens; 05's answer is not valid Unicode, so it
     # is recorded as malformed (an invalid candidate) and the run goes on (TASK-005c3d H8).
+    # TASK-005c3g: the clock check passes first (G2); one replace of a response.json is refused
+    # once, as Windows does while another program holds the file, and absorbed (G3); Haiku asks
+    # for max_tokens 64000 (G8).
     lists = batches.lists
-    haiku = eval_run(HAIKU, "--yes")
+    refused = RefusedReplace(1, "response.json")
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "replace", refused)
+        haiku = eval_run(HAIKU, "--yes")
+    assert refused.refused == 1
+    assert len(batches.clock_checks) == 1
+    assert batches.calls[0].url == f"{BATCHES_URL}?limit=1"
+    sent = json.loads(batches.calls[1].body or b"{}")["requests"]
+    assert {request["params"]["max_tokens"] for request in sent} == {64000}
     assert haiku.exit_code == 0, haiku.stderr
     assert haiku.stdout.startswith("batch msgbatch_01 created for 10 scenarios\n")
     assert f"{SURROGATE_SCENARIO}: recorded (malformed, invalid, recall 0.000)\n" in haiku.stdout
@@ -245,3 +266,6 @@ def test_the_runbook_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
             )
             assert printed.exit_code == 0
             assert (runs / model / name / "request.json").read_bytes() == printed.stdout_bytes
+    # TASK-005c3g G2: one clock check per Claude --yes run that got past the held check (Haiku,
+    # the held Opus run, the release), and every one of them passed.
+    assert len(batches.clock_checks) == 3

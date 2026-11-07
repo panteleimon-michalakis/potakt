@@ -543,6 +543,33 @@ def test_a_gemini_key_to_the_anthropic_host_is_refused_with_no_call(
     assert KEY not in result.output
 
 
+@pytest.mark.parametrize("model", [HAIKU, GEMINI])
+def test_a_value_error_of_the_transport_is_shown_by_its_type_only(
+    monkeypatch: pytest.MonkeyPatch, model: str
+) -> None:
+    # TASK-005c3g G10 (n1): only a refusal of check_url is a stop naming the host; any other
+    # ValueError's text could hold anything (it used to be printed, redacted).
+    class Raising:
+        def send(
+            self, method: str, url: str, headers: dict[str, str], body: bytes | None, timeout: float
+        ) -> HttpResponse:
+            raise ValueError(f"boom {headers} {KEY}")
+
+    variable = GEMINI_VARIABLE if model == GEMINI else ANTHROPIC_VARIABLE
+    monkeypatch.setenv(variable, KEY)
+    monkeypatch.setattr(cli, "make_transport", Raising)
+
+    result = runner.invoke(app, ["eval", "preflight", "--model", model])
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert result.stderr == (
+        "eval preflight stopped by an unexpected error (ValueError): send this message to the "
+        "reviewer\n"
+    )
+    assert "boom" not in result.output
+
+
 @pytest.mark.parametrize("model", ["claude-sonnet-5-5", "gpt-5", ""])
 def test_an_unregistered_model_is_a_usage_error(model: str) -> None:
     result = runner.invoke(app, ["eval", "preflight", "--model", model])

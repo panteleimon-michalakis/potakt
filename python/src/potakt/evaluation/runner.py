@@ -1443,19 +1443,15 @@ class _Preflight:
         """One read-only call through ``send_with_retries``: its JSON object and the clock skew
         read when it arrived (``_skew``; ``None`` without a readable ``Date``), or the failed
         ``check`` for any other answer. ``check_url`` refusing the URL or a key header (H7) stops
-        before any call."""
+        before any call, naming the host only; TASK-005c3g G10: any other ``ValueError`` (from a
+        transport) is not caught here, so the CLI names its type only."""
         try:
-            response = send_with_retries(
-                self.transport,
-                "GET",
-                url,
-                self.headers,
-                None,
-                CALL_TIMEOUT_SECONDS,
-                sleep=self.sleep,
-            )
+            check_url(url, self.headers)
         except ValueError as error:  # its message names the host only
             raise RunStopped(str(error)) from None
+        response = send_with_retries(
+            self.transport, "GET", url, self.headers, None, CALL_TIMEOUT_SECONDS, sleep=self.sleep
+        )
         arrived = self.now()
         if response.status != 200:
             raise _failed(check, describe_response(response, secret_values(self.headers)))
@@ -1716,7 +1712,9 @@ def cost_upper_bound(model: str, corpus_dir: Path, scenarios: list[str]) -> floa
     """USD: for each scenario, the UTF-8 bytes of system + user as input tokens (a byte is at
     least one token's worth of text) and ``max_tokens`` as output tokens, at the pinned batch
     prices of a Claude model. A scenario whose bytes pass a long-prompt threshold is priced at
-    that tier, so the bound holds whatever the token count."""
+    that tier. It counts only the prompt bytes and ``max_tokens``: the system prompt that the API
+    adds when thinking is active and the message framing are not counted, but covered by the
+    slack between bytes and tokens (a token holds several bytes of this text) (TASK-005c3g G10)."""
     price_in, price_out = PRICES_USD_PER_MILLION[model]
     long_prompt = LONG_PROMPT_PRICES_USD_PER_MILLION.get(model)
     total = 0.0

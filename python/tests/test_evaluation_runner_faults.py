@@ -7,7 +7,12 @@ answers, duplicated creates, the second one possibly created 25 or 40 s later, i
 answer that is not valid Unicode, failed polls and list calls, 150 newer cancelled batches that
 push the real ones to a later page), how long a new batch stays missing from the list, each
 scenario's result in each batch, and sometimes a damaged results file (one line dropped or
-corrupted). A driver plays the owner: it runs the same command again after every stop or
+corrupted). TASK-005c3g G13: every call goes through the real ``UrllibTransport`` (over an opener
+that asks the fake), so a plain ``OSError`` of a create, a poll or a list ("raw-oserror") reaches
+it as urllib raises it; and per invocation the next ``os.replace`` under the runs directory may be
+refused 1-3 times ("replace-denied"), which ``write_atomic`` absorbs. Every answer carries the
+API's ``Date``, which agrees with the run's clock. A driver plays the owner: it runs the same
+command again after every stop or
 interrupt; when the run names several candidate batches, it cancels all but the oldest; after a
 held batch it runs the same command once more, which must send nothing, and then stops: a
 release is the reviewer's decision, so the driver never releases.
@@ -31,17 +36,19 @@ import email.utils
 import json
 import os
 import tempfile
+import urllib.request
 from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from hypothesis import given, note, settings
 from hypothesis import strategies as st
 from runner_helpers import ALL_SCENARIOS, KEY, NOW, Sleeps, corpus_copy, files_containing
 from test_evaluation_runner_anthropic import CLOCK_URL, errored, page_of, succeeded
+from test_evaluation_runner_anthropic import Answer as OpenerAnswer
 from typer.testing import CliRunner
 
 import potakt.cli as cli
@@ -49,7 +56,7 @@ import potakt.evaluation.runner as runner_module
 import potakt.evaluation.test_a as test_a_module
 from potakt.cli import app
 from potakt.evaluation.runner import BATCH_STATE_FILE, BATCHES_URL, LOCK_FILE
-from potakt.evaluation.transport import HttpResponse, TransportError
+from potakt.evaluation.transport import HttpResponse, TransportError, UrllibTransport
 
 HAIKU = "claude-haiku-5-5"
 SCENARIOS = ALL_SCENARIOS[:3]
@@ -59,6 +66,10 @@ CREATE_FAULTS = (
     "ok",
     "lost-created",  # the batch is created, then the response is lost
     "lost-not-created",
+    # TASK-005c3g G13: a plain OSError of urllib (Winsock 10052), after or before the server
+    # handled the create: like a lost response.
+    "raw-oserror-created",
+    "raw-oserror-not-created",
     "503-created",  # a gateway answers 503 after the API accepted the request
     "503-not-created",
     "302-created",  # E7: a redirect after the API accepted the request (never followed)
@@ -74,8 +85,12 @@ CREATE_FAULTS = (
     "duplicated-staggered",  # the same, the second batch created `stagger` s after the first
     "surrogate-answer",  # H14: a normal create; its first scenario's text holds "\ud83d"
 )
-POLL_FAULTS = ("ok", "TransportError", "interrupt")
-LIST_FAULTS = ("ok", "TransportError", "paged")  # paged: 150 newer cancelled batches, once
+POLL_FAULTS = ("ok", "TransportError", "interrupt", "raw-oserror")
+# paged: 150 newer cancelled batches, once
+LIST_FAULTS = ("ok", "TransportError", "paged", "raw-oserror")
+# TASK-005c3g G13: per invocation, the next os.replace of a record or of batches.json is refused
+# (PermissionError) this many times; write_atomic absorbs up to 9.
+REFUSALS = st.lists(st.integers(1, 3), max_size=3)
 PAGED = 150
 COVERED_REACH = runner_module.RECONCILE_DELAY_SECONDS
 RESULTS = ("succeeded", "errored", "expired")
@@ -96,6 +111,7 @@ class Script:
     damage: str  # the first results file downloaded: one line dropped or corrupted
     damaged: int  # the index, in its batch, of the scenario whose line is damaged
     stagger: int = 25  # seconds between the two batches of a "duplicated-staggered" create
+    refusals: list[int] = field(default_factory=list[int])  # "replace-denied", per invocation
 
     def reach(self) -> int:
         """How long after the answer the last batch of a create may become listed."""
@@ -115,6 +131,7 @@ scripts = st.builds(
     ),
     damage=st.sampled_from(DAMAGE),
     damaged=st.integers(0, len(SCENARIOS) - 1),
+    refusals=REFUSALS,
 )
 
 
@@ -235,6 +252,8 @@ class FakeApi:
             fault = self.script.lists.pop(0) if self.script.lists else "ok"
             if fault == "TransportError":
                 raise TransportError("TimeoutError: no response received")
+            if fault == "raw-oserror":
+                raise raw_oserror()
             if fault == "paged" and not self.paged_once:
                 self.paged_once = True
                 self.page_others_away()
@@ -251,6 +270,8 @@ class FakeApi:
             raise TransportError("TimeoutError: no response received")
         if fault == "interrupt":
             raise KeyboardInterrupt
+        if fault == "raw-oserror":
+            raise raw_oserror()
         batch = self.batches[url.rsplit("/", 1)[1]]
         batch.polls += 1
         return ok(self.document(batch))
@@ -262,6 +283,8 @@ class FakeApi:
             raise KeyboardInterrupt
         if fault == "lost-not-created":
             raise TransportError("TimeoutError: no response received")
+        if fault == "raw-oserror-not-created":
+            raise raw_oserror()
         if fault == "429":
             return HttpResponse(429, {}, b"")
         code, _, outcome = fault.partition("-")
@@ -274,6 +297,8 @@ class FakeApi:
             raise TransportError("TimeoutError: no response received")
         if fault == "lost-created":
             raise TransportError("TimeoutError: no response received")
+        if fault == "raw-oserror-created":
+            raise raw_oserror()
         if code in UNCLEAR:
             return unclear(UNCLEAR[code])
         if fault == "interrupt-after":
@@ -283,6 +308,39 @@ class FakeApi:
 
 def ok(document: object) -> HttpResponse:
     return HttpResponse(200, {"content-type": "application/json"}, json.dumps(document).encode())
+
+
+def raw_oserror() -> OSError:
+    """TASK-005c3g G13: what urllib raises when reading an answer fails (Winsock 10052)."""
+    return OSError(10052, "network reset")
+
+
+class Opener:
+    """urllib's opener over ``FakeApi``, so every call goes through the real ``UrllibTransport``
+    (TASK-005c3g G13): a plain ``OSError`` raised by the fake reaches it as it would from
+    ``getresponse`` or the body read."""
+
+    def __init__(self, api: "FakeApi") -> None:
+        self.api = api
+
+    def open(self, fullurl: urllib.request.Request, data: None = None, timeout: float = 0) -> Any:
+        headers = {name.lower(): value for name, value in fullurl.header_items()}
+        body = cast(bytes | None, fullurl.data)
+        return OpenerAnswer(self.api.send(fullurl.get_method(), fullurl.full_url, headers, body, 0))
+
+
+def refusing_replace(runs: Path, refused: list[int]) -> Any:
+    """``os.replace`` refused with ``PermissionError`` while ``refused[0]`` is positive, for a
+    destination under ``runs`` only (TASK-005c3g G13: "replace-denied")."""
+    real = os.replace
+
+    def replace(source: Any, destination: Any) -> None:
+        if refused[0] > 0 and Path(destination).is_relative_to(runs):
+            refused[0] -= 1
+            raise PermissionError(13, "Permission denied")
+        real(source, destination)
+
+    return replace
 
 
 def unclear(code: int) -> HttpResponse:
@@ -343,12 +401,15 @@ def test_no_fault_sequence_pays_twice_or_loses_a_record(
     unchecked = False  # some audit could not check
     capped = returned = held = False
     args = ["eval", "run", "--model", HAIKU, "--runs", str(runs), "--corpus", str(corpus), "--yes"]
+    refused = [0]  # G13: the refusals left of the current "replace-denied" fault
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(cli, "make_transport", lambda: api)
-        patch.setattr(cli.time, "sleep", clock)
+        patch.setattr(cli, "make_transport", lambda: UrllibTransport(Opener(api)))
+        patch.setattr(cli.time, "sleep", clock)  # time.sleep: write_atomic's pauses too
         patch.setattr(cli, "utc_now", clock.now)
+        patch.setattr(os, "replace", refusing_replace(runs, refused))
         patch.setenv("POTAKT_ANTHROPIC_API_KEY", KEY)
         for _ in range(INVOCATIONS):
+            refused[0] = script.refusals.pop(0) if script.refusals else 0
             calls = api.calls
             result = CliRunner().invoke(app, args)
             log += [result.stdout, f"EXIT {result.exit_code}: {result.stderr}"]
@@ -359,6 +420,9 @@ def test_no_fault_sequence_pays_twice_or_loses_a_record(
                 f"escaped: {result.exception!r}"
             )
             assert "unexpected error" not in result.output, result.output
+            # 9. TASK-005c3g G3: a replace refused 1-3 times is absorbed: no invocation stops
+            #    because of it (no "cannot write …: Permission denied", no held PermissionError).
+            assert "Permission" not in result.output, result.output
             for line in result.stdout.splitlines():
                 if line.startswith("warning: batch "):
                     warned.add(line.split()[2])

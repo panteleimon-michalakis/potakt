@@ -266,6 +266,17 @@ def test_a_value_error_of_the_opener_is_not_a_transport_error() -> None:
         ),
         (b'{"error": {"type": "api_error"}}', "HTTP 500 (api_error)"),
         (b'{"error": {"message": "boom"}}', "HTTP 500"),
+        # TASK-005c3g G10 (n4): a Gemini body with a string error.code and no error.status.
+        (
+            b'{"error": {"code": "invalid_request", "message": "boom"}}',
+            "HTTP 500 (invalid_request: boom)",
+        ),
+        (b'{"error": {"code": "invalid_request"}}', "HTTP 500 (invalid_request)"),
+        (b'{"error": {"code": 500, "message": "boom"}}', "HTTP 500"),  # a number names no type
+        (
+            b'{"error": {"code": "x", "status": "INTERNAL", "message": "boom"}}',
+            "HTTP 500 (INTERNAL: boom)",
+        ),
         (b'{"error": "boom"}', "HTTP 500"),
         (b"[1, 2]", "HTTP 500"),
         (b"", "HTTP 500"),
@@ -279,6 +290,14 @@ def test_describe_response_reads_only_the_error_type_and_message(
     body: bytes, expected: str
 ) -> None:
     assert describe_response(HttpResponse(500, {"authorization": KEY}, body)) == expected
+
+
+def test_a_string_error_code_is_redacted_like_a_status() -> None:
+    body = json.dumps({"error": {"code": f"bad_{KEY}", "message": f"key {KEY}"}}).encode()
+
+    text = describe_response(HttpResponse(400, {}, body), [KEY])
+
+    assert text == "HTTP 400 (bad_[redacted]: key [redacted])"
 
 
 @pytest.mark.parametrize(
