@@ -1395,7 +1395,10 @@ def test_a_key_across_the_cut_of_an_http_error_is_redacted(tmp_path: Path) -> No
     assert KEY[:5] not in str(raised.value)
 
 
-@pytest.mark.parametrize("kind", ["\x1b[2J", "a" * 65, 7, None])
+@pytest.mark.parametrize(
+    "kind",
+    ["\x1b[2J", "a" * 65, 7, None, ["api_error"], {"type": "api_error"}],  # G14: unhashable too
+)
 def test_an_odd_error_type_is_not_echoed_and_holds_the_batch(tmp_path: Path, kind: object) -> None:
     # Minor 3: the error type of a result line was echoed as the server sent it. TASK-005c3g G7:
     # an unknown type holds the batch (it may fail again).
@@ -3319,7 +3322,6 @@ def test_a_laptop_clock_within_two_minutes_proceeds(tmp_path: Path, seconds: int
 
 
 def test_the_skew_is_measured_when_the_clock_answer_arrived(tmp_path: Path) -> None:
-    # The answer took 100 s: the Date header is the API's time at the end of the call.
     # The answer takes 200 s and the laptop is 30 s fast: at arrival the laptop says 10:03:50
     # and the header 10:03:20 (30 s, passes); a reading of the laptop clock taken before the call
     # (10:00:30) would differ from the header by 170 s and stop.

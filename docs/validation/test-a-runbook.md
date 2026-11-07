@@ -287,7 +287,8 @@ Commit each model's records right after its run and its checks, before the next 
   2. Wait for the reviewer's decision.
   3. Only if the reviewer says so, run the same command with `--yes --release <id>`. It first
      records, from `batch-<id>.results.jsonl`, each scenario of that batch that is still pending
-     and has exactly one succeeded line there, with nothing sent:
+     and has exactly one line there, a succeeded one, with nothing sent (a scenario with two
+     lines, or with an errored, expired or unreadable one, is sent again):
      `<scenario>: recorded from the kept results of batch <id>`. If that file is missing or
      cannot be read, it prints
      `the kept results of batch <id> cannot be read; its pending scenarios will be sent again`.

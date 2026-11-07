@@ -62,9 +62,9 @@ UNSAVED_RESPONSE_FILE = RESPONSE_FILE + _TEMPORARY_SUFFIX
 # TASK-005c3g G3: attempts of an open, replace or remove that Windows refuses (PermissionError).
 REFUSED_ATTEMPTS = 10
 ANTHROPIC_NORMAL_END = "end_turn"
+GEMINI_NORMAL_END = "STOP"
 
 Sleep = Callable[[float], object]
-GEMINI_NORMAL_END = "STOP"
 
 
 @dataclass(frozen=True, slots=True)

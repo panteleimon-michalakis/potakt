@@ -1171,7 +1171,7 @@ class _AnthropicRun:
                 return f"{name}: invalid_request_error: {detail}"
             known_type = isinstance(error_type, str) and _ERROR_TYPE.fullmatch(error_type)
             shown = error_type if known_type else "unknown error"
-            if error_type not in TRANSIENT_ERRORS:
+            if not (isinstance(error_type, str) and error_type in TRANSIENT_ERRORS):
                 # TASK-005c3g G7: a repeat cannot fix it (or it is unknown): the reviewer decides.
                 return f"{name}: errored ({shown}); it would fail again"
             self.echo(f"{name}: errored ({shown}); pending")
