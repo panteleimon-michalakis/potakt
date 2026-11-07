@@ -7,6 +7,7 @@ No test reads a real key or opens a connection: ``--yes`` runs get the fake key 
 import ast
 import json
 import os
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -719,6 +720,60 @@ def test_the_lock_line_is_synced_before_the_lock_is_closed(
 
     assert synced == ["claude-haiku-5-5 2026-11-02T10:00:00Z\n"]
     assert lock.release() is None
+
+
+# -- TASK-005c3g G3: the removal of the lock retries a refusal like write_atomic --
+
+REFUSED_PAUSES = [0.05, 0.1, 0.2, 0.4, 0.5, 0.5, 0.5, 0.5, 0.5]
+
+
+def refused_unlink(monkeypatch: pytest.MonkeyPatch, path: Path, times: int) -> list[int]:
+    """``Path.unlink`` of ``path`` refused with ``PermissionError`` ``times`` times."""
+    real_unlink = Path.unlink
+    refused: list[int] = []
+
+    def unlink(self: Path, missing_ok: bool = False) -> None:
+        if self == path and len(refused) < times:
+            refused.append(1)
+            raise PermissionError(13, "Permission denied")
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    return refused
+
+
+@pytest.mark.parametrize("times", [1, 9])
+def test_a_refused_removal_of_the_lock_is_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, times: int
+) -> None:
+    lock = runner_module.take_lock(tmp_path / "runs", HAIKU, datetime(2026, 11, 2, tzinfo=UTC))
+    slept: list[float] = []
+    monkeypatch.setattr(time, "sleep", slept.append)
+    refused = refused_unlink(monkeypatch, lock.path, times)
+
+    assert lock.release() is None
+
+    assert len(refused) == times
+    assert slept == REFUSED_PAUSES[:times]
+    assert not lock.path.exists()
+
+
+def test_ten_refused_removals_of_the_lock_give_the_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lock = runner_module.take_lock(tmp_path / "runs", HAIKU, datetime(2026, 11, 2, tzinfo=UTC))
+    slept: list[float] = []
+    monkeypatch.setattr(time, "sleep", slept.append)
+    refused = refused_unlink(monkeypatch, lock.path, 10)
+
+    warning = lock.release()
+
+    assert warning == (
+        f"could not remove the lock {lock.path} (Permission denied): delete it before the next run"
+    )
+    assert len(refused) == 10
+    assert slept == REFUSED_PAUSES
+    assert lock.path.exists()
 
 
 # -- E9 review findings (Minor 4): the lock's edge cases --

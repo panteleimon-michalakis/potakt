@@ -38,6 +38,7 @@ from potakt.evaluation.records import (
     RESPONSE_FILE,
     answer_of,
     rescore_run,
+    retry_refused,
     write_answer,
     write_atomic,
     write_request,
@@ -1397,10 +1398,12 @@ class RunLock:
     path: Path
     line: str
 
-    def release(self) -> str | None:
+    def release(self, *, sleep: Sleep | None = None) -> str | None:
         """Remove the lock if it is still this run's. A warning, safe to print, if it now holds
         another run's line (the owner deleted it as stale while this run was still running, and
-        started another) or if it cannot be removed; ``None`` otherwise (TASK-005c3c E9)."""
+        started another) or if it cannot be removed; ``None`` otherwise (TASK-005c3c E9). A
+        removal refused with ``PermissionError`` is retried like a replace of ``write_atomic``
+        (``retry_refused``, with ``sleep``; TASK-005c3g G3)."""
         try:
             current = self.path.read_bytes().decode("utf-8", "replace")
         except FileNotFoundError:
@@ -1413,7 +1416,7 @@ class RunLock:
                 f"the lock {self.path} now belongs to another run ({shown}); it was left in place"
             )
         try:
-            self.path.unlink(missing_ok=True)
+            retry_refused(lambda: self.path.unlink(missing_ok=True), sleep)
         except OSError as error:
             reason = error.strerror or type(error).__name__
             return (

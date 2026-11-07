@@ -6,14 +6,18 @@
 run is its ``Sleeps``: ``now()`` moves only by the seconds slept (TASK-005c3b D2).
 """
 
+import http.client
 import json
 import math
+import os
+import time
 import urllib.parse
+import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from runner_helpers import (
@@ -22,6 +26,7 @@ from runner_helpers import (
     NOW,
     STARTED_AT,
     Echo,
+    RefusedReplace,
     Sleeps,
     anthropic_message,
     batch_entry,
@@ -43,7 +48,7 @@ from potakt.evaluation.runner import (
     HEARTBEAT_POLLS,
     run_anthropic,
 )
-from potakt.evaluation.transport import HttpResponse, RunStopped, TransportError
+from potakt.evaluation.transport import HttpResponse, RunStopped, TransportError, UrllibTransport
 
 HAIKU = "claude-haiku-5-5"
 OPUS = "claude-opus-5-5"
@@ -2718,3 +2723,139 @@ def test_an_invalid_state_of_another_model_warns_before_any_wait_or_call(tmp_pat
     assert run.sleeps == []
     assert len(run.echo) == 1
     assert run.echo[0].startswith("warning: could not check for batches that no run recorded (")
+
+
+# --- TASK-005c3g G3: a refused replace in a run ------------------------------------------------
+
+
+@pytest.fixture
+def pauses(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """``time.sleep`` (the pauses of ``write_atomic``) recorded instead of slept."""
+    slept: list[float] = []
+    monkeypatch.setattr(time, "sleep", slept.append)
+    return slept
+
+
+@pytest.mark.parametrize("name", ["response.json", "batches.json"])
+@pytest.mark.parametrize("times", [1, 9])
+def test_a_refused_replace_is_absorbed_and_the_run_completes_with_one_create(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pauses: list[float], times: int, name: str
+) -> None:
+    # The audit's p03: one refused replace held the batch, and --release paid for it twice.
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:3])
+    refused = RefusedReplace(times, name)
+    monkeypatch.setattr(os, "replace", refused)
+
+    run()
+
+    assert refused.refused == times
+    assert len(pauses) == times
+    assert run.server.creates() == [list(ALL_SCENARIOS[:3])]
+    assert run.recorded() == list(ALL_SCENARIOS[:3])
+    assert run.states() == ["done"]
+    assert sorted(run.model_dir.rglob("*.tmp")) == []
+
+
+def test_ten_refused_replaces_of_an_answer_hold_the_batch_and_keep_the_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pauses: list[float]
+) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:3])
+    monkeypatch.setattr(os, "replace", RefusedReplace(10, "response.json"))
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == "01-pharmacy: could not be recorded (PermissionError)" + HELD
+    assert run.recorded() == list(ALL_SCENARIOS[1:3])
+    assert run.states() == ["held"]
+    kept = run.model_dir / "01-pharmacy" / "response.json.tmp"
+    assert json.loads(kept.read_bytes()) == succeeded()["message"]
+
+
+# --- TASK-005c3g G6: a plain OSError of urllib in a run ---------------------------------------
+
+
+class Answer:
+    """What ``urllib``'s opener returns for an ``HttpResponse`` of the fake server."""
+
+    def __init__(self, response: HttpResponse) -> None:
+        self.status = response.status
+        self.headers = http.client.HTTPMessage()
+        for name, value in response.headers.items():
+            self.headers[name] = value
+        self._body = response.body
+
+    def read(self, amount: int = -1) -> bytes:
+        return self._body if amount < 0 else self._body[:amount]
+
+    def __enter__(self) -> "Answer":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+
+@dataclass
+class RawOSErrorOpener:
+    """An opener over ``FakeBatches`` for the real ``UrllibTransport``: the first ``method``
+    call to ``url`` raises a plain ``OSError`` (Winsock 10052), before the server sees it, or,
+    with ``after``, once the server has handled it (the answer was lost while it was read)."""
+
+    server: FakeBatches
+    method: str
+    url: str
+    after: bool
+    raised: int = 0
+
+    def open(self, fullurl: urllib.request.Request, data: None = None, timeout: float = 0) -> Any:
+        method, url = fullurl.get_method(), fullurl.full_url
+        hit = self.raised == 0 and method == self.method and url == self.url
+        if hit and not self.after:
+            self.raised += 1
+            raise OSError(10052, "network reset")
+        headers = {name.lower(): value for name, value in fullurl.header_items()}
+        response = self.server.send(method, url, headers, cast(bytes | None, fullurl.data), timeout)
+        if hit:
+            self.raised += 1
+            raise OSError(10052, "network reset")
+        return Answer(response)
+
+
+def run_over_urllib(run: Run, opener: RawOSErrorOpener) -> None:
+    run_anthropic(
+        HAIKU,
+        run.corpus,
+        run.runs,
+        KEY,
+        UrllibTransport(opener),
+        sleep=run.sleeps,
+        now=run.sleeps.now,
+        echo=run.echo,
+    )
+
+
+def test_a_plain_os_error_on_a_poll_is_retried_once_and_the_run_continues(tmp_path: Path) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:2])
+    opener = RawOSErrorOpener(run.server, "GET", f"{BATCHES_URL}/msgbatch_01", after=False)
+
+    run_over_urllib(run, opener)
+
+    assert opener.raised == 1
+    assert run.sleeps == [15, 60]
+    assert run.server.creates() == [list(ALL_SCENARIOS[:2])]
+    assert run.recorded() == list(ALL_SCENARIOS[:2])
+
+
+def test_a_plain_os_error_after_a_create_is_an_unclear_create_and_adopts_its_batch(
+    tmp_path: Path,
+) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:2])
+    opener = RawOSErrorOpener(run.server, "POST", BATCHES_URL, after=True)
+
+    run_over_urllib(run, opener)
+
+    assert opener.raised == 1
+    assert run.server.creates() == [list(ALL_SCENARIOS[:2])]
+    assert "adopted batch msgbatch_01 created by an earlier create request" in run.echo
+    assert run.recorded() == list(ALL_SCENARIOS[:2])
+    assert run.states() == ["done"]

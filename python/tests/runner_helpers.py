@@ -3,10 +3,11 @@ answers, a recording ``sleep`` with its clock, the ``batches.json`` entries and 
 fake key was written nowhere."""
 
 import json
+import os
 import shutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from potakt.evaluation import CORPUS_PATH
 
@@ -111,6 +112,27 @@ def write_state(model_dir: Path, *entries: dict[str, Any]) -> None:
     model_dir.mkdir(parents=True, exist_ok=True)
     text = json.dumps({"batches": list(entries)}, indent=2, sort_keys=True) + "\n"
     (model_dir / "batches.json").write_bytes(text.encode("utf-8"))
+
+
+class RefusedReplace:
+    """``os.replace`` as Windows answers while another program holds the file (TASK-005c3g G3):
+    ``PermissionError`` for the first ``times`` replaces whose destination is named ``name`` (any
+    destination if ``name`` is ``None``), then the real replace. Our code decides, not the OS:
+    the same on every OS."""
+
+    def __init__(self, times: int, name: str | None = None) -> None:
+        self.times = times
+        self.name = name
+        self.refused = 0
+        self.real = os.replace
+
+    def __call__(self, source: object, destination: object) -> None:
+        if (self.name is None or Path(str(destination)).name == self.name) and (
+            self.refused < self.times
+        ):
+            self.refused += 1
+            raise PermissionError(13, "Permission denied")
+        self.real(cast(Any, source), cast(Any, destination))
 
 
 def files_containing(root: Path, needle: str) -> list[str]:

@@ -7,11 +7,15 @@ harness fix without a new request. Library code only: no network, no credentials
 Every write is atomic: the bytes go to ``<name>.tmp`` in the same directory, which then replaces
 ``<name>`` (``os.replace``); the file and, where possible, the directory are synced to disk
 (``os.fsync``). Bytes, not text mode, so line endings are LF on every OS; a leftover ``*.tmp`` is
-simply overwritten by the next write.
+simply overwritten by the next write. An open or a replace that Windows refuses for a moment
+(``PermissionError``) is retried, about 3.3 s at most (TASK-005c3g G3); an answer whose replace
+still fails stays in ``response.json.tmp``.
 """
 
 import json
 import os
+import time
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,12 +36,15 @@ from potakt.model.validation import issue_at
 __all__ = [
     "CANDIDATE_FILE",
     "COMPARISON_FILE",
+    "REFUSED_ATTEMPTS",
     "REGISTERED_MODELS",
     "REQUEST_FILE",
     "RESPONSE_FILE",
     "Answer",
     "answer_of",
+    "refused_pause",
     "rescore_run",
+    "retry_refused",
     "score_answer",
     "write_answer",
     "write_atomic",
@@ -49,7 +56,11 @@ RESPONSE_FILE = "response.json"
 CANDIDATE_FILE = "candidate.txt"
 COMPARISON_FILE = "comparison.json"
 _TEMPORARY_SUFFIX = ".tmp"
+# TASK-005c3g G3: attempts of an open, replace or remove that Windows refuses (PermissionError).
+REFUSED_ATTEMPTS = 10
 ANTHROPIC_NORMAL_END = "end_turn"
+
+Sleep = Callable[[float], object]
 GEMINI_NORMAL_END = "STOP"
 
 
@@ -192,7 +203,7 @@ def write_answer(
     if path.exists():
         raise FileExistsError(f"{path} exists: a recorded answer is never replaced")
     run_dir.mkdir(parents=True, exist_ok=True)
-    write_atomic(path, _response_bytes(response))
+    write_atomic(path, _response_bytes(response), keep=True)  # TASK-005c3g G5
     candidate, comparison = score_answer(scenario, answer_of(model, response))
     write_atomic(run_dir / CANDIDATE_FILE, candidate.encode("utf-8"))
     write_atomic(run_dir / COMPARISON_FILE, comparison.to_json().encode("utf-8"))
@@ -237,7 +248,30 @@ def _response_bytes(response: object) -> bytes:
         return escaped.encode("ascii")
 
 
-def write_atomic(path: Path, data: bytes) -> None:
+def refused_pause(attempt: int) -> float:
+    """Seconds slept after the failed attempt ``attempt`` (0-based) of ``retry_refused``."""
+    return min(0.05 * 2**attempt, 0.5)
+
+
+def retry_refused[T](action: Callable[[], T], sleep: Sleep | None = None) -> T:
+    """``action()``, attempted up to ``REFUSED_ATTEMPTS`` times while it raises
+    ``PermissionError`` (TASK-005c3g G3): Windows refuses to open, replace or remove a file that
+    another program holds for a moment (WinError 5 or 32: an antivirus, an indexer, an editor).
+    ``refused_pause`` is slept between two attempts, about 3.3 s in all (``sleep``, by default
+    ``time.sleep``); the last ``PermissionError`` is raised. Any other exception is raised at once.
+    The same on every operating system."""
+    pause = time.sleep if sleep is None else sleep
+    for attempt in range(REFUSED_ATTEMPTS - 1):
+        try:
+            return action()
+        except PermissionError:
+            pause(refused_pause(attempt))
+    return action()
+
+
+def write_atomic(
+    path: Path, data: bytes, *, sleep: Sleep | None = None, keep: bool = False
+) -> None:
     """Write ``data`` to ``path`` atomically and durably (see the module docstring); also used by
     the runner.
 
@@ -245,10 +279,16 @@ def write_atomic(path: Path, data: bytes) -> None:
     ``os.replace``; then the directory is synced where the OS allows it. A failure before the
     replace (the file fsync included) removes the temporary file and is raised: a write that may
     not be durable is never reported as done.
+
+    TASK-005c3g G3: the open of the temporary file and ``os.replace`` are retried while they raise
+    ``PermissionError`` (``retry_refused``, with ``sleep``). A replace that still fails removes the
+    temporary file and is raised, unless ``keep``: then the complete, synced temporary file stays
+    (G5: an answer that could not be saved is never lost; the next run stops on it).
     """
     temporary = path.with_name(path.name + _TEMPORARY_SUFFIX)
+    handle = retry_refused(lambda: temporary.open("wb"), sleep)
     try:
-        with temporary.open("wb") as handle:
+        with handle:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
@@ -256,7 +296,13 @@ def write_atomic(path: Path, data: bytes) -> None:
         with suppress(OSError):
             temporary.unlink(missing_ok=True)
         raise
-    os.replace(temporary, path)
+    try:
+        retry_refused(lambda: os.replace(temporary, path), sleep)
+    except BaseException:
+        if not keep:
+            with suppress(OSError):
+                temporary.unlink(missing_ok=True)
+        raise
     _sync_directory(path.parent)
 
 

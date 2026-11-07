@@ -2,6 +2,8 @@
 through a fake transport. No test opens a connection."""
 
 import json
+import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -11,6 +13,7 @@ from runner_helpers import (
     ALL_SCENARIOS,
     KEY,
     Echo,
+    RefusedReplace,
     Sleeps,
     corpus_copy,
     files_containing,
@@ -348,3 +351,26 @@ def test_an_interrupt_while_recording_is_not_swallowed(
 
     with pytest.raises(KeyboardInterrupt):
         run()
+
+
+# --- TASK-005c3g G3: a refused replace ------------------------------------------------------
+
+
+@pytest.mark.parametrize("times", [1, 9])
+def test_a_refused_replace_of_an_answer_is_absorbed_and_each_scenario_sent_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, times: int
+) -> None:
+    # The audit's p03: the first answer stayed in response.json.tmp and the next run sent it again.
+    slept: list[float] = []
+    monkeypatch.setattr(time, "sleep", slept.append)
+    refused = RefusedReplace(times, "response.json")
+    monkeypatch.setattr(os, "replace", refused)
+    run = make_run(tmp_path, FakeGemini(), ALL_SCENARIOS[:2])
+
+    run()
+
+    assert refused.refused == times
+    assert len(slept) == times
+    assert run.server.sent() == list(ALL_SCENARIOS[:2])
+    assert run.recorded() == list(ALL_SCENARIOS[:2])
+    assert sorted(run.model_dir.rglob("*.tmp")) == []

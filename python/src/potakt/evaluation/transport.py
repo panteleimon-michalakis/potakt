@@ -42,12 +42,16 @@ _KEY_HOSTS = {
     "x-goog-api-key": "generativelanguage.googleapis.com",
 }
 # Connection-level failures: no HTTP response arrived (``HTTPError`` is caught before these).
+# TASK-005c3g G6: ``urllib`` wraps only the sending of a request in ``URLError``; reading the
+# answer (``getresponse`` and the body) can raise a plain ``OSError``, for example a Winsock error
+# 10050-10065, so every ``OSError`` counts (the ones above are subclasses of it, kept for clarity).
 _NETWORK_ERRORS = (
     urllib.error.URLError,
     TimeoutError,
     ConnectionError,
     http.client.HTTPException,
     ssl.SSLError,
+    OSError,
 )
 
 

@@ -8,10 +8,13 @@ reasons») and Gemini ``generateContent`` (``candidates[].content.parts[]`` with
 
 import json
 import os
+import time
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
+from runner_helpers import RefusedReplace
 
 import potakt.evaluation.records as records_module
 from potakt.evaluation import (
@@ -599,3 +602,153 @@ def test_a_failed_file_fsync_is_raised_and_leaves_the_target_unchanged(disk: Dis
     assert disk.events == ["fsync file (target exists: True)"]
     assert disk.target.read_bytes() == b"old\n"
     assert not disk.target.with_name("out.json.tmp").exists()
+
+
+# --- TASK-005c3g G3: a bounded retry when Windows refuses a replace ---------------------------
+
+# min(0.05 * 2**attempt, 0.5) after the attempts 0..8: 9 pauses between 10 attempts, 3.25 s.
+REFUSED_PAUSES = [0.05, 0.1, 0.2, 0.4, 0.5, 0.5, 0.5, 0.5, 0.5]
+
+
+@pytest.fixture
+def pauses(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """``time.sleep`` recorded instead of slept."""
+    slept: list[float] = []
+    monkeypatch.setattr(time, "sleep", slept.append)
+    return slept
+
+
+def test_the_pauses_add_up_to_about_three_seconds() -> None:
+    assert sum(REFUSED_PAUSES) == pytest.approx(3.25)
+
+
+@pytest.mark.parametrize("times", [1, 9])
+def test_a_refused_replace_is_retried_until_it_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pauses: list[float], times: int
+) -> None:
+    refused = RefusedReplace(times)
+    monkeypatch.setattr(os, "replace", refused)
+    target = tmp_path / "out.json"
+
+    write_atomic(target, b"new\n")
+
+    assert target.read_bytes() == b"new\n"
+    assert refused.refused == times
+    assert pauses == REFUSED_PAUSES[:times]
+
+
+def test_ten_refused_replaces_raise_the_last_error_and_remove_the_temporary_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pauses: list[float]
+) -> None:
+    refused = RefusedReplace(10)
+    monkeypatch.setattr(os, "replace", refused)
+    target = tmp_path / "out.json"
+    target.write_bytes(b"old\n")
+
+    with pytest.raises(PermissionError):
+        write_atomic(target, b"new\n")
+
+    assert refused.refused == 10
+    assert pauses == REFUSED_PAUSES
+    assert target.read_bytes() == b"old\n"
+    assert not (tmp_path / "out.json.tmp").exists()
+
+
+def test_eleven_refusals_are_not_retried_beyond_ten_attempts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pauses: list[float]
+) -> None:
+    refused = RefusedReplace(11)
+    monkeypatch.setattr(os, "replace", refused)
+
+    with pytest.raises(PermissionError):
+        write_atomic(tmp_path / "out.json", b"new\n")
+
+    assert refused.refused == 10
+
+
+def test_another_os_error_of_the_replace_is_not_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pauses: list[float]
+) -> None:
+    calls: list[str] = []
+
+    def failing(source: object, destination: object) -> None:
+        calls.append(str(destination))
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(os, "replace", failing)
+
+    with pytest.raises(OSError, match="Input/output error"):
+        write_atomic(tmp_path / "out.json", b"new\n")
+
+    assert len(calls) == 1
+    assert pauses == []
+    assert not (tmp_path / "out.json.tmp").exists()
+
+
+def refused_open(monkeypatch: pytest.MonkeyPatch, name: str, times: int) -> list[int]:
+    """``Path.open`` of the file ``name`` refused with ``PermissionError`` ``times`` times."""
+    real_open = Path.open
+    refused: list[int] = []
+
+    def open_(self: Path, *args: Any, **kwargs: Any) -> Any:
+        if self.name == name and len(refused) < times:
+            refused.append(1)
+            raise PermissionError(13, "Permission denied")
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_)
+    return refused
+
+
+@pytest.mark.parametrize("times", [1, 9])
+def test_a_refused_open_of_the_temporary_file_is_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pauses: list[float], times: int
+) -> None:
+    refused = refused_open(monkeypatch, "out.json.tmp", times)
+
+    write_atomic(tmp_path / "out.json", b"new\n")
+
+    assert (tmp_path / "out.json").read_bytes() == b"new\n"
+    assert len(refused) == times
+    assert pauses == REFUSED_PAUSES[:times]
+
+
+def test_ten_refused_opens_raise(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pauses: list[float]
+) -> None:
+    refused = refused_open(monkeypatch, "out.json.tmp", 10)
+
+    with pytest.raises(PermissionError):
+        write_atomic(tmp_path / "out.json", b"new\n")
+
+    assert len(refused) == 10
+    assert pauses == REFUSED_PAUSES
+    assert not (tmp_path / "out.json").exists()
+
+
+def test_an_injected_sleep_is_used_instead_of_time_sleep(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pauses: list[float]
+) -> None:
+    monkeypatch.setattr(os, "replace", RefusedReplace(2))
+    injected: list[float] = []
+
+    write_atomic(tmp_path / "out.json", b"new\n", sleep=injected.append)
+
+    assert injected == [0.05, 0.1]
+    assert pauses == []
+
+
+def test_an_answer_whose_replace_is_refused_ten_times_is_kept_in_its_temporary_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pauses: list[float], pharmacy: LoadedScenario
+) -> None:
+    # G5: never lose a first answer; the next run stops on response.json.tmp instead.
+    monkeypatch.setattr(os, "replace", RefusedReplace(10, "response.json"))
+    response = anthropic({"type": "text", "text": TRUTH_01})
+
+    with pytest.raises(PermissionError):
+        write_answer(tmp_path, pharmacy, HAIKU, response)
+
+    kept = tmp_path / "response.json.tmp"
+    assert json.loads(kept.read_bytes()) == response
+    assert not (tmp_path / "response.json").exists()
+    kept.unlink()  # for the fixture that checks no temporary file is left

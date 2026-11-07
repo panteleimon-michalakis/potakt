@@ -178,6 +178,81 @@ def test_a_reason_without_an_os_message_names_its_type(error: BaseException, exp
     assert str(raised.value) == expected
 
 
+# --- TASK-005c3g G6: a plain OSError while answering is a network error ------------------------
+# urllib wraps only ``h.request(...)`` in URLError; ``h.getresponse()`` and the body read raise a
+# plain OSError, for example Winsock 10050-10065 (WSAENETDOWN ... WSAEHOSTUNREACH).
+
+
+class FailingBody(FakeResponse):
+    """A 200 whose body read fails with ``error``."""
+
+    def __init__(self, error: BaseException) -> None:
+        super().__init__(200, message(), b"{}")
+        self.error = error
+
+    def read(self, amount: int = -1) -> bytes:
+        raise self.error
+
+
+@pytest.mark.parametrize(
+    "where",
+    ["open", "read"],
+)
+def test_a_plain_os_error_is_a_transport_error_with_its_type_and_reason(where: str) -> None:
+    error = OSError(10052, "network reset")
+    outcome = error if where == "open" else FailingBody(error)
+
+    with pytest.raises(TransportError) as raised:
+        UrllibTransport(FakeOpener(outcome)).send("GET", URL, HEADERS, None, 1.0)
+
+    assert type(error) is OSError  # errno 10052 maps to no subclass on any OS
+    assert str(raised.value) == "OSError: network reset"
+    assert raised.value.__cause__ is None
+    assert raised.value.__suppress_context__
+
+
+class Sequence:
+    """An opener that answers from a script: an exception is raised, a response returned."""
+
+    def __init__(self, *script: FakeResponse | BaseException) -> None:
+        self.script = list(script)
+        self.calls = 0
+
+    def open(
+        self, fullurl: urllib.request.Request, data: None = None, timeout: float = 0.0
+    ) -> FakeResponse:
+        self.calls += 1
+        step = self.script.pop(0)
+        if isinstance(step, BaseException):
+            raise step
+        return step
+
+
+def test_a_plain_os_error_then_200_is_retried_once_and_redacted_when_it_stops() -> None:
+    ok = FakeResponse(200, message(), b"{}")
+    opener = Sequence(OSError(10052, "network reset"), ok)
+    sleeps: list[float] = []
+
+    response = send_with_retries(
+        UrllibTransport(opener), "GET", URL, HEADERS, None, 60.0, sleep=sleeps.append
+    )
+
+    assert response.status == 200
+    assert opener.calls == 2
+    assert sleeps == [15]
+    failing = Sequence(*(OSError(10065, f"no route {KEY}") for _ in range(4)))
+    with pytest.raises(RunStopped) as stopped:
+        send_with_retries(
+            UrllibTransport(failing), "GET", URL, HEADERS, None, 60.0, sleep=sleeps.append
+        )
+    assert str(stopped.value) == "the request failed 4 times; last: OSError: no route [redacted]"
+
+
+def test_a_value_error_of_the_opener_is_not_a_transport_error() -> None:
+    with pytest.raises(ValueError, match="boom"):
+        UrllibTransport(FakeOpener(ValueError("boom"))).send("GET", URL, HEADERS, None, 1.0)
+
+
 @pytest.mark.parametrize(
     ("body", "expected"),
     [
