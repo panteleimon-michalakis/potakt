@@ -19,6 +19,7 @@ answer, before anything else is sent; the next run starts with that reconciliati
 """
 
 import email.utils
+import hashlib
 import json
 import math
 import os
@@ -31,6 +32,7 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import cast
 
+import potakt.evaluation.test_a as test_a_module
 from potakt.evaluation.compare import Comparison
 from potakt.evaluation.records import (
     CANDIDATE_FILE,
@@ -96,6 +98,7 @@ __all__ = [
     "RunLock",
     "audit_batches",
     "check_order",
+    "check_pins",
     "corpus_scenarios",
     "cost_upper_bound",
     "lock_text",
@@ -1662,7 +1665,33 @@ def take_lock(runs_dir: Path, model: str, now: datetime) -> RunLock:
     return RunLock(path, line)
 
 
-# --- before a run: the order rule and the plan (F5) ------------------------------------------
+# --- before a run: the pins, the order rule and the plan (F5) ---------------------------------
+
+# TASK-005c3g G8: the SHA256 values that ADR-0007 §7 «Prompt» pins (a test compares them with the
+# ADR), checked by every eval run before anything is rendered.
+INSTRUCTION_SHA256 = "65c4ce708a56ae1c44a804aa78e7666d00a36e76422f60756dfb98aef39bf990"
+SCHEMA_SHA256 = "dc4479f854866d2ce783c37cc8d698ce3a5b2096cafba15e6164446fb9f7120d"
+PIN_DIFFERS = "the {what} differs from the one ADR-0007 §7 pins (SHA256 {pinned}); nothing was sent"
+
+
+def check_pins() -> None:
+    """TASK-005c3g G8: ``RunStopped`` unless the prompt file (its bytes) and the schema section
+    (the UTF-8 text that ``render_test_a`` puts after the schema heading) have the SHA256 values
+    that ADR-0007 §7 pins, computed as the tests of ``test_a`` compute them. Reads the module
+    attributes of ``test_a`` that ``render_test_a`` uses, so it checks exactly what is sent. An
+    unreadable prompt file stops with the wording of ``_render``."""
+    path = test_a_module.INSTRUCTION_PATH
+    try:
+        data = path.read_bytes()
+    except OSError as error:
+        reason = error.strerror or type(error).__name__
+        shown = error.filename or path
+        raise RunStopped(f"cannot read the instruction file {shown}: {reason}") from None
+    if hashlib.sha256(data).hexdigest() != INSTRUCTION_SHA256:
+        raise RunStopped(PIN_DIFFERS.format(what="prompt file", pinned=INSTRUCTION_SHA256))
+    schema = test_a_module.render_json_schema().encode("utf-8")
+    if hashlib.sha256(schema).hexdigest() != SCHEMA_SHA256:
+        raise RunStopped(PIN_DIFFERS.format(what="schema section", pinned=SCHEMA_SHA256))
 
 
 def check_order(model: str, runs_dir: Path, corpus_dir: Path) -> None:
@@ -1701,6 +1730,11 @@ def cost_upper_bound(model: str, corpus_dir: Path, scenarios: list[str]) -> floa
     return total / 1_000_000
 
 
+GEMINI_COST_LINE = (
+    "Cost upper bound: $0 on the free tier (the key's project must be on the free tier: runbook §1)"
+)
+
+
 def run_plan(model: str, corpus_dir: Path, runs_dir: Path) -> str:
     """What ``eval run`` would do for ``model``, one fact per line, ending with ``\\n``. Reads
     no key and sends nothing."""
@@ -1736,7 +1770,8 @@ def run_plan(model: str, corpus_dir: Path, runs_dir: Path) -> str:
             "on 2026-11-02)"
         )
     else:
-        lines.append("Cost upper bound: $0 (free tier)")
+        # TASK-005c3g G9: no API shows the key's tier; a billing-linked project pays.
+        lines.append(GEMINI_COST_LINE)
     lock = lock_text(runs_dir)
     if lock is not None:
         lines.append(f"Lock: {lock} (another run may be active)")

@@ -34,6 +34,7 @@ from test_evaluation_runner_anthropic import (
     succeeded,
 )
 from test_evaluation_runner_gemini import FakeGemini
+from test_evaluation_test_a import pinned_sha256
 from typer.testing import CliRunner, Result
 
 import potakt.cli as cli
@@ -117,7 +118,12 @@ def test_the_gemini_dry_run_is_free(tmp_path: Path) -> None:
     result = eval_run(tmp_path, GEMINI)
 
     assert result.exit_code == 0
-    assert "Cost upper bound: $0 (free tier)\n" in result.stdout
+    # TASK-005c3g G9: $0 only if the key's project is on the free tier (runbook §1).
+    assert (
+        "Cost upper bound: $0 on the free tier (the key's project must be on the free tier: "
+        "runbook §1)\n"
+    ) in result.stdout
+    assert "(free tier)" not in result.stdout
     assert result.stdout.endswith("Run again with --yes to send.\n")
 
 
@@ -185,7 +191,7 @@ def test_the_cost_bound_uses_bytes_and_max_tokens_at_the_batch_prices() -> None:
     size = prompt_bytes("01-pharmacy")
 
     assert cost_upper_bound(HAIKU, CORPUS_PATH, ["01-pharmacy"]) == pytest.approx(
-        (size * 0.05 + 32000 * 0.25) / 1e6
+        (size * 0.05 + 64000 * 0.25) / 1e6  # TASK-005c3g G8: Haiku's max_tokens is 64000
     )
     assert cost_upper_bound(OPUS, CORPUS_PATH, ["01-pharmacy"]) == pytest.approx(
         (size * 2.0 + 64000 * 10.0) / 1e6
@@ -200,14 +206,22 @@ def test_a_prompt_over_the_long_prompt_threshold_is_priced_at_that_tier(
     monkeypatch.setattr(runner_module, "LONG_PROMPT_PRICES_USD_PER_MILLION", tiers)
 
     assert cost_upper_bound(HAIKU, CORPUS_PATH, ["01-pharmacy"]) == pytest.approx(
-        (size * 0.25 + 32000 * 1.25) / 1e6
+        (size * 0.25 + 64000 * 1.25) / 1e6
     )
     monkeypatch.setattr(
         runner_module, "LONG_PROMPT_PRICES_USD_PER_MILLION", {HAIKU: (size, tiers[HAIKU][1])}
     )
     assert cost_upper_bound(HAIKU, CORPUS_PATH, ["01-pharmacy"]) == pytest.approx(
-        (size * 0.05 + 32000 * 0.25) / 1e6
+        (size * 0.05 + 64000 * 0.25) / 1e6
     )
+
+
+def test_the_whole_corpus_cost_bounds_of_the_two_claude_models() -> None:
+    # TASK-005c3g G8: the Haiku bound with 64000 output tokens per request (was $0.1034).
+    names = runner_module.corpus_scenarios(CORPUS_PATH)
+
+    assert f"{cost_upper_bound(HAIKU, CORPUS_PATH, names):.4f}" == "0.1834"
+    assert f"{cost_upper_bound(OPUS, CORPUS_PATH, names):.4f}" == "7.3373"
 
 
 def test_the_dry_run_of_a_complete_model_has_nothing_pending(tmp_path: Path) -> None:
@@ -944,6 +958,73 @@ def assert_clean_exit_1(result: Result, message: str) -> None:
     assert message in result.stderr
     assert "Traceback" not in result.output
     assert KEY not in result.output
+
+
+# --- TASK-005c3g G8: the prompt and the schema are checked at run time -----------------------
+
+PROMPT_DIFFERS = (
+    "the prompt file differs from the one ADR-0007 §7 pins (SHA256 "
+    "65c4ce708a56ae1c44a804aa78e7666d00a36e76422f60756dfb98aef39bf990); nothing was sent"
+)
+SCHEMA_DIFFERS = (
+    "the schema section differs from the one ADR-0007 §7 pins (SHA256 "
+    "dc4479f854866d2ce783c37cc8d698ce3a5b2096cafba15e6164446fb9f7120d); nothing was sent"
+)
+EVERY_RUN = [(HAIKU, False), (HAIKU, True), (GEMINI, False), (GEMINI, True)]
+EVERY_RUN_IDS = ["haiku-dry-run", "haiku-yes", "gemini-dry-run", "gemini-yes"]
+
+
+def test_the_pins_in_the_code_are_the_adr_ones() -> None:
+    prompt = pinned_sha256(r"`docs/validation/prompts/test-a\.md`")
+    schema = pinned_sha256(r"output of `potakt schema`")
+
+    assert prompt == runner_module.INSTRUCTION_SHA256
+    assert schema == runner_module.SCHEMA_SHA256
+
+
+def changed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, what: str) -> None:
+    """One changed byte in a copy of the prompt file, or in the schema section."""
+    if what == "prompt":
+        copy = tmp_path / "test-a.md"
+        data = bytearray(test_a_module.INSTRUCTION_PATH.read_bytes())
+        data[0] ^= 1
+        copy.write_bytes(bytes(data))
+        monkeypatch.setattr(test_a_module, "INSTRUCTION_PATH", copy)
+    else:
+        real = test_a_module.render_json_schema
+        monkeypatch.setattr(test_a_module, "render_json_schema", lambda: real() + " ")
+
+
+@pytest.mark.parametrize("what", ["prompt", "schema"])
+@pytest.mark.parametrize(("model", "yes"), EVERY_RUN, ids=EVERY_RUN_IDS)
+def test_a_changed_pin_stops_every_run_before_anything_is_sent_or_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, model: str, yes: bool, what: str
+) -> None:
+    monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
+    monkeypatch.setenv(GEMINI_VARIABLE, KEY)
+    changed(monkeypatch, tmp_path, what)  # NoTransport: any call fails the test
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:1])
+    runs = tmp_path / "runs"
+
+    result = eval_run(runs, model, *(["--yes"] if yes else []), corpus=corpus)
+
+    assert result.exit_code == 1, result.output
+    assert result.stdout == ""
+    assert result.stderr == (PROMPT_DIFFERS if what == "prompt" else SCHEMA_DIFFERS) + "\n"
+    assert not runs.exists()
+
+
+def test_the_pins_are_checked_before_the_key_is_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    changed(monkeypatch, tmp_path, "prompt")
+    read: list[str] = []
+    monkeypatch.setattr(cli, "read_key", read.append)
+
+    result = eval_run(tmp_path / "runs", HAIKU, "--yes", corpus=corpus_copy(tmp_path))
+
+    assert result.stderr == PROMPT_DIFFERS + "\n"
+    assert read == []
 
 
 # Gemini's dry run renders no prompt (its cost is $0), so it has no case here.

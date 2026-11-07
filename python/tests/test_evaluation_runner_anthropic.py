@@ -39,6 +39,7 @@ from runner_helpers import (
 from typer.testing import CliRunner
 
 import potakt.evaluation.runner as runner_module
+import potakt.evaluation.test_a as test_a_module
 from potakt import __version__
 from potakt.cli import app
 from potakt.evaluation import (
@@ -1243,6 +1244,20 @@ def test_a_different_existing_request_stops(tmp_path: Path) -> None:
     (run.model_dir / ALL_SCENARIOS[0] / "request.json").write_bytes(b"{}\n")
 
     with pytest.raises(RunStopped, match="exists with a different request"):
+        run()
+
+    assert after_the_clock(run.server) == []
+
+
+def test_a_missing_instruction_file_stops_the_runner_itself(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The CLI checks the prompt first (TASK-005c3g G8); the runner stops on its own too.
+    missing = tmp_path / "test-a.md"
+    monkeypatch.setattr(test_a_module, "INSTRUCTION_PATH", missing)
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:1])
+
+    with pytest.raises(RunStopped, match=r"^cannot read the instruction file .*test-a\.md: "):
         run()
 
     assert after_the_clock(run.server) == []

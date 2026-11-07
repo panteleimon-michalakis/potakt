@@ -56,7 +56,7 @@ def test_prompt_for_gemini_uses_the_gemini_shape() -> None:
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert sorted(payload) == ["contents", "generationConfig", "systemInstruction"]
-    assert payload["generationConfig"] == {"maxOutputTokens": 32000}
+    assert payload["generationConfig"] == {"maxOutputTokens": 64000}  # TASK-005c3g G8
 
 
 @pytest.mark.parametrize("model", ["claude-sonnet-5-5", "gemini-2.5-flash"])

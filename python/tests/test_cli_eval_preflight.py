@@ -156,7 +156,7 @@ def test_a_haiku_preflight_passes_with_exactly_its_two_free_calls(
         "active",
         "batch: supported",
         "effort high: supported",
-        "max_tokens: 128000 (the run asks for 32000)",
+        "max_tokens: 128000 (the run asks for 64000)",
         "batch list: readable (1 batch on the first page)",
         PASSED,
     ]
@@ -191,7 +191,7 @@ def test_a_gemini_preflight_passes_with_exactly_its_one_free_call(
         "key: accepted by generativelanguage.googleapis.com",
         "model: models/gemini-3.8-flash (Gemini 3.8 Flash), version 3.8",
         "generateContent: supported",
-        "outputTokenLimit: 65536 (the run asks for 32000)",
+        "outputTokenLimit: 65536 (the run asks for 64000)",
         PASSED,
     ]
     headers = gemini_headers(KEY)
@@ -249,12 +249,12 @@ CLAUDE_FAILS = [
     (
         [ok(claude_model(max_tokens=16_000))],
         4,
-        "max_tokens: the model allows 16000, the run asks for 32000",
+        "max_tokens: the model allows 16000, the run asks for 64000",
     ),
     (
-        [ok(claude_model(max_tokens=31_999))],
+        [ok(claude_model(max_tokens=63_999))],
         4,
-        "max_tokens: the model allows 31999, the run asks for 32000",
+        "max_tokens: the model allows 63999, the run asks for 64000",
     ),
     # The list page is read as _list_back_to reads one (TASK-005c3d H6).
     (
@@ -337,7 +337,12 @@ GEMINI_FAILS = [
     (
         ok(gemini_model(outputTokenLimit=8192)),
         3,
-        "outputTokenLimit: the model allows 8192, the run asks for 32000",
+        "outputTokenLimit: the model allows 8192, the run asks for 64000",
+    ),
+    (
+        ok(gemini_model(outputTokenLimit=63_999)),
+        3,
+        "outputTokenLimit: the model allows 63999, the run asks for 64000",
     ),
 ]
 
@@ -356,13 +361,13 @@ def test_a_gemini_check_fails_only_on_a_definite_contradiction(
 
 
 def test_an_output_limit_equal_to_the_runs_passes(monkeypatch: pytest.MonkeyPatch) -> None:
-    claude, _ = preflight(monkeypatch, HAIKU, ok(claude_model(max_tokens=32_000)), ok(list_page()))
-    gemini, _ = preflight(monkeypatch, GEMINI, ok(gemini_model(outputTokenLimit=32_000)))
+    claude, _ = preflight(monkeypatch, HAIKU, ok(claude_model(max_tokens=64_000)), ok(list_page()))
+    gemini, _ = preflight(monkeypatch, GEMINI, ok(gemini_model(outputTokenLimit=64_000)))
 
     assert claude.exit_code == 0, claude.output
-    assert "max_tokens: 32000 (the run asks for 32000)" in claude.stdout.splitlines()
+    assert "max_tokens: 64000 (the run asks for 64000)" in claude.stdout.splitlines()
     assert gemini.exit_code == 0, gemini.output
-    assert "outputTokenLimit: 32000 (the run asks for 32000)" in gemini.stdout.splitlines()
+    assert "outputTokenLimit: 64000 (the run asks for 64000)" in gemini.stdout.splitlines()
 
 
 # --- not reported: a missing field, or one of an unexpected type, never fails -------------------
@@ -380,7 +385,7 @@ def test_a_claude_answer_with_only_its_id_reports_nothing_else_and_passes(
         "model: claude-haiku-5-5 (not reported), created not reported, lifecycle not reported",
         "batch: not reported",
         "effort high: not reported",
-        "max_tokens: not reported (the run asks for 32000)",
+        "max_tokens: not reported (the run asks for 64000)",
         "batch list: readable (1 batch on the first page)",
         PASSED,
     ]
@@ -423,7 +428,7 @@ def test_a_gemini_answer_without_fields_reports_nothing_and_passes(
         "key: accepted by generativelanguage.googleapis.com",
         "model: not reported (not reported), version not reported",
         "generateContent: not reported",
-        "outputTokenLimit: not reported (the run asks for 32000)",
+        "outputTokenLimit: not reported (the run asks for 64000)",
         PASSED,
     ]
 

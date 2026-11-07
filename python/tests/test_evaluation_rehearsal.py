@@ -114,7 +114,7 @@ def test_the_runbook_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert plan.exit_code == 0, plan.stderr
     golden = (GOLDEN / "eval-run-plan-claude-haiku-5-5.txt").read_text(encoding="utf-8")
     assert shown(plan.stdout) == golden
-    assert "Cost upper bound: $0.1034 " in plan.stdout
+    assert "Cost upper bound: $0.1834 " in plan.stdout  # TASK-005c3g G8: max_tokens 64000
     refused = eval_run(OPUS)
     assert refused.exit_code == 1
     assert refused.stdout == ""

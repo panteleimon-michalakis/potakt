@@ -34,6 +34,7 @@ from potakt.evaluation.runner import (
     RUNS_PATH,
     audit_batches,
     check_order,
+    check_pins,
     corpus_scenarios,
     preflight,
     run_anthropic,
@@ -541,6 +542,7 @@ def _eval_run(
         _stop(1, f"no scenario in {corpus}")
     anthropic = model.startswith(ANTHROPIC_PREFIX)
     try:
+        check_pins()  # TASK-005c3g G8: before anything is rendered, read or sent
         check_order(model, runs, corpus)
         if not yes:
             typer.echo(run_plan(model, corpus, runs), nl=False)

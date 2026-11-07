@@ -46,8 +46,8 @@ _CLOSER = "\n```"
 REGISTERED_MODELS = ("claude-haiku-5-5", "gemini-3.8-flash", "claude-opus-5-5")
 STRONG_MODEL = "claude-opus-5-5"
 EFFORT = "high"  # documented for both Claude models (sent to Haiku too, ADR §7)
-ANTHROPIC_MAX_TOKENS: dict[str, int] = {"claude-opus-5-5": 64000, "claude-haiku-5-5": 32000}
-GEMINI_MAX_OUTPUT_TOKENS = 32000
+ANTHROPIC_MAX_TOKENS: dict[str, int] = {"claude-opus-5-5": 64000, "claude-haiku-5-5": 64000}
+GEMINI_MAX_OUTPUT_TOKENS = 64000
 ANTHROPIC_PREFIX = "claude-"
 
 
