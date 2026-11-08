@@ -5,7 +5,9 @@ copy of the full ten-scenario corpus, with fake keys, fake transports and a fake
 runs, Haiku (one answer is not valid Unicode: recorded as malformed, TASK-005c3d H8), the checks
 of the Haiku records, Gemini in two invocations, then Opus with a lost create response whose
 adopted batch misses one result: the batch is held, the plain re-run sends nothing, and
-``--release`` after the reviewer's decision completes the run. Every invocation that called the
+``--release`` after the reviewer's decision completes the run (TASK-005c3h H3: first stopped by a
+wrong laptop clock after the release, then the same command again). Each Claude model's first run
+waits and checks the workspace before its first batch (H6). Every invocation that called the
 batch API is audited for unrecorded batches (H13), and every request carries only its own API's
 key header (H7). At the end, the runs
 directory holds exactly the expected files (no lock), the fake keys are in no file and no output,
@@ -16,6 +18,7 @@ import email.utils
 import json
 import os
 from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -226,13 +229,23 @@ def test_the_runbook_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     )
     assert len(batches.calls) == calls  # no call, so no audit either
     assert "checking for batches" not in again.output
-    # After the reviewer's decision: the release sends the missing scenario in a new batch.
+    # After the reviewer's decision: the release. TASK-005c3h H3: the laptop clock is 15 minutes
+    # off, so the run stops after the release, at the clock check; the owner syncs the clock and
+    # runs the same command again, which passes the release step and sends the missing scenario
+    # in a new batch.
+    with monkeypatch.context() as patch:
+        patch.setattr(cli, "utc_now", lambda: clock.now() + timedelta(minutes=15))
+        skewed = eval_run(OPUS, "--yes", "--release", "msgbatch_02")
+    assert skewed.exit_code == 1
+    assert skewed.stdout == "batch msgbatch_02 released after review\n"
+    assert skewed.stderr.startswith("the laptop clock differs from the API's by 900 s")
+    assert len(batches.calls) == calls + 1  # the free clock call only, so no audit either
     lists = batches.lists
     opus = eval_run(OPUS, "--yes", "--release", "msgbatch_02")
     audited(opus, lists, 0)
     assert opus.exit_code == 0, opus.stderr
     assert opus.stdout.startswith(
-        "batch msgbatch_02 released after review\nbatch msgbatch_03 created for 1 scenarios\n"
+        "batch msgbatch_02 was already released\nbatch msgbatch_03 created for 1 scenarios\n"
     )
     assert batches.creates() == [list(ALL_SCENARIOS), list(ALL_SCENARIOS), [missing]]
     assert "Complete: yes\n" in opus.stdout
@@ -273,5 +286,5 @@ def test_the_runbook_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
             assert printed.exit_code == 0
             assert (runs / model / name / "request.json").read_bytes() == printed.stdout_bytes
     # TASK-005c3g G2: one clock check per Claude --yes run that got past the held check (Haiku,
-    # the held Opus run, the release), and every one of them passed.
-    assert len(batches.clock_checks) == 3
+    # the held Opus run, the skewed release, the release again); all but the skewed one passed.
+    assert len(batches.clock_checks) == 4

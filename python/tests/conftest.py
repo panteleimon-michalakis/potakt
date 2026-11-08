@@ -45,16 +45,21 @@ def _no_network(*args: object, **kwargs: object) -> object:
 
 
 @pytest.fixture(autouse=True)
-def no_network(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+def no_network() -> Iterator[None]:
     """TASK-005c2 E6: no test may open a connection or resolve a name, not even on loopback.
 
     The socket entry points raise instead, so a test that would reach a model API (or any
     other host) fails at once. ``potakt`` subprocesses started by tests are not covered; they
     run without credentials (above) and no product module imports a network library
     (``test_no_network.py``).
+
+    TASK-005c3h H9: the patches go through this fixture's own ``MonkeyPatch.context()``, not the
+    test's ``monkeypatch`` (an autouse fixture that requests it shares the test's instance), so a
+    test's ``monkeypatch.undo()`` cannot remove the guard.
     """
-    monkeypatch.setattr(socket.socket, "connect", _no_network)
-    monkeypatch.setattr(socket.socket, "connect_ex", _no_network)
-    monkeypatch.setattr(socket, "create_connection", _no_network)
-    monkeypatch.setattr(socket, "getaddrinfo", _no_network)
-    yield
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(socket.socket, "connect", _no_network)
+        patch.setattr(socket.socket, "connect_ex", _no_network)
+        patch.setattr(socket, "create_connection", _no_network)
+        patch.setattr(socket, "getaddrinfo", _no_network)
+        yield

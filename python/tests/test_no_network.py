@@ -43,6 +43,26 @@ def test_every_socket_entry_point_is_guarded(call: object) -> None:
         call()
 
 
+ENTRY_POINTS = [
+    (socket.socket, "connect"),
+    (socket.socket, "connect_ex"),
+    (socket, "create_connection"),
+    (socket, "getaddrinfo"),
+]
+
+
+def test_the_guard_survives_a_tests_own_undo(monkeypatch: pytest.MonkeyPatch) -> None:
+    # TASK-005c3h H9 (the review's #17): the guard patched through the test's own monkeypatch,
+    # so a test's undo() removed it (the reviewer's probe: a real DNS lookup). The identity is
+    # checked before any call, so a missing guard fails here without touching the network.
+    monkeypatch.undo()
+
+    for owner, name in ENTRY_POINTS:
+        assert getattr(getattr(owner, name), "__name__", "") == "_no_network", name
+    with pytest.raises(RuntimeError, match=GUARD_MESSAGE):
+        socket.getaddrinfo("example.invalid", 443)
+
+
 def network_imports(path: Path) -> list[str]:
     """The network modules a source file imports (``import x.y`` and ``from x.y import z``)."""
     found: list[str] = []

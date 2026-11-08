@@ -17,13 +17,21 @@ interrupt; when the run names several candidate batches, it cancels all but the 
 held batch it runs the same command once more, which must send nothing, and then stops: a
 release is the reviewer's decision, so the driver never releases.
 
+TASK-005c3h H9: the "state-lost" fault deletes the model directory before one invocation (a
+`git clean`, a second clone, another `--runs`). If the workspace then lists a live batch, that
+invocation must send no create and stop with the workspace message of TASK-005c3h H6, and the
+example ends there, as after a held batch; the other invariants are checked against the batches
+recorded before the loss.
+
 The invariants are the money-safety rules: every scenario is recorded once, no scenario is paid
 for in two batches that are not cancelled, no batch is left unrecorded, no lock is left behind,
 and no invocation ends with a traceback or the last-resort message. The protection of ADR-0007
-§7 assumes a new batch is listed within 120 s of the answer: an example whose lag (plus the
-stagger of a late duplicate) is longer is *not covered*; there a duplicate may be paid, but the
-audit of TASK-005c3d H13 must name every unrecorded batch, and a covered example must never
-print such a warning.
+§7 assumes a new batch is listed within 120 s of the answer. An example is *not covered* only if
+it has a fault that can leave a batch the runner does not know at once (``Script.unclear``: an
+unclear create, or a state loss) and its lag (plus the stagger of a late duplicate) is longer;
+there a duplicate may be paid, but the audit of TASK-005c3d H13 must name every unrecorded
+batch. Every other example is covered (TASK-005c3h H9, the review's #18: a lag-150 example
+without such a fault used to be skipped) and must never print such a warning.
 
 What the fake does not model (its limits): an interrupt during a list call, a results download
 or the recording of an answer; time passing during a call; a list lag above 150 seconds; a
@@ -35,16 +43,18 @@ still counts as paid: on the real API it runs anyway.
 import email.utils
 import json
 import os
+import re
+import shutil
 import tempfile
 import urllib.request
 from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from hypothesis import given, note, settings
+from hypothesis import event, example, given, note, settings
 from hypothesis import strategies as st
 from runner_helpers import ALL_SCENARIOS, KEY, NOW, Sleeps, corpus_copy, files_containing
 from test_evaluation_runner_anthropic import CLOCK_URL, errored, page_of, succeeded
@@ -97,6 +107,21 @@ RESULTS = ("succeeded", "errored", "expired")
 # E7: a damaged results file, drawn with a small probability (shrinks towards "none").
 DAMAGE = ("none",) * 8 + ("drop", "corrupt")
 UNCLEAR = {"503": 503, "302": 302, "408": 408, "520": 520}
+# TASK-005c3h H9: the create faults that can leave a batch the runner does not know at once (the
+# batch is created, but no readable batch object reaches the runner).
+UNKNOWN_BATCH_CREATES = frozenset(
+    {
+        "lost-created",
+        "raw-oserror-created",
+        "503-created",
+        "302-created",
+        "408-created",
+        "520-created",
+        "interrupt-after",
+        "duplicated",
+        "duplicated-staggered",
+    }
+)
 
 
 @dataclass
@@ -112,11 +137,19 @@ class Script:
     damaged: int  # the index, in its batch, of the scenario whose line is damaged
     stagger: int = 25  # seconds between the two batches of a "duplicated-staggered" create
     refusals: list[int] = field(default_factory=list[int])  # "replace-denied", per invocation
+    # TASK-005c3h H9 "state-lost": the model directory is deleted before this invocation (index).
+    lost: int | None = None
 
     def reach(self) -> int:
         """How long after the answer the last batch of a create may become listed."""
         staggered = "duplicated-staggered" in self.creates
         return self.lag + (self.stagger if staggered else 0)
+
+    def unclear(self) -> bool:
+        """The script has a fault that can leave a batch the runner does not know at once: a
+        create in ``UNKNOWN_BATCH_CREATES`` (lost-created, raw-oserror-created, 503-, 302-, 408-
+        and 520-created, interrupt-after, duplicated, duplicated-staggered), or a state loss."""
+        return self.lost is not None or any(f in UNKNOWN_BATCH_CREATES for f in self.creates)
 
 
 scripts = st.builds(
@@ -132,6 +165,7 @@ scripts = st.builds(
     damage=st.sampled_from(DAMAGE),
     damaged=st.integers(0, len(SCENARIOS) - 1),
     refusals=REFUSALS,
+    lost=st.one_of(st.none(), st.integers(1, 6)),
 )
 
 
@@ -155,6 +189,7 @@ class FakeApi:
     clock: Sleeps
     batches: dict[str, Batch] = field(default_factory=dict[str, Batch])
     calls: int = 0
+    posts: int = 0  # create calls that reached the server
     damaged_once: bool = False
     paged_once: bool = False
 
@@ -247,6 +282,7 @@ class FakeApi:
             return ok({"data": [], "has_more": False, "first_id": None, "last_id": None})
         if method == "POST":
             assert url == BATCHES_URL
+            self.posts += 1
             return self._create(json.loads(body or b"{}"))
         if url.startswith(LIST_URL):
             fault = self.script.lists.pop(0) if self.script.lists else "ok"
@@ -384,22 +420,54 @@ def runs_base(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return tmp_path_factory.mktemp("faults-runs")
 
 
+def adoptable(api: FakeApi, batch: Batch, entry: Any) -> bool:
+    """``batch`` could be adopted by the unconfirmed create ``entry`` (``_is_candidate`` with
+    the leftover entry's window, as the audit spares it)."""
+    status = runner_module._batch_status(api.document(batch))
+    assert status is not None
+    created = cast(datetime, runner_module._instant(status.created_at))
+    listed = runner_module._Listed(status, created)
+    return runner_module._is_candidate(listed, entry, runner_module._t0(entry, None), set())
+
+
+def p5(lag: int) -> Script:
+    """TASK-005c3s probe P5: one batch, interrupted at its second poll, then the model directory
+    is lost before the next invocation."""
+    return Script(
+        creates=["ok"],
+        polls=["ok", "interrupt"],
+        lists=[],
+        lag=lag,
+        results={name: [] for name in SCENARIOS},
+        damage="none",
+        damaged=0,
+        lost=1,
+    )
+
+
 @settings(max_examples=150, deadline=None)
 @given(script=scripts)
+@example(script=p5(90))
+@example(script=p5(150))
 def test_no_fault_sequence_pays_twice_or_loses_a_record(
     corpus: Path, runs_base: Path, script: Script
 ) -> None:
     note(f"script: {script!r}")
-    # The protection of ADR-0007 §7 holds when every batch is listed within 120 s of the answer.
-    covered = script.reach() <= COVERED_REACH
+    # The protection of ADR-0007 §7 holds when every batch is listed within 120 s of the answer;
+    # only a fault that can leave a batch the runner does not know at once depends on it.
+    covered = script.reach() <= COVERED_REACH or not script.unclear()
+    event("covered" if covered else "not covered")
     runs = Path(tempfile.mkdtemp(dir=runs_base))
     model_dir = runs / HAIKU
     clock = Sleeps()
     api = FakeApi(script, clock)
     log: list[str] = []
     warned: set[str] = set()  # the batches named by an audit warning
+    stop_named: set[str] = set()  # the batches named by the H6 stop after a state loss
     unchecked = False  # some audit could not check
-    capped = returned = held = False
+    capped = returned = held = lost_stop = lost_pending = lost_live = False
+    lost_ids: set[str] = set()  # the batches recorded before the state loss
+    lost_creating: list[Any] = []  # its unconfirmed creates (``creating`` entries)
     args = ["eval", "run", "--model", HAIKU, "--runs", str(runs), "--corpus", str(corpus), "--yes"]
     refused = [0]  # G13: the refusals left of the current "replace-denied" fault
     with pytest.MonkeyPatch.context() as patch:
@@ -408,11 +476,36 @@ def test_no_fault_sequence_pays_twice_or_loses_a_record(
         patch.setattr(cli, "utc_now", clock.now)
         patch.setattr(os, "replace", refusing_replace(runs, refused))
         patch.setenv("POTAKT_ANTHROPIC_API_KEY", KEY)
-        for _ in range(INVOCATIONS):
+        for invocation in range(INVOCATIONS):
             refused[0] = script.refusals.pop(0) if script.refusals else 0
             calls = api.calls
+            if invocation == script.lost and model_dir.is_dir():
+                # TASK-005c3h H9 "state-lost": git clean, a second clone, another --runs.
+                event("state-lost")
+                entries = runner_module._load_state(model_dir)
+                lost_ids |= {b.id for b in entries if b.id is not None}
+                lost_creating += [b for b in entries if b.state == "creating"]
+                lost_live = any(not batch.cancelled for batch in api.batches.values())
+                lost_pending = True  # until the H6 stop, or a create (only if nothing was live)
+                shutil.rmtree(model_dir)
+            posts = api.posts
             result = CliRunner().invoke(app, args)
             log += [result.stdout, f"EXIT {result.exit_code}: {result.stderr}"]
+            if lost_pending:
+                # 10. After a state loss, no create while the workspace lists a live batch of
+                #     the lost records (always seen when covered: listed within 120 s, and the
+                #     H6 check lists 120 s after the run started); its stop ends the example.
+                if result.exit_code == 1 and "the workspace has batch" in result.stderr:
+                    assert api.posts == posts, "a create after the state loss"
+                    lost_stop = True
+                    # The ids it names (a batch of an unconfirmed create had no id in the lost
+                    # batches.json): the owner is told about them, as by an audit warning.
+                    shown = result.stderr.split(" that no batches.json", 1)[0]
+                    stop_named |= set(re.findall(r"msgbatch_\d+", shown))
+                    break
+                if covered and lost_live:
+                    assert api.posts == posts, f"the state loss was not seen: {result.output}"
+                lost_pending = api.posts == posts
             # 6. No lock is left behind, however the invocation ended.
             assert not (runs / LOCK_FILE).exists(), "lock left after an invocation"
             # 7. No traceback, and the last resort never is what saves a run (H10).
@@ -455,8 +548,9 @@ def test_no_fault_sequence_pays_twice_or_loses_a_record(
 
     recorded = [name for name in SCENARIOS if (model_dir / name / "response.json").is_file()]
     # 1. Every scenario recorded exactly once (write_answer never replaces a record), unless the
-    #    batch cap was reached or a batch is held for the reviewer.
-    assert capped or returned or held, f"no normal end after {INVOCATIONS} invocations"
+    #    batch cap was reached, a batch is held for the reviewer or a state loss stopped the run.
+    ended = capped or returned or held or lost_stop
+    assert ended, f"no normal end after {INVOCATIONS} invocations"
     if returned:
         assert recorded == list(SCENARIOS), f"not recorded: {set(SCENARIOS) - set(recorded)}"
     # 2. No double payment (covered examples): per scenario, one live batch succeeded at most.
@@ -472,13 +566,19 @@ def test_no_fault_sequence_pays_twice_or_loses_a_record(
     states = [batch.state for batch in runner_module._load_state(model_dir)]
     if returned:
         assert "creating" not in states, f"creating entry left: {states}"
-    assert (model_dir / BATCH_STATE_FILE).is_file() or not api.batches
+    assert (model_dir / BATCH_STATE_FILE).is_file() or not api.batches or lost_stop
     # 4. The fake key is in no file.
     assert files_containing(runs, KEY) == []
-    # 5. No orphan in a covered example: every live batch is in batches.json, and no audit
-    #    warning is a false alarm. In an example that is not covered, every orphan is named by
-    #    an audit warning (H13), unless an audit could not check.
-    known = {batch.id for batch in runner_module._load_state(model_dir)}
+    # 5. No orphan in a covered example: every live batch is in batches.json (or was, before a
+    #    state loss, or is named by the H6 stop that ended the example), and no audit warning is
+    #    a false alarm. In an example that is not covered, every orphan is named by an audit
+    #    warning (H13) or by that H6 stop, unless an audit could not check.
+    known = {batch.id for batch in runner_module._load_state(model_dir)} | lost_ids | stop_named
+    # A batch that a lost unconfirmed create may adopt was recorded before the loss too (as its
+    # creating entry): restoring the records lets the next run adopt it (the audit's own rule).
+    known |= {
+        b.id for b in api.batches.values() if any(adoptable(api, b, e) for e in lost_creating)
+    }
     orphans = sorted(b.id for b in api.batches.values() if not b.cancelled and b.id not in known)
     if covered:
         assert orphans == [], f"paid batches missing from batches.json: {orphans}"
