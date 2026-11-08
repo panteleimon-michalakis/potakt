@@ -351,6 +351,18 @@ run stops before it sends anything if the prompt file or the schema section diff
 SHA256 pinned in this section, or if a pending scenario keeps an answer that could not be saved
 (`response.json.tmp`).
 
+**Amendment (2026-11-08, TASK-005c3h, before any LLM run).** A run checks the request of each
+scenario, as rendered, against the SHA256 that the harness pins for that scenario and model, and
+stops before it sends anything if one differs or is missing. Before the first batch of a Claude
+model, a run waits until two minutes after it started, lists the workspace's batches and stops if
+one that is not cancelled is in no model's `batches.json` and not in the reviewer's
+`acknowledged-batches.txt`; the audit never names, and a reconciliation never adopts, an
+acknowledged batch. Before any batch, a run stops if a pending scenario has exactly one result, a
+succeeded one, in the kept results of a finished batch. Releasing a held batch stops, and the batch
+stays held, if its kept results file cannot be read, or has non-blank lines but none of them is a
+result of that batch. A leftover `response.json.tmp` of a scenario of the open batch does not stop a
+run: the batch's results are downloaded again and the answer is recorded from them.
+
 ## Consequences
 - Results can be compared across models and over time, because every rule of the measurement is fixed
   in advance and implemented once, in tested code.
