@@ -44,6 +44,7 @@ import potakt.evaluation.test_a as test_a_module
 from potakt import __version__
 from potakt.cli import app
 from potakt.evaluation import (
+    CORPUS_PATH,
     load_scenario,
     render_test_a,
     request_payload,
@@ -4223,3 +4224,67 @@ def test_an_unreadable_kept_file_of_a_done_batch_stops_before_any_create(tmp_pat
     assert str(raised.value).startswith(head)
     assert str(raised.value).endswith(tail)
     assert server.creates() == [list(ALL_SCENARIOS[:2])]
+
+
+# --- TASK-005c3h H7: each request checked against its pinned SHA256 --------------------------
+
+
+def changed_csv(corpus: Path, name: str) -> None:
+    """One bit of the last character before the final line break of the scenario's first CSV
+    file (as ``test_a_changed_byte_in_a_csv_changes_the_pinned_payload``)."""
+    csv = sorted((corpus / name).glob("*.csv"))[0]
+    data = bytearray(csv.read_bytes())
+    data[-2] ^= 1
+    csv.write_bytes(bytes(data))
+
+
+def request_differs(name: str, model: str) -> str:
+    pinned = runner_module.PAYLOAD_SHA256[(model, name)]
+    return (
+        f"{name}: the request for {model} differs from the one the harness pins (SHA256 "
+        f"{pinned}); nothing was sent"
+    )
+
+
+def test_a_changed_request_stops_before_the_create_and_writes_no_request(tmp_path: Path) -> None:
+    # The review's #6, #19, #47: the pins were checked once, at the start, on the prompt and
+    # the schema only; 28 of the 30 inputs only in tests.
+    server = FakeBatches()
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:3])
+    changed_csv(run.corpus, "02-hotel-reception")
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == request_differs("02-hotel-reception", HAIKU)
+    assert after_the_workspace(server) == []  # only the free clock call and workspace list
+    assert sorted(run.runs.rglob("request.json")) == []
+    assert not (run.model_dir / BATCH_STATE_FILE).exists()
+
+
+def test_a_request_without_a_pin_stops_before_the_create(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pins = dict(runner_module.PAYLOAD_SHA256)
+    del pins[(HAIKU, "01-pharmacy")]
+    monkeypatch.setattr(runner_module, "PAYLOAD_SHA256", pins)
+    server = FakeBatches()
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:2])
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == (
+        "01-pharmacy: no request is pinned for claude-haiku-5-5; nothing was sent"
+    )
+    assert after_the_workspace(server) == []
+    assert sorted(run.runs.rglob("request.json")) == []
+
+
+@pytest.mark.parametrize("model", ["claude-haiku-5-5", "claude-opus-5-5", "gemini-3.8-flash"])
+def test_the_real_corpus_passes_the_request_check_for_every_model(
+    tmp_path: Path, model: str
+) -> None:
+    plan = runner_module.run_plan(model, CORPUS_PATH, tmp_path / "runs")
+
+    assert "Pending (10): " in plan

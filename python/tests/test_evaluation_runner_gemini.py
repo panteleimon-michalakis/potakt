@@ -427,3 +427,73 @@ def test_a_leftover_temporary_file_of_a_recorded_scenario_is_ignored(tmp_path: P
 
     assert run.server.sent() == ["02-hotel-reception"]
     assert run.recorded() == list(ALL_SCENARIOS[:2])
+
+
+# --- TASK-005c3h H7: every request checked against its pin before the first one is sent ------
+
+
+def changed_csv(corpus: Path, name: str) -> None:
+    csv = sorted((corpus / name).glob("*.csv"))[0]
+    data = bytearray(csv.read_bytes())
+    data[-2] ^= 1
+    csv.write_bytes(bytes(data))
+
+
+@pytest.mark.parametrize("name", ["01-pharmacy", "03-call-centre"])
+def test_a_changed_request_stops_before_the_first_request(tmp_path: Path, name: str) -> None:
+    # TASK-005c3s S3-4: Gemini renders one scenario at a time, so a check at the third scenario
+    # alone would stop after two requests were sent.
+    run = make_run(tmp_path, FakeGemini(), ALL_SCENARIOS[:3])
+    changed_csv(run.corpus, name)
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    pinned = runner_module.PAYLOAD_SHA256[(GEMINI, name)]
+    assert str(raised.value) == (
+        f"{name}: the request for gemini-3.8-flash differs from the one the harness pins (SHA256 "
+        f"{pinned}); nothing was sent"
+    )
+    assert run.server.calls == []
+    assert sorted(run.runs.rglob("request.json")) == []
+
+
+def test_a_request_without_a_pin_stops_before_the_first_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pins = dict(runner_module.PAYLOAD_SHA256)
+    del pins[(GEMINI, "02-hotel-reception")]
+    monkeypatch.setattr(runner_module, "PAYLOAD_SHA256", pins)
+    run = make_run(tmp_path, FakeGemini(), ALL_SCENARIOS[:2])
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == (
+        "02-hotel-reception: no request is pinned for gemini-3.8-flash; nothing was sent"
+    )
+    assert run.server.calls == []
+    assert sorted(run.runs.rglob("request.json")) == []
+
+
+def test_each_request_is_checked_again_when_it_is_built(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The pre-check passed; the second request changed before it was built: no file, no call
+    # for it (the first one was sent and recorded).
+    run = make_run(tmp_path, FakeGemini(), ALL_SCENARIOS[:2])
+    real_send = run.server.send
+
+    def send(*args: Any) -> HttpResponse:
+        response = real_send(*args)
+        changed_csv(run.corpus, "02-hotel-reception")
+        return response
+
+    monkeypatch.setattr(run.server, "send", send)
+
+    with pytest.raises(RunStopped, match=r"^02-hotel-reception: the request for gemini-3\.8"):
+        run()
+
+    assert run.server.sent() == ["01-pharmacy"]
+    assert run.recorded() == ["01-pharmacy"]
+    assert not (run.model_dir / "02-hotel-reception" / "request.json").exists()

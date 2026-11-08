@@ -1135,6 +1135,44 @@ def test_a_changed_pin_stops_every_run_before_anything_is_sent_or_written(
     assert not runs.exists()
 
 
+@pytest.mark.parametrize("model", [HAIKU, GEMINI])
+def test_the_dry_run_stops_on_a_changed_request(tmp_path: Path, model: str) -> None:
+    # TASK-005c3h H7: the dry run checks every pending request against its pin, as --yes does.
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:2])
+    csv = sorted((corpus / "02-hotel-reception").glob("*.csv"))[0]
+    data = bytearray(csv.read_bytes())
+    data[-2] ^= 1
+    csv.write_bytes(bytes(data))
+    runs = tmp_path / "runs"
+
+    result = eval_run(runs, model, corpus=corpus)
+
+    pinned = runner_module.PAYLOAD_SHA256[(model, "02-hotel-reception")]
+    assert result.exit_code == 1, result.output
+    assert result.stdout == ""
+    assert result.stderr == (
+        f"02-hotel-reception: the request for {model} differs from the one the harness pins "
+        f"(SHA256 {pinned}); nothing was sent\n"
+    )
+    assert not runs.exists()
+
+
+def test_the_dry_run_stops_on_a_request_without_a_pin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pins = dict(runner_module.PAYLOAD_SHA256)
+    del pins[(HAIKU, "01-pharmacy")]
+    monkeypatch.setattr(runner_module, "PAYLOAD_SHA256", pins)
+
+    result = eval_run(tmp_path, HAIKU, corpus=corpus_copy(tmp_path, ALL_SCENARIOS[:1]))
+
+    assert result.exit_code == 1, result.output
+    assert (
+        result.stderr
+        == "01-pharmacy: no request is pinned for claude-haiku-5-5; nothing was sent\n"
+    )
+
+
 def test_the_pins_are_checked_before_the_key_is_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

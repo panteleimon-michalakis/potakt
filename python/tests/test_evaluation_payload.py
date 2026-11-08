@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+import potakt.evaluation.runner as runner_module
 import potakt.evaluation.test_a as test_a_module
 from potakt.evaluation import (
     CORPUS_PATH,
@@ -176,6 +177,12 @@ def test_the_pins_cover_every_scenario_and_model() -> None:
         (model, name) for model in REGISTERED_MODELS for name in names
     )
     assert len(PINNED_PAYLOADS) == 30
+
+
+def test_the_runner_checks_requests_against_exactly_this_table() -> None:
+    # TASK-005c3h H7: the runner's pins (checked when each request is built) are these 30.
+    assert dict(runner_module.PAYLOAD_SHA256) == PINNED_PAYLOADS  # both ways: dict equality
+    assert len(runner_module.PAYLOAD_SHA256) == 30
 
 
 @pytest.mark.parametrize(("model", "name"), sorted(PINNED_PAYLOADS))

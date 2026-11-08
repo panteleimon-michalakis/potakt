@@ -24,12 +24,13 @@ import json
 import math
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from importlib.metadata import version
 from pathlib import Path
+from types import MappingProxyType
 from typing import cast
 
 import potakt.evaluation.test_a as test_a_module
@@ -63,6 +64,7 @@ from potakt.evaluation.test_a import (
     STRONG_MODEL,
     Prompt,
     check_registered,
+    render_payload,
     render_test_a,
     request_payload,
 )
@@ -586,8 +588,10 @@ def _render(corpus_dir: Path, name: str) -> Prompt:
 
 
 def _prepare(corpus_dir: Path, model_dir: Path, model: str, name: str) -> dict[str, object]:
-    """Write ``request.json`` of one scenario (the ``eval prompt`` payload) and return it."""
-    payload = request_payload(_render(corpus_dir, name), model)
+    """Write ``request.json`` of one scenario (the ``eval prompt`` payload) and return it.
+    TASK-005c3h H7: the payload is checked against its pin first (``_pinned_payload``), so a
+    request that differs is never written or sent."""
+    payload = _pinned_payload(corpus_dir, name, model)
     path = model_dir / name / REQUEST_FILE
     try:
         write_request(model_dir / name, payload)
@@ -1010,6 +1014,8 @@ class _AnthropicRun:
             if not _CUSTOM_ID.fullmatch(name):
                 raise RunStopped(f"{name}: not a valid custom_id for a batch request")
         self._check_kept_answers(pending)  # TASK-005c3h H6 (S3-8): before every create
+        # TASK-005c3h H7: every request against its pin before any request.json is written.
+        _check_requests(self.corpus_dir, pending, self.model)
         requests = [
             {
                 "custom_id": name,
@@ -1515,6 +1521,9 @@ def _run_gemini(
         echo("nothing to run")
         return
     _check_unsaved(corpus_dir, model_dir, None)  # TASK-005c3g G5: before the first request
+    # TASK-005c3h H7 (S3-4): every request against its pin before the first is sent; _prepare
+    # checks each one again when it is built.
+    _check_requests(corpus_dir, pending, model)
     url = GEMINI_URL.format(model=model)
     checked = _JsonObjectOnly(transport)
     for name in pending:
@@ -1840,6 +1849,117 @@ def take_lock(runs_dir: Path, model: str, now: datetime) -> RunLock:
 INSTRUCTION_SHA256 = "65c4ce708a56ae1c44a804aa78e7666d00a36e76422f60756dfb98aef39bf990"
 SCHEMA_SHA256 = "dc4479f854866d2ce783c37cc8d698ce3a5b2096cafba15e6164446fb9f7120d"
 PIN_DIFFERS = "the {what} differs from the one ADR-0007 §7 pins (SHA256 {pinned}); nothing was sent"
+# TASK-005c3h H7 (ADR-0007 §7, amendment of TASK-005c3h): the SHA256 of the UTF-8 bytes of each
+# request.json (``render_payload``), by (model, scenario), rendered on 2026-11-07 (TASK-005c3g
+# G8; the test of the payloads compares this table with its own). Each request is checked
+# against it when it is built, before it is written or sent.
+PAYLOAD_SHA256: Mapping[tuple[str, str], str] = MappingProxyType(
+    {
+        (model, name): digest
+        for model, digests in {
+            "claude-haiku-5-5": {
+                "01-pharmacy": "faef5841bbd85ecd626384e960c4b7c46f346ea07daa2a50b6fe5612f734fd05",
+                "02-hotel-reception": (
+                    "81a80663d0336591ddd7ba5accc16daa01ff1b6808f0ff89f4b1e6f66295982d"
+                ),
+                "03-call-centre": (
+                    "421350f0c28470490bdb3c064dc2c6b39ff4c896fe01c796c7c1562150626be2"
+                ),
+                "04-restaurant": "1428fa1b37659f82fb63f0edab27ab41c2fef5358b6835eacf78c276770ca0cb",
+                "05-supermarket-checkouts": (
+                    "479ad540b308c41f8608cea99e1d851c713ac0e3a3efcb6a7720ff349d9a2647"
+                ),
+                "06-ambulance-crews": (
+                    "1c0369b9904296acaa28d945929783b9462d0cdbdfaadf8d3b6cb30c87e8ca54"
+                ),
+                "07-security-guards": (
+                    "10cbdc212bb05ecc0eda59666810d44141dc2e6ebdb69a92a5c331b5608357ab"
+                ),
+                "08-warehouse": "f62fa4f41920ce1914a41ec6c515fcede6aa72bd2d9e5f8b5b632976842da639",
+                "09-care-home": "c3afab5992ee1ec636118d47d1c142303ff87e9c649745c2ce59095fbc10fe83",
+                "10-municipal-nursery": (
+                    "d8a3334b2e5bc839942f042816e44c160887daaf6d4c581b50b618875c1ddee4"
+                ),
+            },
+            "gemini-3.8-flash": {
+                "01-pharmacy": "d961421eb43735a6b34f3ca22c4463bd7a1e2c3f44e2ebd92356b68f5f4a87d4",
+                "02-hotel-reception": (
+                    "0ba5f16b35e1ba8713112eff81565fefd5e2fb51fe3f2cbbd90a450148d1538f"
+                ),
+                "03-call-centre": (
+                    "b6df81386b396daedf779e3e97a5096a9e5259af7c48402a621e1625f6ab9354"
+                ),
+                "04-restaurant": "1df724151443e1c11887b51bf4d394e4b57ffcfded3de462be34121a812f3b21",
+                "05-supermarket-checkouts": (
+                    "2d514bc139b46ab484133dbac3d92da0abc479457c5f49ca3980c2b743ba9a55"
+                ),
+                "06-ambulance-crews": (
+                    "b3a08cfc864e59da11f6a161480ffc9eba3d15659c9cc6730943a19c1827e184"
+                ),
+                "07-security-guards": (
+                    "4badf090dfc0930cece1ca5964e0b00cecee4084471e999364b416c9ec38f93a"
+                ),
+                "08-warehouse": "1129739c397f4a90a2253c64408a706065f948c64b648cb51a0ad1300c5957f2",
+                "09-care-home": "760b6f9e78a0d0ad555ba61375e0a34a9a2bf07e705bea53bcc4c9d82394de39",
+                "10-municipal-nursery": (
+                    "228286c61c2bc1e53609507c130137cfe80bdc84f8971a265ea2644f695f3047"
+                ),
+            },
+            "claude-opus-5-5": {
+                "01-pharmacy": "ad2a0b5ed17b6bc6060dca73e25f78465ae44ed5835e3a685dbf170d31481770",
+                "02-hotel-reception": (
+                    "ae284a47d48a85852d12173ad3dfba5745d0372db4abf630d58759b5bd1885a4"
+                ),
+                "03-call-centre": (
+                    "fd42f6b8ff7fe4dadc3c27b06a91b6b243654ec7e8acc966146e722c0c6c36b2"
+                ),
+                "04-restaurant": "41e862ca7928a5dbc47446e85ac62a891085d526dc387ece761b258dedf3d729",
+                "05-supermarket-checkouts": (
+                    "1a459150d622e7e95792c4faace69911f99641394df1332306289dfe9c0a098b"
+                ),
+                "06-ambulance-crews": (
+                    "c1567196b7aff31143022c71ea6493a89e03303a9d90d8f49e75670c49a6a611"
+                ),
+                "07-security-guards": (
+                    "ff891de4da228abaec98642240e382e559f81d6872fd7b56cc3121f391c46e1c"
+                ),
+                "08-warehouse": "159330b7222341544111acefdfe860d1fb1719c1c546f925bb81ebdd538aaf59",
+                "09-care-home": "acd34f6e055bda192f44cc2881f7c42c2e332f1a16568e2101b5b9869d79a6d5",
+                "10-municipal-nursery": (
+                    "8c6c04064ce699e25a53eadb1b1a902f4349fb9145a22c2c1a058f58b024a8ba"
+                ),
+            },
+        }.items()
+        for name, digest in digests.items()
+    }
+)
+REQUEST_DIFFERS = (
+    "{name}: the request for {model} differs from the one the harness pins (SHA256 {pinned}); "
+    "nothing was sent"
+)
+REQUEST_UNPINNED = "{name}: no request is pinned for {model}; nothing was sent"
+
+
+def _pinned_payload(corpus_dir: Path, name: str, model: str) -> dict[str, object]:
+    """The request payload of scenario ``name`` for ``model`` (the ``eval prompt`` payload), as
+    rendered now; ``RunStopped`` unless the SHA256 of its UTF-8 bytes (``render_payload``, the
+    bytes of ``request.json``) is the one ``PAYLOAD_SHA256`` pins (TASK-005c3h H7). Reads the
+    table when called. Nothing is written."""
+    payload = request_payload(_render(corpus_dir, name), model)
+    pinned = PAYLOAD_SHA256.get((model, name))
+    if pinned is None:
+        raise RunStopped(REQUEST_UNPINNED.format(name=name, model=model))
+    digest = hashlib.sha256(render_payload(payload).encode("utf-8")).hexdigest()
+    if digest != pinned:
+        raise RunStopped(REQUEST_DIFFERS.format(name=name, model=model, pinned=pinned))
+    return payload
+
+
+def _check_requests(corpus_dir: Path, names: list[str], model: str) -> None:
+    """TASK-005c3h H7 (TASK-005c3s S3-4): every request of ``names`` checked against its pin
+    before the first is sent (Gemini, the dry run); nothing is written."""
+    for name in names:
+        _pinned_payload(corpus_dir, name, model)
 
 
 def check_pins() -> None:
@@ -1912,7 +2032,8 @@ def run_plan(model: str, corpus_dir: Path, runs_dir: Path) -> str:
     TASK-005c3h H5: ``RunStopped`` (the ``--yes`` message) for a leftover ``response.json.tmp``
     that ``--yes`` would stop on; a leftover of the open batch adds its ``REPLACED`` line. While
     a batch is held the leftovers are not checked: ``--yes`` stops on the held batch first, and
-    ``--release`` first records what the kept results hold."""
+    ``--release`` first records what the kept results hold. H7: ``RunStopped`` for a pending
+    request that differs from its pin or has none (``_check_requests``)."""
     model_dir = runs_dir / model_directory_name(model)
     anthropic = model.startswith(ANTHROPIC_PREFIX)
     batches = _load_state(model_dir) if anthropic else []
@@ -1921,6 +2042,7 @@ def run_plan(model: str, corpus_dir: Path, runs_dir: Path) -> str:
         opened = next((batch for batch in batches if batch.state == "open"), None)
         replaced = _check_unsaved(corpus_dir, model_dir, opened)
     pending = pending_scenarios(corpus_dir, model_dir)
+    _check_requests(corpus_dir, pending, model)  # TASK-005c3h H7: as --yes checks them
     recorded = recorded_scenarios(corpus_dir, model_dir)
     lines = [
         f"Test A run plan: {model}",
