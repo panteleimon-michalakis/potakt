@@ -419,7 +419,8 @@ def _acknowledged(runs_dir: Path, sleep: Sleep) -> set[str]:
         if not stripped or stripped.startswith("#"):
             continue
         matched = _ACKNOWLEDGED_LINE.fullmatch(stripped)
-        if matched is None:
+        # H11 review: a CR inside a line (a bare-CR line break) would hide the next id.
+        if matched is None or "\r" in stripped:
             raise RunStopped(NOT_A_BATCH_ID.format(path=path, number=number))
         found.add(matched.group(1))
     return found
@@ -1189,8 +1190,10 @@ class _AnthropicRun:
         batches = _load_state(self.model_dir)
         if not batches:
             return
-        # Every model's entries, read before the wait: an invalid state stops the audit at once.
+        # Every model's entries, read before the wait: an invalid state stops the audit at once;
+        # TASK-005c3h H11 review: the acknowledgements too (never named, H6).
         every = _every_entry(self.model_dir.parent)
+        acknowledged = _acknowledged(self.model_dir.parent, self.sleep)
         started = [cast(datetime, _started(batch.started_at)) for batch in batches]
         target = max(started) + timedelta(seconds=AUDIT_DELAY_SECONDS)
         wait = min((target - self.now()).total_seconds(), AUDIT_DELAY_SECONDS)
@@ -1209,7 +1212,7 @@ class _AnthropicRun:
         earliest = min(instants) - ADOPTION_WINDOW
         listed = self._list_back_to(earliest)
         known = {batch.id for batch in every if batch.id is not None}
-        known |= _acknowledged(self.model_dir.parent, self.sleep)  # TASK-005c3h H6: never named
+        known |= acknowledged  # TASK-005c3h H6: never named
         pending = [batch for batch in every if batch.state == "creating"]
         for item in listed:
             if (

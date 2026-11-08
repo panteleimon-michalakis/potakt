@@ -3318,6 +3318,24 @@ def test_an_invalid_state_of_another_model_warns_before_any_wait_or_call(tmp_pat
     assert run.echo[0].startswith("warning: could not check for batches that no run recorded (")
 
 
+def test_an_invalid_acknowledgement_file_warns_before_any_wait_or_call(tmp_path: Path) -> None:
+    # TASK-005c3h H11 review: the audit read the file only after its wait and list.
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:1])
+    write_state(run.model_dir, batch_entry("msgbatch_91", ["01-pharmacy"], "done"))
+    path = run.runs / "acknowledged-batches.txt"
+    path.write_bytes(b"not/an id\n")
+
+    audit(run)
+
+    assert run.server.calls == []
+    assert run.sleeps == []
+    assert run.echo == [
+        "warning: could not check for batches that no run recorded "
+        f"({path} line 1 is not a batch id; it was not changed): look in the Claude Console "
+        "(Batches)"
+    ]
+
+
 # --- TASK-005c3g G3: a refused replace in a run ------------------------------------------------
 
 
@@ -4102,6 +4120,9 @@ def test_an_acknowledgement_file_that_is_not_utf8_stops(tmp_path: Path) -> None:
     [
         ("msgbatch_x\nnot/an id\n", 2),
         ("msgbatch_x # ok\n\n# fine\nmsgbatch_y;rm\n", 4),
+        # H11 review: a bare CR inside a line (no PowerShell command writes one) would have
+        # hidden the next id in the comment of the first.
+        ("msgbatch_x  # reason\rmsgbatch_y\n", 1),
         ("\N{NO-BREAK SPACE}msgbatch_x\N{LINE SEPARATOR}\n", 1),
     ],
 )
