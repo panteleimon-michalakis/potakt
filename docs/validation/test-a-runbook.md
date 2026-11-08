@@ -146,16 +146,23 @@ looks the batch up in the Claude batch list once, page by page back to the reque
 it was created, and sends nothing twice. Do not press Ctrl+C during that wait; if you do, the next
 run waits again (up to three minutes) before it sends anything.
 
-After every Claude run that called the API, the run checks once more for batches that no run
-recorded: it prints `waiting <n> s before checking for batches that no run recorded` (at most
-five minutes after the last batch creation), lists the recent batches and only then prints the
-stop message or the summary, also after an unexpected error. This check never changes the
-records or the exit code. It looks back to the first batch creation of any model, so a batch it
-once named is named again by every later run, of any model, unless it is cancelled. Only a batch
-still in progress can be cancelled ("Batches may be canceled any time before processing ends.");
-a batch that has already ended stays in the batch list and is named again on every later run.
-Once the reviewer has decided about a named batch, its warning on later runs is expected: send a
-warning again only if it names a new batch id. If it prints
+Before the first batch of each Claude model, the run waits until two minutes after it started,
+printing `waiting <n> s before checking the workspace for batches that no run recorded` (at most
+120 s), and lists every batch of the workspace: a batch that no `batches.json` records stops the
+run before anything is sent (§8). Do not press Ctrl+C during that wait.
+
+After every Claude run that made an API call other than the clock check, the run checks once more
+for batches that no run recorded: it prints `waiting <n> s before checking for batches that no
+run recorded` (at most five minutes after the last batch creation), lists the recent batches and
+only then prints the stop message or the summary, also after an unexpected error. This check
+never changes the records or the exit code. It looks back to the first batch creation of any
+model, so a batch it once named is named again by every later Claude run that made an API call
+other than the clock check, unless it is cancelled or acknowledged. Only a batch still in
+progress can be cancelled ("Batches may be canceled any time before processing ends."); a batch
+that has already ended stays in the batch list. Once the reviewer has decided about a named
+batch, the reviewer may acknowledge it in acknowledged-batches.txt (§8), and no run names it
+again; until then its warning on later runs is expected: send a warning again only if it names a
+new batch id. If it prints
 `warning: batch <id> (<n> requests, created <time>) is recorded by no run: …`, see §8.
 
 **Check the Console after each model's run** (here and in §6):
@@ -235,6 +242,9 @@ Commit each model's records right after its run and its checks, before the next 
 
 ## 8. If something goes wrong
 
+Any stop or warning that is not listed below: do not run `--yes` again; send the whole output to
+the reviewer.
+
 - **Interrupted run** (Ctrl+C, a closed window, a lost connection, a crash, the laptop sleeping):
   run the same command again; it resumes the open batch or sends only the pending scenarios.
   Nothing that was recorded is lost, and no batch is paid for twice: before a Claude run sends a
@@ -244,17 +254,28 @@ Commit each model's records right after its run and its checks, before the next 
   minutes while results download, up to ten minutes during a Gemini request. Wait for
   `interrupted: run the same command again to resume (nothing is lost)`; do not close the window
   instead (a closed window leaves the lock). A Gemini answer that arrives during that wait is
-  discarded, and that scenario is sent again by the next run.
+  discarded, and that scenario is sent again by the next run. If saving a Gemini answer fails
+  before its temporary file is complete, the answer is lost and the next run sends that scenario
+  again (free tier: no charge).
 - **What these lines mean:**
   - `adopted batch <id> created by an earlier create request`: an earlier create request (in
     this run, when its answer was lost, a redirect, a 408 or a 5xx, or in an interrupted run) did
     create a batch; the run polls that batch and records its answers instead of sending a new one.
-  - `no batch was created by the earlier create request (started <time>)`: the batch list was
-    checked once, two minutes after the answer (three minutes after the request, for a request
-    of an interrupted run), and no batch was found; the run continues and sends the pending
-    scenarios.
+  - `no batch was created by the earlier create request (started <time>)`: the create request
+    was made by an earlier run that was interrupted; the batch list was checked, page by page, at
+    least three minutes after that request, and no batch was found; the run continues and sends
+    the pending scenarios.
   - `waiting <n> s before looking for a batch the create request may have made`: the pause
     before that check; it is at most 180 s.
+  - `waiting <n> s before checking the workspace for batches that no run recorded`: the pause
+    before the first batch of a Claude model (§3), at most 120 s, so that a batch created before
+    this run started is listed; then the run lists every batch of the workspace. Do not press
+    Ctrl+C.
+  - `batch <id> was already released`: the same `--release` command, run again after a stop that
+    came after the release (for example the clock check); nothing to do, the run continues.
+  - `<scenario>: a leftover response.json.tmp will be replaced by the answer of batch <id>`
+    (also in the dry run): an earlier run was interrupted while it saved this answer; the run
+    downloads that batch's results again and records the answer from them. Nothing to do.
   - `Unconfirmed create request: started <time> (<n> scenarios); --yes checks for its batch
     before sending anything` (dry run): an earlier run was interrupted while creating a batch.
     The dry run itself sends nothing; the next `--yes` run does the check above first.
@@ -267,10 +288,14 @@ Commit each model's records right after its run and its checks, before the next 
   as `Lock: <model> <time> (another run may be active)`. The lock file is never committed. If a
   run ends with `could not remove the lock <path> (…): delete it before the next run`, delete
   that file once the window is idle; a run never removes a lock that another run took over.
+- `the lock <path> now belongs to another run (…); it was left in place`: two runs overlapped. Do
+  the Console check of §3 for every model, and send the output of both windows to the reviewer.
 - **Several batches could be the one created by an earlier create request** (the run stops and
   names them; for example after two windows ran at once): in the Claude Console (Batches) cancel
-  all of them but the oldest, then run the same command again; it adopts the one left. Requests
-  that a cancelled batch already processed are billed, the others are not.
+  all of them but the oldest, then run the same command again; it adopts the one left. A batch
+  that has already ended cannot be cancelled: then send the message to the reviewer, who decides
+  which batches to acknowledge («Acknowledged batches»). Requests that a cancelled batch already
+  processed are billed, the others are not.
 - **A held batch.** Some results need the reviewer: `batch <id>: no result for <scenario>`, a
   malformed results line, `<scenario>: invalid_request_error: …` (the API refused that request
   itself, so it would fail again) or `<scenario>: errored (<type>); it would fail again` (an
@@ -289,13 +314,31 @@ Commit each model's records right after its run and its checks, before the next 
      records, from `batch-<id>.results.jsonl`, each scenario of that batch that is still pending
      and has exactly one line there, a succeeded one, with nothing sent (a scenario with two
      lines, or with an errored, expired or unreadable one, is sent again):
-     `<scenario>: recorded from the kept results of batch <id>`. If that file is missing or
-     cannot be read, it stops with `cannot read the kept results <path>: <reason>; batch <id> is
-     still held: send this message to the reviewer`, with nothing recorded or sent. Then it
-     prints `batch <id> released after review` and continues: the scenarios still pending are
-     sent in a new batch. If one of those recordings fails, it stops with
+     `<scenario>: recorded from the kept results of batch <id>`. Then it prints
+     `batch <id> released after review` and continues: the scenarios still pending are sent in a
+     new batch. If one of those recordings fails, it stops with
      `<scenario>: could not be recorded (<type>); batch <id> is still held: send this message to
-     the reviewer`: the batch stays held and nothing was sent; send the message to the reviewer.
+     the reviewer` (or, if the answer itself was saved, `<scenario>: recorded, but its record
+     could not be completed (<type>); it is completed when the batch is released`): the batch
+     stays held and nothing was sent; send the message to the reviewer.
+  4. If that file is missing or cannot be read, the release stops with
+     `cannot read the kept results <path>: <reason>; batch <id> is still held: send this message
+     to the reviewer`; if it has lines but none of them is a result of that batch (for example a
+     download in another shape), with
+     `<path> holds no result of batch <id>; batch <id> is still held: send this message to the
+     reviewer`. Nothing was recorded or sent and the batch stays held: send the message to the
+     reviewer. Only on the reviewer's decision, one of these ways out, then the same
+     `--yes --release <id>` command again:
+     - restore the file from the Console's download of the batch results (Claude Console,
+       Batches, the batch); the reviewer first checks it: one `{"custom_id": …, "result": …}`
+       object per line;
+     - only if the reviewer decides so, an empty file at that path, from the repository root
+       (the release then sends every pending scenario of that batch again):
+
+       ```powershell
+       $file = "docs/validation/runs/test-a/<model dir>/batch-<id>.results.jsonl"
+       New-Item -ItemType File -Force -Path $file
+       ```
 - **Errored, expired and canceled results.** `<scenario>: errored (<type>); pending` (only the
   four transient types), `<scenario>: expired; pending` and `<scenario>: canceled; pending`:
   - that request got no answer and is not billed;
@@ -334,13 +377,61 @@ Commit each model's records right after its run and its checks, before the next 
   in <path>; nothing was sent; send this message to the reviewer and do not delete or rename the
   file`: an earlier run received this answer but Windows refused to save it (another program held
   the file for longer than the run retries, about 3 seconds). The answer is kept in that `.tmp`
-  file; sending the scenario again would pay twice and lose it, so every run stops first. Send the
-  message to the reviewer and leave the file where it is.
+  file; sending the scenario again would pay twice and lose it, so every run stops first, the dry
+  run too. Send the message to the reviewer, who decides whether the file holds a complete
+  answer, and leave the file where it is. (A leftover of a scenario of the open batch does not
+  stop the run: see `… will be replaced by the answer of batch <id>` above.)
 - **A changed prompt or schema.** `the prompt file differs from the one ADR-0007 §7 pins (SHA256
   <sha256>); nothing was sent` or `the schema section differs from the one ADR-0007 §7 pins
   (SHA256 <sha256>); nothing was sent` (every run, the dry run too): the prompt or the code is
   not the one pre-registered, so no answer would count. Run `git status` from the repository
   root, do not run `--yes`, and send both outputs to the reviewer.
+- **A changed request.** `<scenario>: the request for <model> differs from the one the harness
+  pins (SHA256 <sha256>); nothing was sent` or `<scenario>: no request is pinned for <model>;
+  nothing was sent` (every run, the dry run too): the request of that scenario, as rendered from
+  its CSV files, the prompt and the schema, is not the pre-registered one; nothing was sent. Run
+  `git status` from the repository root, do not run `--yes`, and send both outputs to the
+  reviewer.
+- **`the workspace has batch <ids> that no batches.json in <runs> records and
+  acknowledged-batches.txt does not name; nothing was sent: …`** (before the first batch of a
+  Claude model; `batches` when it names several): the workspace has a batch that the records on
+  this laptop do not know. If the records of an earlier run were lost (for example after
+  `git clean`, in a second clone or with another `--runs`), run
+  `git status docs/validation/runs/test-a` from the repository root; if it shows the files of
+  `<model dir>` as deleted, restore them with
+  `git restore docs/validation/runs/test-a/<model dir>` and run the same command again.
+  Otherwise do not run `--yes` again: send the message and that output to the reviewer.
+- **`the workspace lists more than 1000 batches: this check cannot see them all; nothing was
+  sent; send this message to the reviewer`**: send the message to the reviewer.
+- **`<scenario>: its answer is in batch-<id>.results.jsonl but its records are missing: restore
+  them from git before running again; nothing was sent`**: the files of that scenario were
+  deleted, but its answer is in the kept results of a finished batch; sending it again would pay
+  twice. From the repository root, `git status docs/validation/runs/test-a` shows them as
+  deleted; `git restore docs/validation/runs/test-a/<model dir>/<scenario>` brings them back;
+  then run the same command again. If git does not show them, send the message to the reviewer.
+  `cannot read the kept results <path>: <reason>; nothing was sent: restore it from git or send
+  this message to the reviewer`: the same check could not read that file; if
+  `git status docs/validation/runs/test-a` shows it as deleted, `git restore <path>` brings it
+  back; otherwise send the message to the reviewer.
+- **The acknowledgement file.** `<path> is not UTF-8: write it with the command in the runbook;
+  it was not changed`, `<path> line <n> is not a batch id; it was not changed` or
+  `cannot read <path>: <reason>` (for `acknowledged-batches.txt`): nothing was sent. Do not edit
+  the file; send the message to the reviewer, who decides how to rewrite it (only with the
+  command of «Acknowledged batches»). For `cannot read`, first close any program that has the
+  file open (an editor) and run the same command again.
+- **Acknowledged batches.** Only on the reviewer's decision, from the repository root, once for
+  each batch id the reviewer names:
+  `Add-Content -Path docs/validation/runs/test-a/acknowledged-batches.txt -Value "<id>  # <reason>"
+  -Encoding Ascii`
+  Then commit the file with the records. A run never adopts or names an acknowledged batch, and
+  the check before a model's first batch does not stop on it. Do not write the file in any other
+  way: `Set-Content`, `Out-File` and `>` change its encoding. The same command, on two short
+  lines to copy:
+
+  ```powershell
+  $file = "docs/validation/runs/test-a/acknowledged-batches.txt"
+  Add-Content -Path $file -Value "<id>  # <reason>" -Encoding Ascii
+  ```
 - **`warning: batch <id> (<n> requests, created <time>) is recorded by no run: it may be a paid
   duplicate; send this warning to the reviewer, who decides whether to cancel it in the Claude
   Console (Batches)`**: a batch exists in the workspace that no run recorded, for example a
@@ -368,8 +459,9 @@ Commit each model's records right after its run and its checks, before the next 
 - **`<scenario>: could not be recorded (<type>)`**: one result could not be saved (for example a
   full disk). In a Claude batch it is one of the problems of a held batch (above). For Gemini the
   run stops with `<scenario>: could not be recorded (<type>); send this message to the
-  reviewer`. Only the type of the error is shown, never its text. Send the message to the
-  reviewer.
+  reviewer`, or, if the answer itself was saved, with `<scenario>: recorded, but its record could
+  not be completed (<type>); the next run completes it; send this message to the reviewer`. Only
+  the type of the error is shown, never its text. Send the message to the reviewer.
 - **`<scenario>: the record could not be completed (<type>); send this message to the
   reviewer`**: an earlier answer is saved but its score could not be derived; nothing was sent.
   Send the message to the reviewer.

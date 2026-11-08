@@ -40,6 +40,7 @@ from test_evaluation_test_a import pinned_sha256
 from typer.testing import CliRunner, Result
 
 import potakt.cli as cli
+import potakt.evaluation.records as records_module
 import potakt.evaluation.runner as runner_module
 import potakt.evaluation.test_a as test_a_module
 from potakt.cli import app, eval_app
@@ -1979,9 +1980,10 @@ def test_the_run_help_states_the_exit_codes_and_files() -> None:
         "Exit code 0: everything pending is recorded, or the plan was printed; 1: the run "
         "stopped (the reason on stderr), a held batch, a missing or invalid key, claude-opus-5-5 "
         "before a complete claude-haiku-5-5 run, another run active (the lock file), a --release "
-        "of a batch that is not held, a missing directory or a corpus without a scenario, an "
-        "unexpected error (its type only, never its text), or an interruption; 2: usage error "
-        "(also an unregistered model id, or --release without --yes)"
+        "of a batch that is not held, an unknown batch in the workspace, a request that differs "
+        "from its pin, a missing directory or a corpus without a scenario, an unexpected error "
+        "(its type only, never its text), or an interruption; 2: usage error (also an "
+        "unregistered model id, or --release without --yes)"
     ) in text
     assert "--release" in text
     assert (
@@ -2019,9 +2021,11 @@ def test_the_readmes_have_the_texts_of_the_pre_run_audit() -> None:
         "The summary's cost counts every answer's tokens at the pinned prices. A refusal outside "
         "the billed categories is not billed, so the summary may overstate the cost."
     ) in validation
-    assert "after a Claude run that called the API and was not interrupted it runs a check" in (
-        readme
-    )
+    # TASK-005c3h H10 (#24): the clock call is not counted for the audit.
+    assert (
+        "after a Claude run that made an API call other than the clock check and was not "
+        "interrupted it runs a check"
+    ) in readme
 
 
 # --- the runbook (F6) -------------------------------------------------------------------------
@@ -2098,7 +2102,9 @@ def test_the_runbook_quotes_the_reconciliation_messages_and_the_new_rules() -> N
         "again after every 10 polls without a change (every 10 minutes)",
         # TASK-005c3d H3-H6: the announced wait, the future started_at, the page cap.
         "`" + runner_module.WAITING.format(seconds="<n>") + "` (at most 180 s)",
-        "three minutes after the request, for a request of an interrupted run",
+        # TASK-005c3h H10 (#27): only an entry left by an earlier run prints that line.
+        "the create request was made by an earlier run that was interrupted; the batch list was "
+        "checked, page by page, at least three minutes after that request, and no batch was found",
         "`" + runner_module.FUTURE_STOP.format(started_at="<time>") + "`",
         "`" + runner_module.TOO_MANY_BATCHES + "`",
         "page by page back to the request",
@@ -2194,13 +2200,15 @@ def test_the_runbook_has_the_texts_of_the_pre_run_audit() -> None:
     gemini_block = SESSION_BLOCK.replace("cd <repo>\\python\n", "").replace("Anthropic", "Gemini")
 
     for quoted in (
-        # R1
+        # R1, as TASK-005c3h H10 (#23) changes it.
         "It looks back to the first batch creation of any model, so a batch it once named is "
-        "named again by every later run, of any model, unless it is cancelled. Only a batch still "
-        'in progress can be cancelled ("Batches may be canceled any time before processing '
-        'ends."); a batch that has already ended stays in the batch list and is named again on '
-        "every later run. Once the reviewer has decided about a named batch, its warning on later "
-        "runs is expected: send a warning again only if it names a new batch id.",
+        "named again by every later Claude run that made an API call other than the clock check, "
+        "unless it is cancelled or acknowledged. Only a batch still in progress can be cancelled "
+        '("Batches may be canceled any time before processing ends."); a batch that has already '
+        "ended stays in the batch list. Once the reviewer has decided about a named batch, the "
+        "reviewer may acknowledge it in acknowledged-batches.txt (§8), and no run names it again; "
+        "until then its warning on later runs is expected: send a warning again only if it names "
+        "a new batch id.",
         # R2, §3 and §1 step 2
         "This first batch also confirms the `output_config` field. The API checks each request of "
         'a batch only while it processes the batch ("Validation of the `params` object for each '
@@ -2305,3 +2313,145 @@ def test_the_runbook_has_the_texts_of_the_pre_run_audit() -> None:
     # R3: midnight Pacific winter time (UTC-8) is 08:00 UTC, 10:00 in Athens winter time (UTC+2).
     pacific, athens = timezone(timedelta(hours=-8)), timezone(timedelta(hours=2))
     assert datetime(2026, 11, 8, 0, 0, tzinfo=pacific).astimezone(athens).hour == 10
+
+
+def normalised(text: str) -> str:
+    return " ".join(text.split())
+
+
+def test_the_runbook_has_the_texts_of_the_max_effort_review() -> None:
+    # TASK-005c3h H10: every new or changed message as the code prints it, and the texts the
+    # task gives verbatim.
+    text = normalised(RUNBOOK.read_text(encoding="utf-8"))
+    r = runner_module
+    workspace = r.UNKNOWN_BATCHES.format(noun="batch", ids="<ids>", runs="<runs>")
+    messages = (
+        # H2 and TASK-005c3s S3-3: the release keeps the batch held.
+        r.KEPT_UNREADABLE.format(path="<path>", reason="<reason>", id="<id>"),
+        r.KEPT_NOT_RESULTS.format(path="<path>", id="<id>"),
+        # H3, H5, H6.
+        r.ALREADY_RELEASED.format(id="<id>"),
+        r.REPLACED.format(name="<scenario>", file="response.json.tmp", id="<id>"),
+        r.WORKSPACE_WAITING.format(seconds="<n>"),
+        workspace.split(" if the records")[0] + " …",
+        r.WORKSPACE_TOO_MANY,
+        r.LOST_RECORDS.format(name="<scenario>", file="batch-<id>.results.jsonl"),
+        r.LOST_UNREADABLE.format(path="<path>", reason="<reason>"),
+        r.NOT_UTF8.format(path="<path>"),
+        r.NOT_A_BATCH_ID.format(path="<path>", number="<n>"),
+        "cannot read <path>: <reason>",
+        # H7.
+        r.REQUEST_DIFFERS.format(name="<scenario>", model="<model>", pinned="<sha256>"),
+        r.REQUEST_UNPINNED.format(name="<scenario>", model="<model>"),
+        # H8 #3 (TASK-005c3s S3-6): Claude, then Gemini.
+        r.RECORDED_INCOMPLETE.format(name="<scenario>", kind="<type>", when=r.COMPLETED_ON_RELEASE),
+        r.RECORDED_INCOMPLETE.format(name="<scenario>", kind="<type>", when=r.COMPLETED_NEXT_RUN)
+        + r.TO_REVIEWER,
+        # TASK-005c3s S2-2: the lock taken over by another run.
+        "the lock <path> now belongs to another run (…); it was left in place",
+    )
+    for message in messages:
+        assert f"`{normalised(message)}`" in text, message
+    verbatim = (
+        # S2-2: the catch-all at the top of §8, and the lock entry.
+        "Any stop or warning that is not listed below: do not run `--yes` again; send the whole "
+        "output to the reviewer.",
+        "`the lock <path> now belongs to another run (…); it was left in place`: two runs "
+        "overlapped. Do the Console check of §3 for every model, and send the output of both "
+        "windows to the reviewer.",
+        # «Acknowledged batches» (TASK-005c3s S3-2).
+        "Only on the reviewer's decision, from the repository root, once for each batch id the "
+        "reviewer names: `Add-Content -Path docs/validation/runs/test-a/acknowledged-batches.txt "
+        '-Value "<id>  # <reason>" -Encoding Ascii` Then commit the file with the records. A run '
+        "never adopts or names an acknowledged batch, and the check before a model's first batch "
+        "does not stop on it. Do not write the file in any other way: `Set-Content`, `Out-File` "
+        "and `>` change its encoding.",
+        # S2-1, after "…then run the same command again; it adopts the one left."
+        "it adopts the one left. A batch that has already ended cannot be cancelled: then send "
+        "the message to the reviewer, who decides which batches to acknowledge («Acknowledged "
+        "batches»).",
+        # The review's #4.
+        "If saving a Gemini answer fails before its temporary file is complete, the answer is "
+        "lost and the next run sends that scenario again (free tier: no charge).",
+        # The review's #23, #24, #27.
+        "After every Claude run that made an API call other than the clock check,",
+        "the create request was made by an earlier run that was interrupted; the batch list was "
+        "checked, page by page, at least three minutes after that request, and no batch was found;",
+    )
+    for quoted in verbatim:
+        assert normalised(quoted) in text, quoted
+    # H2's ways out, each with its exact command (the long ones as a short two-line block).
+    assert (
+        normalised(
+            '$file = "docs/validation/runs/test-a/<model dir>/batch-<id>.results.jsonl" '
+            "New-Item -ItemType File -Force -Path $file"
+        )
+        in text
+    )
+    assert (
+        normalised(
+            '$file = "docs/validation/runs/test-a/acknowledged-batches.txt" '
+            'Add-Content -Path $file -Value "<id>  # <reason>" -Encoding Ascii'
+        )
+        in text
+    )
+    assert 'one `{"custom_id": …, "result": …}` object per line' in text
+    # The old texts are gone.
+    for old in (
+        "its pending scenarios will be sent again",
+        "the batch list was checked once, two minutes after the answer",
+        "named again by every later run, of any model",
+        "After every Claude run that called the API,",
+    ):
+        assert old not in text, old
+
+
+def test_the_readmes_help_and_docstrings_have_the_texts_of_the_max_effort_review() -> None:
+    # TASK-005c3h H10: #24-#29 old -> new, and the H6 and H7 sentences.
+    readme = normalised((REPO / "README.md").read_text(encoding="utf-8"))
+    validation = normalised((REPO / "docs/validation/README.md").read_text(encoding="utf-8"))
+    run_help = normalised(cast(str, cli.eval_run.__doc__))
+    preflight_help = normalised(cast(str, cli.eval_preflight.__doc__))
+    assert (
+        "After a Claude run that made an API call other than the clock check and was not "
+        "interrupted"
+    ) in validation
+    assert (
+        "After a Claude run that made an API call other than the clock check and was not "
+        "interrupted"
+    ) in run_help
+    assert (
+        "a field the API does not report is shown as not reported, except the model id, which "
+        "must match."
+    ) in preflight_help
+    assert (
+        "a field the API does not report being shown as `not reported` (the model id must be "
+        "reported and must match)"
+    ) in readme
+    assert (
+        "or ASCII with every non-ASCII character escaped if any string in the answer holds an "
+        "unpaired surrogate, which has no UTF-8 form; the answer is malformed only when its text "
+        "or its stop holds one)"
+    ) in validation
+    for doc in (readme, validation, run_help):
+        assert "an unknown batch in the workspace, a request that differs from its pin" in doc
+        assert "acknowledged-batches.txt" in doc
+        assert "against the SHA256 that the harness pins for" in doc
+    for doc in (readme, validation, run_help):
+        assert "called the API" not in doc
+    assert (
+        "by listing every page back to the window (``_list_back_to``) at least 120 seconds after "
+        "the later of the call and its answer, or, for an entry left by an earlier run, at least "
+        "180 seconds after its ``started_at``, before anything else is sent;"
+    ) in normalised(cast(str, runner_module.__doc__))
+    records_doc = normalised(cast(str, records_module.__doc__))
+    assert (
+        "a leftover ``*.tmp`` is simply overwritten by the next write (but the runner first stops "
+        "on a ``response.json.tmp`` of a pending scenario, unless that scenario belongs to the "
+        "open batch)."
+    ) in records_doc
+    comment = normalised((SOURCE / "cli.py").read_text(encoding="utf-8").replace("#", " "))
+    assert (
+        "after a run that made a counted call (any call but the clock check) and was not "
+        "interrupted"
+    ) in comment

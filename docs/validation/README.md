@@ -25,24 +25,31 @@ list of batches before anything is sent, so no batch is paid for twice. A batch 
 need the reviewer is held (also for a result error that a repeat cannot fix): every run stops
 before sending anything until the owner runs `--yes --release <id>` after the reviewer's
 decision, which first records what the batch's kept results file holds. Every run checks the
-prompt file and the schema section against the SHA256 values that ADR-0007 §7 pins, and no run
-sends a scenario whose earlier answer could not be saved (`response.json.tmp`, never committed).
-Only one `--yes` run at a time: it holds the lock file `runs/test-a/.eval-run.lock` (never
-committed). After a Claude run that called the API and was not interrupted, it runs a check for
-unrecorded batches after the run: up to five minutes after the last batch creation it lists the
-batches again and names each one that no run recorded (a paid duplicate the reviewer decides
-about; only a batch still in progress can be cancelled); this never changes the records or the
-exit code. Exit code 0: all recorded or the
-plan printed; 1: the run stopped (the reason on stderr), a held batch, a missing or invalid key,
-the order refused, another run active, a `--release` of a batch that is not held, a missing
-directory, a corpus without a scenario, an unexpected error (its type only, never its text) or
-an interruption; 2: usage error, also for an unregistered model id or `--release` without
-`--yes`.
+prompt file and the schema section against the SHA256 values that ADR-0007 §7 pins, and each
+request, when it is built and before anything is sent, against the SHA256 that the harness pins
+for that scenario and model (the dry run too); no run sends a scenario whose earlier answer
+could not be saved (`response.json.tmp`, never committed). Before the first batch of a Claude
+model, a run waits until two minutes after it started and stops, sending nothing, if the
+workspace has a batch that is not cancelled, is in no `batches.json` and is not in
+`runs/test-a/acknowledged-batches.txt` (written only on the reviewer's decision, with the command
+in the runbook, and committed with the records). Only one `--yes` run at a time: it holds the
+lock file `runs/test-a/.eval-run.lock` (never committed). After a Claude run that made an API
+call other than the clock check and was not interrupted, it runs a check for unrecorded batches
+after the run: up to five minutes after the last batch creation it lists the batches again and
+names each one that no run recorded and the reviewer has not acknowledged (a paid duplicate the
+reviewer decides about; only a batch still in progress can be cancelled); this never changes the
+records or the exit code. Exit code 0: all recorded or the plan printed; 1: the run stopped (the
+reason on stderr), a held batch, a missing or invalid key, the order refused, another run
+active, a `--release` of a batch that is not held, an unknown batch in the workspace, a request
+that differs from its pin, a missing directory, a corpus without a scenario, an unexpected error
+(its type only, never its text) or an interruption; 2: usage error, also for an unregistered
+model id or `--release` without `--yes`.
 
 Test A records go to `runs/test-a/<model>/<scenario id>/` (ADR-0007 §7 and its amendment):
 `request.json`, `response.json` (the raw answer, written first and never overwritten; UTF-8,
-or ASCII with every non-ASCII character escaped if the answer holds text that is not valid
-Unicode, which is a malformed answer), `candidate.txt` and `comparison.json`. For a Claude
+or ASCII with every non-ASCII character escaped if any string in the answer holds an unpaired
+surrogate, which has no UTF-8 form; the answer is malformed only when its text or its stop holds
+one), `candidate.txt` and `comparison.json`. For a Claude
 model, `runs/test-a/<model>/` also holds `batches.json` (one entry per batch creation: the batch id, the scenarios, when the create request
 was sent, the batch's creation time, the state `creating`, `open`, `held`, `done` or `failed`,
 and the problems that held the batch, kept after its release) and

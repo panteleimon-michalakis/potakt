@@ -31,8 +31,8 @@ one that calls them (free, read-only); the owner runs both by following
   `GET /v1beta/models/<id>`), with the key from the same variable as `eval run`; no prompt is
   sent and nothing is written; for Claude it also compares the laptop clock with the API's
   `Date` header (more than 2 minutes apart fails); it prints one line per check and fails only on
-  a definite contradiction, a field the API does not report being shown as `not reported` (exit
-  code 0
+  a definite contradiction, a field the API does not report being shown as `not reported` (the
+  model id must be reported and must match) (exit code 0
   every check passed, 1 a failed check (`preflight failed: <check>: <reason>`), missing or
   invalid key, a request that failed after its retries, an unexpected error (its type only) or
   interrupted, 2 usage error, also for an unregistered model id);
@@ -54,14 +54,19 @@ one that calls them (free, read-only); the owner runs both by following
   need the reviewer is held (also for a result error that a repeat cannot fix), and every run
   stops until `--yes --release <id>` after the reviewer's decision, which first records what the
   batch's kept results hold; a run never sends a scenario whose earlier answer could not be saved
-  (`response.json.tmp`); one `--yes` run at a time (the lock file `<runs>/.eval-run.lock`); after
-  a Claude run that called the API and was not interrupted it runs a check for unrecorded
-  batches after the run (up to five minutes) and names any batch that no run recorded, without
-  changing the exit code (exit
+  (`response.json.tmp`); each request is checked, when it is built and before anything is
+  sent, against the SHA256 that the harness pins for that scenario and model (the dry run too);
+  before the first batch of a Claude model it waits until two minutes after it started and stops,
+  sending nothing, if the workspace has a batch that is not cancelled, is in no `batches.json`
+  and is not in `<runs>/acknowledged-batches.txt`; one `--yes` run at a time (the lock file
+  `<runs>/.eval-run.lock`); after a Claude run that made an API call other than the clock check
+  and was not interrupted it runs a check for unrecorded batches after the run (up to five
+  minutes) and names any batch that no run recorded, without changing the exit code (exit
   code 0 all recorded or plan printed, 1 run stopped, a held batch, missing or invalid key, order
-  refused, another run active, a `--release` of a batch that is not held, missing directory, a
-  corpus without a scenario, an unexpected error (its type only) or interrupted, 2 usage error,
-  also for an unregistered model id or `--release` without `--yes`).
+  refused, another run active, a `--release` of a batch that is not held, an unknown batch in the
+  workspace, a request that differs from its pin, missing directory, a corpus without a
+  scenario, an unexpected error (its type only) or interrupted, 2 usage error, also for an
+  unregistered model id or `--release` without `--yes`).
 
 The other commands are offline: none of them calls a model or needs credentials:
 - `potakt eval prompt <scenario dir> [--model ID]` prints the exact JSON request payload for one

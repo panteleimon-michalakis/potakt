@@ -495,7 +495,9 @@ def eval_run(
 
     Send every corpus scenario without a recorded answer and record the answers (ADR-0007 §7
     and its amendments). Every run first checks the prompt file and the schema section against
-    the SHA256 values that ADR-0007 §7 pins, and stops, sending nothing, if one differs.
+    the SHA256 values that ADR-0007 §7 pins, and stops, sending nothing, if one differs. Each
+    request is checked too, when it is built and before anything is sent, against the SHA256
+    that the harness pins for its scenario and model (the dry run too).
 
     Without --yes, print the plan and the cost upper bound; nothing is sent and no key is read.
     With --yes, read the key from POTAKT_ANTHROPIC_API_KEY (Claude models, Message Batches API)
@@ -505,12 +507,15 @@ def eval_run(
     claude-opus-5-5 runs only after claude-haiku-5-5 has a complete run. The same command again
     resumes; a recorded scenario is never sent again. A batch whose results need the reviewer is
     held: every run stops until --yes --release <id> after the reviewer's decision, which first
-    records what the batch's kept results already hold. Only one --yes run at a time: it holds
-    the lock file <runs>/.eval-run.lock while it runs. After a Claude run that called the API and
-    was not interrupted, it runs a check for unrecorded batches after the run (up to 5 minutes
-    later) and names every batch that no run recorded, so the reviewer can decide about a paid
-    duplicate (only a batch still in progress can be cancelled); this check never changes the
-    exit code.
+    records what the batch's kept results already hold. Before the first batch of a Claude
+    model, a run waits until 2 minutes after it started and stops, sending nothing, if the
+    workspace has a batch that is not cancelled, is in no batches.json and is not in
+    <runs>/acknowledged-batches.txt. Only one --yes run at a time: it holds the lock file
+    <runs>/.eval-run.lock while it runs. After a Claude run that made an API call other than the
+    clock check and was not interrupted, it runs a check for unrecorded batches after the run (up
+    to 5 minutes later) and names every batch that no run recorded, so the reviewer can decide
+    about a paid duplicate (only a batch still in progress can be cancelled); this check never
+    changes the exit code.
 
     Files: <runs>/<model dir>/<scenario id>/ with request.json, response.json, candidate.txt,
     comparison.json; for Claude models also <runs>/<model dir>/ batches.json and
@@ -519,9 +524,10 @@ def eval_run(
     Exit code 0: everything pending is recorded, or the plan was printed; 1: the run stopped (the
     reason on stderr), a held batch, a missing or invalid key, claude-opus-5-5 before a complete
     claude-haiku-5-5 run, another run active (the lock file), a --release of a batch that is not
-    held, a missing directory or a corpus without a scenario, an unexpected error (its type only,
-    never its text), or an interruption; 2: usage error (also an unregistered model id, or
-    --release without --yes).
+    held, an unknown batch in the workspace, a request that differs from its pin, a missing
+    directory or a corpus without a scenario, an unexpected error (its type only, never its
+    text), or an interruption; 2: usage error (also an unregistered model id, or --release
+    without --yes).
     """
     try:
         _eval_run(model, runs, corpus, poll_seconds, yes, release)
@@ -588,9 +594,10 @@ def _eval_run(
                     )
                 except Exception as error:  # a stop, or an unexpected error (H16 review)
                     stopped = error
-                # TASK-005c3d H13: after a run that called the API and was not interrupted (an
-                # interrupt skips this), with the lock still held; it never changes the outcome:
-                # the stop or the error is raised again after it.
+                # TASK-005c3d H13: after a run that made a counted call (any call but the clock
+                # check) and was not interrupted (an interrupt skips this), with the lock still
+                # held; it never changes the outcome: the stop or the error is raised again after
+                # it.
                 if transport.calls:
                     audit_batches(
                         model, runs, key, transport, sleep=time.sleep, now=utc_now, echo=typer.echo
@@ -655,7 +662,7 @@ def eval_preflight(
     contradiction (an answer for another model, batches or effort high not supported, an output
     limit below the run's, an unreadable batch list, a laptop clock more than 2 minutes from the
     API's (the Date header) for a Claude model); a field the API does not report is shown as not
-    reported.
+    reported, except the model id, which must match.
 
     Exit code 0: every check passed; 1: a failed check (preflight failed: <check>: <reason> on
     stderr), a missing or invalid key, a request that failed after its retries, an unexpected

@@ -14,8 +14,10 @@ redacted of it.
 A batch is never paid for twice (TASK-005c3b D1, D2, TASK-005c3c E2, E3): a ``creating`` entry is
 saved before every create call, so a create whose outcome is unclear (no response, a 3xx, a 408,
 any status of 500 or more, an unreadable 200, an interruption or a crash) is reconciled against
-the list of batches, by one list call at least 120 seconds after the later of the call and its
-answer, before anything else is sent; the next run starts with that reconciliation.
+the list of batches, by listing every page back to the window (``_list_back_to``) at least 120
+seconds after the later of the call and its answer, or, for an entry left by an earlier run, at
+least 180 seconds after its ``started_at``, before anything else is sent; the next run starts
+with that reconciliation.
 """
 
 import email.utils

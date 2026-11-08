@@ -7,7 +7,9 @@ harness fix without a new request. Library code only: no network, no credentials
 Every write is atomic: the bytes go to ``<name>.tmp`` in the same directory, which then replaces
 ``<name>`` (``os.replace``); the file and, where possible, the directory are synced to disk
 (``os.fsync``). Bytes, not text mode, so line endings are LF on every OS; a leftover ``*.tmp`` is
-simply overwritten by the next write. An open or a replace that Windows refuses for a moment
+simply overwritten by the next write (but the runner first stops on a ``response.json.tmp`` of a
+pending scenario, unless that scenario belongs to the open batch). An open or a replace that
+Windows refuses for a moment
 (``PermissionError``) is retried, about 3.3 s at most (TASK-005c3g G3); an answer whose replace
 still fails stays in ``response.json.tmp``.
 """
