@@ -28,6 +28,7 @@ from runner_helpers import (
 )
 from test_evaluation_runner_anthropic import (
     CLOCK_URL,
+    LIST_URL,
     CreateStep,
     FakeBatches,
     batch_object,
@@ -421,12 +422,16 @@ def test_yes_runs_haiku_and_prints_the_summary(
 
     assert result.exit_code == 0, result.stderr
     assert result.stderr == ""
-    assert result.stdout.startswith("batch msgbatch_01 created for 3 scenarios\n")
+    assert result.stdout.startswith(
+        "waiting 120 s before checking the workspace for batches that no run recorded\n"
+        "batch msgbatch_01 created for 3 scenarios\n"
+    )
     summary = summarize(runs / HAIKU, corpus).to_text()
     assert result.stdout.endswith(summary)
     assert "Complete: yes" in summary
-    # The poll, then the audit's wait until started_at + 300 s (TASK-005c3d H13).
-    assert no_real_transport == [10, 290]
+    # TASK-005c3h H6: the workspace wait; the poll; then the audit's wait until started_at +
+    # 300 s (TASK-005c3d H13).
+    assert no_real_transport == [120, 10, 290]
     assert "waiting 290 s before checking for batches that no run recorded\n" in result.stdout
     assert all(call.headers["authorization"] == f"Bearer {KEY}" for call in server.calls)
     assert not any("x-api-key" in call.headers for call in server.calls)
@@ -473,8 +478,12 @@ def test_a_stopped_run_exits_1_with_the_reason(
     result = eval_run(tmp_path / "runs", HAIKU, "--yes", corpus=corpus)
 
     assert result.exit_code == 1
-    # The create was a call, so the audit runs before the stop message (TASK-005c3d H13).
-    assert result.stdout == "waiting 300 s before checking for batches that no run recorded\n"
+    # The create was a call, so the audit runs before the stop message (TASK-005c3d H13), after
+    # the workspace wait (TASK-005c3h H6).
+    assert result.stdout == (
+        "waiting 120 s before checking the workspace for batches that no run recorded\n"
+        "waiting 300 s before checking for batches that no run recorded\n"
+    )
     assert result.stderr == (
         "creating a batch failed: HTTP 400 (invalid_request_error: [redacted])\n"
     )
@@ -497,7 +506,8 @@ def test_an_interruption_exits_1_and_says_how_to_resume(
             body: bytes | None,
             timeout: float,
         ) -> HttpResponse:
-            if method == "GET" and url != CLOCK_URL:  # TASK-005c3g G2: the clock call passes
+            # TASK-005c3g G2, TASK-005c3h H6: the clock call and the workspace list pass.
+            if method == "GET" and url.startswith(runner_module.BATCHES_URL + "/"):
                 raise KeyboardInterrupt
             return server.send(method, url, headers, body, timeout)
 
@@ -1350,6 +1360,9 @@ def haiku_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_real_transport
     def setup(server: FakeBatches) -> tuple[Path, Path]:
         monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
         server.clock = no_real_transport
+        # TASK-005c3h H6: the first run waits 120 s for its workspace check; it starts that much
+        # earlier, so the create is at NOW, as these tests state (Run.rewind in the runner tests).
+        no_real_transport.advance(-runner_module.RECONCILE_DELAY_SECONDS)
         monkeypatch.setattr(cli, "make_transport", lambda: server)
         return corpus_copy(tmp_path, ALL_SCENARIOS[:1]), tmp_path / "runs"
 
@@ -1390,8 +1403,9 @@ def test_a_clean_run_is_audited_once_without_a_warning(
     assert result.exit_code == 0, result.output
     assert AUDIT_WAIT.format(240) in result.stdout.splitlines()
     assert "warning" not in result.output
-    assert server.lists == 1
-    assert no_real_transport == [60, 240]  # the poll, then the audit's wait to started_at + 300 s
+    assert server.lists == 2  # TASK-005c3h H6: the workspace's, then the audit's
+    # The workspace wait, the poll, then the audit's wait to started_at + 300 s.
+    assert no_real_transport == [120, 60, 240]
 
 
 def test_a_resume_after_an_interrupt_is_audited(
@@ -1404,7 +1418,8 @@ def test_a_resume_after_an_interrupt_is_audited(
         def send(
             self, method: str, url: str, headers: dict[str, str], body: bytes | None, timeout: float
         ) -> HttpResponse:
-            if method == "GET" and url != CLOCK_URL:  # TASK-005c3g G2: the clock call passes
+            # TASK-005c3g G2, TASK-005c3h H6: the clock call and the workspace list pass.
+            if method == "GET" and url.startswith(runner_module.BATCHES_URL + "/"):
                 raise KeyboardInterrupt
             return server.send(method, url, headers, body, timeout)
 
@@ -1414,10 +1429,10 @@ def test_a_resume_after_an_interrupt_is_audited(
     resumed = eval_run(runs, HAIKU, "--yes", corpus=corpus)
 
     assert interrupted.exit_code == 1
-    assert "checking for batches" not in interrupted.output  # no audit after an interrupt
+    assert "checking for batches that no run" not in interrupted.output  # no audit
     assert resumed.exit_code == 0, resumed.output
     assert resumed.stdout.startswith("resuming batch msgbatch_01\n")
-    assert server.lists == 1
+    assert server.lists == 2  # the first run's workspace list, then the resumed run's audit
 
 
 def test_nothing_to_run_makes_no_audit_call(
@@ -1475,8 +1490,9 @@ def test_a_held_batch_at_start_makes_no_call_at_all(
 
 
 def test_a_failed_audit_listing_warns_and_keeps_the_outcome(haiku_run: Setup) -> None:
-    # The clean run makes no list call itself, so the only listing is the audit's.
-    server = FakeBatches(list_answer=HttpResponse(403, {}, b""))
+    # The clean run's only listing of its own is the workspace check (TASK-005c3h H6), before
+    # the create; the 403 answers the audit's, after it.
+    server = FakeBatches(list_answer=HttpResponse(403, {}, b""), extras_after_create=True)
     corpus, runs = haiku_run(server)
 
     result = eval_run(runs, HAIKU, "--yes", corpus=corpus)
@@ -1496,9 +1512,13 @@ def test_a_stopped_run_is_audited_before_its_stop_message(haiku_run: Setup) -> N
     result = eval_run(runs, HAIKU, "--yes", corpus=corpus)
 
     assert result.exit_code == 1
-    assert result.stdout == AUDIT_WAIT.format(300) + "\n"
+    assert result.stdout == (
+        "waiting 120 s before checking the workspace for batches that no run recorded\n"
+        + AUDIT_WAIT.format(300)
+        + "\n"
+    )
     assert result.stderr == "creating a batch failed: HTTP 400\n"
-    assert server.lists == 1
+    assert server.lists == 2  # TASK-005c3h H6: the workspace's, then the audit's
 
 
 def test_another_models_recorded_batch_is_never_named(haiku_run: Setup) -> None:
@@ -1511,7 +1531,7 @@ def test_another_models_recorded_batch_is_never_named(haiku_run: Setup) -> None:
 
     assert result.exit_code == 0, result.output
     assert "warning" not in result.output
-    assert server.lists == 1
+    assert server.lists == 2  # TASK-005c3h H6: the workspace's (it knows the batch), the audit's
 
 
 def test_the_candidates_of_a_pending_create_are_not_named(haiku_run: Setup) -> None:
@@ -1525,7 +1545,7 @@ def test_the_candidates_of_a_pending_create_are_not_named(haiku_run: Setup) -> N
     assert result.stderr.startswith("2 recent batches could be the one created by an earlier")
     assert "warning" not in result.output
     assert result.stdout.splitlines()[-1] == AUDIT_WAIT.format(180)
-    assert server.lists == 2  # the reconciliation's and the audit's
+    assert server.lists == 3  # the workspace's (H6), the reconciliation's and the audit's
 
 
 @pytest.mark.parametrize("rejected", [False, True], ids=["success", "stop"])
@@ -1546,7 +1566,7 @@ def test_an_interrupt_in_the_audit_ends_only_the_audit(
     result = eval_run(runs, HAIKU, "--yes", corpus=corpus)
 
     assert "audit interrupted: look in the Claude Console (Batches)" in result.stdout.splitlines()
-    assert server.lists == 0
+    assert server.lists == 1  # TASK-005c3h H6: the workspace's only; the audit's never ran
     assert not (runs / LOCK).exists()
     if rejected:
         assert result.exit_code == 1
@@ -1602,11 +1622,12 @@ def test_gemini_runs_are_not_audited(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert len(server.calls) == 1
 
 
-def test_a_late_haiku_duplicate_is_named_by_the_opus_audit_an_hour_later(
+def test_a_late_haiku_duplicate_stops_the_first_opus_run_an_hour_later(
     haiku_run: Setup, no_real_transport: Sleeps
 ) -> None:
     # TASK-005c3e F1 (probe P6): the twin is created 320 s after the adopted batch and listed
-    # 90 s later (410 s), after Haiku's audit (300 s); only Opus's audit can name it.
+    # 90 s later (410 s), after Haiku's audit (300 s). Opus's audit used to name it after Opus
+    # had paid its own batch; TASK-005c3h H6: Opus's first run now stops before it, naming it.
     server = FakeBatches(create_script=["duplicated-staggered"], stagger=320, lag=90)
     corpus, runs = haiku_run(server)
 
@@ -1618,16 +1639,23 @@ def test_a_late_haiku_duplicate_is_named_by_the_opus_audit_an_hour_later(
     assert haiku.exit_code == 0, haiku.output
     assert "adopted batch msgbatch_01 created by an earlier create request" in haiku.stdout
     assert "warning" not in haiku.output
-    assert opus.exit_code == 0, opus.output
-    warning = UNRECORDED.format(id="msgbatch_02", count=1, created="2026-11-02T10:05:20Z")
-    assert [line for line in opus.stdout.splitlines() if line.startswith("warning")] == [warning]
-    assert opus.stderr == ""
+    assert opus.exit_code == 1
+    assert opus.stderr == (
+        f"the workspace has batch msgbatch_02 that no batches.json in {runs} records and "
+        "acknowledged-batches.txt does not name; nothing was sent: if the records of an earlier "
+        "run were lost, restore them before running again; otherwise send this message to the "
+        "reviewer\n"
+    )
+    assert len(server.creates()) == 1  # Haiku's only
+    assert not (runs / OPUS).exists()
 
 
 def test_an_unreadable_created_at_never_reaches_the_last_resort(haiku_run: Setup) -> None:
     # TASK-005c3e F2 (probe P5): a lone surrogate in created_at made _save_state raise.
     server = FakeBatches(
-        create_script=[batch_object("\ud83d")], newest=[other_batch("msgbatch_01", 1, "\ud83d")]
+        create_script=[batch_object("\ud83d")],
+        newest=[other_batch("msgbatch_01", 1, "\ud83d")],
+        extras_after_create=True,  # the reconciliation's list, not the workspace's (H6)
     )
     corpus, runs = haiku_run(server)
 
@@ -1643,9 +1671,12 @@ def test_an_unreadable_created_at_never_reaches_the_last_resort(haiku_run: Setup
     assert "Unconfirmed create request: started " in dry_run.stdout
 
 
-def test_an_invalid_state_of_another_model_warns_and_keeps_the_exit_code(
+def test_an_invalid_state_of_another_model_stops_a_first_run_before_any_list(
     haiku_run: Setup,
 ) -> None:
+    # TASK-005c3h H6: the workspace check cannot tell which batches are recorded, so it stops
+    # (fail closed) before its wait, its list and the create. (The audit's own warning for an
+    # invalid state: test_an_invalid_state_of_another_model_is_a_warning.)
     server = FakeBatches()
     corpus, runs = haiku_run(server)
     (runs / OPUS).mkdir(parents=True)
@@ -1653,12 +1684,13 @@ def test_an_invalid_state_of_another_model_warns_and_keeps_the_exit_code(
 
     result = eval_run(runs, HAIKU, "--yes", corpus=corpus)
 
-    assert result.exit_code == 0, result.output
-    warnings = [line for line in result.stdout.splitlines() if line.startswith("warning")]
-    assert len(warnings) == 1
-    assert warnings[0].startswith("warning: could not check for batches that no run recorded (")
-    assert "Complete: yes\n" in result.stdout
-    assert server.lists == 0
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert (
+        result.stderr
+        == f"{runs / OPUS / 'batches.json'} is not a valid batch state; it was not changed\n"
+    )
+    assert [(call.method, call.url) for call in server.calls] == [("GET", CLOCK_URL)]
 
 
 def test_a_run_whose_every_call_raised_is_still_audited(
@@ -1669,12 +1701,18 @@ def test_a_run_whose_every_call_raised_is_still_audited(
     corpus, runs = haiku_run(server)
 
     class Unreachable:
-        """Every call but the clock call (TASK-005c3g G2) raises."""
+        """Every call but the clock call (TASK-005c3g G2) and the first list call, the
+        workspace check's (TASK-005c3h H6), raises: the create is lost, then every list."""
+
+        listed = False
 
         def send(
             self, method: str, url: str, headers: dict[str, str], body: bytes | None, timeout: float
         ) -> HttpResponse:
             if url == CLOCK_URL:
+                return server.send(method, url, headers, body, timeout)
+            if url.startswith(LIST_URL) and not Unreachable.listed:
+                Unreachable.listed = True
                 return server.send(method, url, headers, body, timeout)
             raise TransportError("TimeoutError: no response received")
 

@@ -45,6 +45,8 @@ GEMINI = "gemini-3.8-flash"
 GEMINI_KEY = "potakt-test-gemini-key"  # a second fake key: only tests ever hold it
 GOLDEN = Path(__file__).resolve().parent / "golden"
 RUN_FILES = ("request.json", "response.json", "candidate.txt", "comparison.json")
+# TASK-005c3h H6: the first run of each Claude model checks the workspace first.
+WORKSPACE_WAIT = "waiting 120 s before checking the workspace for batches that no run recorded"
 
 
 def fenced(name: str) -> str:
@@ -145,15 +147,18 @@ def test_the_runbook_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert refused.refused == 1
     assert len(batches.clock_checks) == 1
     assert batches.calls[0].url == f"{BATCHES_URL}?limit=1"
-    sent = json.loads(batches.calls[1].body or b"{}")["requests"]
+    assert batches.calls[1].url == f"{BATCHES_URL}?limit=100"  # TASK-005c3h H6: the workspace
+    sent = json.loads(batches.calls[2].body or b"{}")["requests"]
     assert {request["params"]["max_tokens"] for request in sent} == {64000}
     assert haiku.exit_code == 0, haiku.stderr
-    assert haiku.stdout.startswith("batch msgbatch_01 created for 10 scenarios\n")
+    assert haiku.stdout.startswith(
+        f"{WORKSPACE_WAIT}\nbatch msgbatch_01 created for 10 scenarios\n"
+    )
     assert f"{SURROGATE_SCENARIO}: recorded (malformed, invalid, recall 0.000)\n" in haiku.stdout
     assert "Complete: yes\n" in haiku.stdout
     assert "Stops: end_turn 8, malformed 1, max_tokens 1\n" in haiku.stdout
     assert "waiting 240 s before checking for batches that no run recorded\n" in haiku.stdout
-    audited(haiku, lists, 0)
+    audited(haiku, lists, 1)  # the workspace's listing (H6), then the audit's
     raw = (runs / HAIKU / SURROGATE_SCENARIO / "response.json").read_bytes()
     assert raw.isascii()
     assert b"\\ud83d" in raw
@@ -200,9 +205,10 @@ def test_the_runbook_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     ).encode("utf-8")
     lists = batches.lists
     held = eval_run(OPUS, "--yes")
-    audited(held, lists, 1)  # the reconciliation's listing, then the audit's
+    audited(held, lists, 2)  # the workspace's (H6: Haiku's batch is known), the reconciliation's
     assert held.exit_code == 1
     assert held.stdout.startswith(
+        f"{WORKSPACE_WAIT}\n"
         "waiting 120 s before looking for a batch the create request may have made\n"
         "adopted batch msgbatch_02 created by an earlier create request\n"
     )

@@ -170,7 +170,36 @@ _STARTED_AT = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 SEVERAL_CANDIDATES = (
     "{count} recent batches could be the one created by an earlier create request: {ids}; in the "
     "Claude Console (Batches) cancel all but the oldest, then run the same command again: it "
-    "adopts the one left"
+    "adopts the one left; a batch that has already ended cannot be cancelled: then send this "
+    "message to the reviewer"
+)
+# TASK-005c3h H6: the reviewer's acknowledged batches, in the runs directory of all models.
+ACKNOWLEDGED_FILE = "acknowledged-batches.txt"
+_ACKNOWLEDGED_LINE = re.compile(r"([A-Za-z0-9_-]{1,128})(?:[ \t]+.*)?")  # _BATCH_ID, a comment
+NOT_UTF8 = "{path} is not UTF-8: write it with the command in the runbook; it was not changed"
+NOT_A_BATCH_ID = "{path} line {number} is not a batch id; it was not changed"
+# TASK-005c3h H6: the check of the workspace before a model's first batch.
+WORKSPACE_WAITING = (
+    "waiting {seconds} s before checking the workspace for batches that no run recorded"
+)
+WORKSPACE_TOO_MANY = (
+    f"the workspace lists more than {LIST_PAGES * LIST_LIMIT} batches: this check cannot see them "
+    "all; nothing was sent; send this message to the reviewer"
+)
+UNKNOWN_BATCHES = (
+    "the workspace has {noun} {ids} that no batches.json in {runs} records and "
+    "acknowledged-batches.txt does not name; nothing was sent: if the records of an earlier run "
+    "were lost, restore them before running again; otherwise send this message to the reviewer"
+)
+UNKNOWN_SHOWN = 5  # ids named by UNKNOWN_BATCHES, then "and <n> more"
+# TASK-005c3h H6 (TASK-005c3s S3-8): an answer kept in a done batch's results, its records lost.
+LOST_RECORDS = (
+    "{name}: its answer is in {file} but its records are missing: restore them from git before "
+    "running again; nothing was sent"
+)
+LOST_UNREADABLE = (
+    "cannot read the kept results {path}: {reason}; nothing was sent: restore it from git or send "
+    "this message to the reviewer"
 )
 _STATUSES = ("in_progress", "canceling", "ended")
 _COUNTS = ("processing", "succeeded", "errored", "expired", "canceled")
@@ -343,15 +372,53 @@ def _load_state(model_dir: Path) -> list[_Batch]:
 
 
 def _all_batch_ids(runs_dir: Path) -> set[str]:
-    """The batch ids in the ``batches.json`` of every model directory under ``runs_dir`` (it
-    exists: ``batches.json`` is written before any batch is created)."""
+    """The batch ids in the ``batches.json`` of every model directory under ``runs_dir``; none
+    if ``runs_dir`` does not exist yet (TASK-005c3h H6: the workspace check of a first run may
+    come before anything was written)."""
+    try:
+        model_dirs = list(runs_dir.iterdir())
+    except FileNotFoundError:
+        return set()
     return {
         batch.id
-        for model_dir in runs_dir.iterdir()
+        for model_dir in model_dirs
         if (model_dir / BATCH_STATE_FILE).is_file()
         for batch in _load_state(model_dir)
         if batch.id is not None
     }
+
+
+def _acknowledged(runs_dir: Path, sleep: Sleep) -> set[str]:
+    """TASK-005c3h H6: the batch ids of ``<runs>/acknowledged-batches.txt``, written only on the
+    reviewer's decision; a missing file is none.
+
+    UTF-8, a byte order mark at the start ignored (TASK-005c3s S3-2: PowerShell 5.1 writes one),
+    lines ending with ``\\n`` or ``\\r\\n``. Each line is blank, a ``#`` comment, or a batch id
+    optionally followed by spaces or tabs and a free comment. Read with ``retry_refused``.
+    ``RunStopped`` (never echoing a line's text) for bytes that are not UTF-8, a line that is
+    none of these, or a file that cannot be read."""
+    path = runs_dir / ACKNOWLEDGED_FILE
+    try:
+        raw = retry_refused(path.read_bytes, sleep)
+    except FileNotFoundError:
+        return set()
+    except OSError as error:
+        reason = error.strerror or type(error).__name__
+        raise RunStopped(f"cannot read {path}: {reason}") from None
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise RunStopped(NOT_UTF8.format(path=path)) from None
+    found: set[str] = set()
+    for number, line in enumerate(text.split("\n"), start=1):
+        stripped = line.strip(" \t\r")
+        if not stripped or stripped.startswith("#"):
+            continue
+        matched = _ACKNOWLEDGED_LINE.fullmatch(stripped)
+        if matched is None:
+            raise RunStopped(NOT_A_BATCH_ID.format(path=path, number=number))
+        found.add(matched.group(1))
+    return found
 
 
 def _save_state(model_dir: Path, batches: list[_Batch]) -> None:
@@ -442,7 +509,7 @@ UNSAVED = (
 REPLACED = "{name}: a leftover {file} will be replaced by the answer of batch {id}"
 
 
-def _check_unsaved(corpus_dir: Path, model_dir: Path, open_batch: "_Batch | None") -> list[str]:
+def _check_unsaved(corpus_dir: Path, model_dir: Path, open_batch: _Batch | None) -> list[str]:
     """TASK-005c3g G5: ``RunStopped`` before anything is sent if a pending scenario keeps an
     answer that could not be saved (``response.json.tmp``): sending it again would pay twice and
     lose the first answer. A recorded scenario's leftover temporary file is ignored.
@@ -458,7 +525,7 @@ def _check_unsaved(corpus_dir: Path, model_dir: Path, open_batch: "_Batch | None
             continue
         if name not in exempt:
             raise RunStopped(UNSAVED.format(name=name, path=path))
-        batch_id = cast(str, cast("_Batch", open_batch).id)  # an open entry names its batch
+        batch_id = cast(str, cast(_Batch, open_batch).id)  # an open entry names its batch
         lines.append(REPLACED.format(name=name, file=UNSAVED_RESPONSE_FILE, id=batch_id))
     return lines
 
@@ -714,6 +781,7 @@ class _AnthropicRun:
     clock_transport: Transport | None = None  # G2: the clock call's, ``transport`` if None
 
     def run(self) -> None:
+        started = self.now()  # TASK-005c3h H6: the workspace is listed 120 s after this
         if self.release is not None:
             self._release(self.release)
         # E4: a held batch stops every run before anything is reconciled, polled or sent.
@@ -736,6 +804,8 @@ class _AnthropicRun:
             self.echo("nothing to run")
             return
         if batch is None:
+            if not batches:
+                self._check_workspace(started)  # H6: before the model's first batch
             self._next_attempt(pending, batches)
             batch = self._create(pending, batches)
         elif not adopted:
@@ -781,6 +851,63 @@ class _AnthropicRun:
         for batch in _load_state(self.model_dir):
             if cast(datetime, _started(batch.started_at)) > latest:
                 raise RunStopped(FUTURE_STOP.format(started_at=batch.started_at))
+
+    def _check_workspace(self, started: datetime) -> None:
+        """TASK-005c3h H6 (the review's #21): before the first batch of a model with no entry
+        in its ``batches.json``, ``RunStopped`` if the workspace lists a batch that is not
+        cancelled, is in no model's ``batches.json`` and is not acknowledged: the records of an
+        earlier run may be lost, and its scenarios would be paid again.
+
+        First it sleeps, once and announced, until ``RECONCILE_DELAY_SECONDS`` after ``started``
+        (the start of ``run()``; at most that long), so a batch created before this run started
+        is listed (TASK-005c3s S3-1); then it lists every page (``_list_back_to`` with no lower
+        bound), and fails closed beyond ``LIST_PAGES``. The ids are named in list order, newest
+        first, through ``server_text``."""
+        runs_dir = self.model_dir.parent
+        # Read before the wait, as the audit does: an invalid file stops at once, with no call.
+        known = _all_batch_ids(runs_dir) | _acknowledged(runs_dir, self.sleep)
+        target = started + timedelta(seconds=RECONCILE_DELAY_SECONDS)
+        wait = min((target - self.now()).total_seconds(), RECONCILE_DELAY_SECONDS)
+        if wait > 0:
+            self.echo(WORKSPACE_WAITING.format(seconds=math.ceil(wait)))
+            self.sleep(wait)
+        listed = self._list_back_to(datetime.min.replace(tzinfo=UTC), WORKSPACE_TOO_MANY)
+        unknown = [
+            server_text(item.status.id)
+            for item in listed
+            if not item.status.cancelled and item.status.id not in known
+        ]
+        if not unknown:
+            return
+        shown = ", ".join(unknown[:UNKNOWN_SHOWN])
+        if len(unknown) > UNKNOWN_SHOWN:
+            shown += f" and {len(unknown) - UNKNOWN_SHOWN} more"
+        noun = "batch" if len(unknown) == 1 else "batches"
+        raise RunStopped(UNKNOWN_BATCHES.format(noun=noun, ids=shown, runs=runs_dir))
+
+    def _check_kept_answers(self, pending: list[str]) -> None:
+        """TASK-005c3h H6 (TASK-005c3s S3-8), before every create: ``RunStopped`` if the kept
+        results of a ``done`` entry hold exactly one line for a pending scenario of that entry,
+        a ``succeeded`` one with a message object (the rule of ``_record_kept``): its answer was
+        recorded and then lost, and would be paid again. Each kept file is read with
+        ``retry_refused``; one that cannot be read stops too. A scenario that a release left
+        pending on purpose (no such line, or a file the reviewer emptied) never stops here."""
+        for batch in _load_state(self.model_dir):
+            names = [name for name in pending if name in batch.scenarios]
+            if batch.state != "done" or not names:
+                continue
+            file = _results_file(cast(str, batch.id))  # a done entry names its batch (_entry)
+            path = self.model_dir / file
+            try:
+                raw = retry_refused(path.read_bytes, self.sleep)
+            except OSError as error:
+                reason = error.strerror or type(error).__name__
+                raise RunStopped(LOST_UNREADABLE.format(path=path, reason=reason)) from None
+            lines = _kept_results(raw)
+            for name in names:
+                found = lines.get(name, [])
+                if len(found) == 1 and _succeeded_message(found[0]) is not None:
+                    raise RunStopped(LOST_RECORDS.format(name=name, file=file))
 
     def _release(self, batch_id: str) -> None:
         """E4: the held entry ``batch_id`` becomes ``done`` (its problems kept, for the record)
@@ -882,6 +1009,7 @@ class _AnthropicRun:
         for name in pending:
             if not _CUSTOM_ID.fullmatch(name):
                 raise RunStopped(f"{name}: not a valid custom_id for a batch request")
+        self._check_kept_answers(pending)  # TASK-005c3h H6 (S3-8): before every create
         requests = [
             {
                 "custom_id": name,
@@ -981,22 +1109,25 @@ class _AnthropicRun:
             self.sleep(wait)
         started = cast(datetime, _started(entry.started_at))
         listed = self._list_back_to(started - ADOPTION_WINDOW)
-        # Every batch any model recorded: another model's batch of the same size is never this one.
-        known = _all_batch_ids(self.model_dir.parent)
+        # Every batch any model recorded: another model's batch of the same size is never this one;
+        # TASK-005c3h H6 (S3-7): nor an acknowledged one, so acknowledging all but one of several
+        # ended candidates lets the same command adopt the one left.
+        runs_dir = self.model_dir.parent
+        known = _all_batch_ids(runs_dir) | _acknowledged(runs_dir, self.sleep)
         candidates = [item.status for item in listed if _is_candidate(item, entry, t0, known)]
         if len(candidates) > 1:
             ids = ", ".join(sorted(candidate.id for candidate in candidates))
             raise RunStopped(SEVERAL_CANDIDATES.format(count=len(candidates), ids=ids))
         return candidates[0] if candidates else None
 
-    def _list_back_to(self, instant: datetime) -> list[_Listed]:
+    def _list_back_to(self, instant: datetime, too_many: str = TOO_MANY_BATCHES) -> list[_Listed]:
         """TASK-005c3d H6: the listed batches, newest first, page by page until a page is the
         last one or ends with a batch created before ``instant``; at most ``LIST_PAGES`` pages.
 
         Each page goes through ``send_with_retries``. A page that is not a 200 with a list of
         readable batches, a ``has_more`` that is not a boolean, or a page to follow whose
         ``last_id`` is not the id of its last batch stops the run; so does a list that would need
-        more pages (fail closed: never "none found").
+        more pages, with ``too_many`` (fail closed: never "none found").
         """
         url = f"{BATCHES_URL}?limit={LIST_LIMIT}"
         listed: list[_Listed] = []
@@ -1021,7 +1152,7 @@ class _AnthropicRun:
             ):
                 raise RunStopped("listing batches failed: unexpected list object")
             url = f"{BATCHES_URL}?limit={LIST_LIMIT}&after_id={last_id}"
-        raise RunStopped(TOO_MANY_BATCHES)
+        raise RunStopped(too_many)
 
     def audit(self) -> None:
         """TASK-005c3d H13, TASK-005c3e J3: the body of ``audit_batches`` (see there)."""
@@ -1048,6 +1179,7 @@ class _AnthropicRun:
         earliest = min(instants) - ADOPTION_WINDOW
         listed = self._list_back_to(earliest)
         known = {batch.id for batch in every if batch.id is not None}
+        known |= _acknowledged(self.model_dir.parent, self.sleep)  # TASK-005c3h H6: never named
         pending = [batch for batch in every if batch.state == "creating"]
         for item in listed:
             if (

@@ -108,10 +108,16 @@ def batch_entry(
 
 
 def write_state(model_dir: Path, *entries: dict[str, Any]) -> None:
-    """Write ``batches.json`` with these entries, as the runner would."""
+    """Write ``batches.json`` with these entries, as the runner would. A ``done`` entry without
+    a kept ``batch-<id>.results.jsonl`` gets an empty one: the runner keeps the results of every
+    batch before it marks it done, and TASK-005c3h H6 (S3-8) reads them before every create."""
     model_dir.mkdir(parents=True, exist_ok=True)
     text = json.dumps({"batches": list(entries)}, indent=2, sort_keys=True) + "\n"
     (model_dir / "batches.json").write_bytes(text.encode("utf-8"))
+    for entry in entries:
+        kept = model_dir / f"batch-{entry['id']}.results.jsonl"
+        if entry["state"] == "done" and not kept.exists():
+            kept.write_bytes(b"")
 
 
 class RefusedReplace:
