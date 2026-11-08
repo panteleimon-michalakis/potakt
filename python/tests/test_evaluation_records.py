@@ -752,3 +752,74 @@ def test_an_answer_whose_replace_is_refused_ten_times_is_kept_in_its_temporary_f
     assert json.loads(kept.read_bytes()) == response
     assert not (tmp_path / "response.json").exists()
     kept.unlink()  # for the fixture that checks no temporary file is left
+
+
+# --- TASK-005c3h H8 (TASK-005c3s S1-1): presence fails closed on both Pythons ---------------
+
+
+def stat_raising(monkeypatch: pytest.MonkeyPatch, target: Path, error: OSError) -> None:
+    """``os.stat`` of ``target`` raises ``error``; any other path is stat'ed as usual. Our code
+    decides what the error means, not the OS (3.14's ``Path.exists`` returns ``False`` for any
+    ``OSError`` and, on Windows, does not call ``os.stat`` at all; 3.12's raises most)."""
+    real = os.stat
+
+    def stat(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+        if Path(path) == target:
+            raise error
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", stat)
+
+
+def test_present_is_true_for_a_file_and_a_directory(tmp_path: Path) -> None:
+    (tmp_path / "response.json").write_bytes(b"{}\n")
+
+    assert records_module.present(tmp_path / "response.json")
+    assert records_module.present(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "error", [FileNotFoundError(2, "No such file"), NotADirectoryError(20, "Not a directory")]
+)
+def test_present_is_false_only_for_not_found_and_not_a_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: OSError
+) -> None:
+    target = tmp_path / "response.json"
+    target.write_bytes(b"{}\n")
+    stat_raising(monkeypatch, target, error)
+
+    assert records_module.present(target) is False
+    assert records_module.present(tmp_path / "missing.json") is False
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        PermissionError(13, "Permission denied"),
+        OSError(36, "File name too long"),
+        OSError(5, "EIO"),
+    ],
+)
+def test_present_raises_every_other_os_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: OSError
+) -> None:
+    target = tmp_path / "response.json"
+    target.write_bytes(b"{}\n")
+    stat_raising(monkeypatch, target, error)
+
+    with pytest.raises(type(error)):
+        records_module.present(target)
+
+
+def test_write_answer_never_replaces_an_answer_it_cannot_stat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "response.json"
+    target.write_bytes(b'{"first": "answer"}\n')
+    stat_raising(monkeypatch, target, PermissionError(13, "Permission denied"))
+    scenario = load_scenario(PHARMACY)
+
+    with pytest.raises(PermissionError):
+        write_answer(tmp_path, scenario, "claude-haiku-5-5", {"content": []})
+
+    assert target.read_bytes() == b'{"first": "answer"}\n'

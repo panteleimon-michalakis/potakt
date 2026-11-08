@@ -527,6 +527,8 @@ def eval_run(
         _eval_run(model, runs, corpus, poll_seconds, yes, release)
     except (typer.Exit, typer.Abort):  # RuntimeError subclasses in Typer 0.27.3: not unexpected
         raise
+    except KeyboardInterrupt:  # TASK-005c3h H8: also outside the run (Typer: exit 130, silent)
+        _stop(1, INTERRUPTED)
     except Exception as error:  # TASK-005c3d H10: never a traceback, never the error's text
         _stop(1, UNEXPECTED.format(kind=type(error).__name__))
 
@@ -664,6 +666,8 @@ def eval_preflight(
         _eval_preflight(model)
     except (typer.Exit, typer.Abort):  # RuntimeError subclasses in Typer 0.27.3: not unexpected
         raise
+    except KeyboardInterrupt:  # TASK-005c3h H8: also outside the calls (Typer: exit 130, silent)
+        _stop(1, PREFLIGHT_INTERRUPTED)
     except Exception as error:  # H10: never a traceback, never the error's text
         _stop(1, PREFLIGHT_UNEXPECTED.format(kind=type(error).__name__))
 

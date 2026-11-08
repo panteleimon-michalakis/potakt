@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 
+import potakt.evaluation.transport as transport_module
 from potakt.evaluation.transport import (
     ALLOWED_HOSTS,
     MAX_RESPONSE_BYTES,
@@ -847,3 +848,12 @@ def test_send_with_retries_refuses_a_foreign_host_before_any_attempt() -> None:
         run(transport, "https://example.com/results")
 
     assert transport.calls == []
+
+
+def test_the_key_headers_are_exactly_the_headers_with_a_key_host() -> None:
+    # TASK-005c3h H8 (the review's #39): two lists of the same names; a name in one only was a
+    # latent KeyError in check_url or a key header left unredacted. (A guard: the two agree at
+    # the base, so this test cannot be red there; the mutant that adds a name to one is killed.)
+    names = transport_module.KEY_HEADERS
+    assert names == frozenset(transport_module._KEY_HOSTS)
+    assert names == {"authorization", "x-api-key", "x-goog-api-key"}

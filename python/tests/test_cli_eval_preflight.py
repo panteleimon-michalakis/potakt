@@ -616,6 +616,23 @@ def test_an_interruption_exits_1(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+def test_an_interruption_before_the_calls_exits_1_with_the_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # TASK-005c3h H8 (the review's #15): Ctrl+C outside the calls became exit 130, no message.
+    def interrupted(variable: str) -> str:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "read_key", interrupted)
+
+    result = runner.invoke(app, ["eval", "preflight", "--model", HAIKU])
+
+    assert result.exit_code == 1
+    assert result.stderr == (
+        "interrupted: the preflight sent no prompt and recorded nothing; run it again\n"
+    )
+
+
 # --- the help --------------------------------------------------------------------------------
 
 

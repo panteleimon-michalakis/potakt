@@ -39,6 +39,7 @@ from runner_helpers import (
 )
 from typer.testing import CliRunner
 
+import potakt.evaluation.records as records_module
 import potakt.evaluation.runner as runner_module
 import potakt.evaluation.test_a as test_a_module
 from potakt import __version__
@@ -4288,3 +4289,107 @@ def test_the_real_corpus_passes_the_request_check_for_every_model(
     plan = runner_module.run_plan(model, CORPUS_PATH, tmp_path / "runs")
 
     assert "Pending (10): " in plan
+
+
+# --- TASK-005c3h H8: small fixes ------------------------------------------------------------
+
+
+def test_a_csv_that_cannot_be_read_is_named_and_not_called_the_instruction_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The review's #10: any OSError of the rendering was "cannot read the instruction file".
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:1])
+    csv = sorted((run.corpus / "01-pharmacy").glob("*.csv"))[0]
+    real_read = Path.read_bytes
+
+    def read_bytes(self: Path) -> bytes:
+        if self == csv:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_read(self)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == f"01-pharmacy: cannot read {csv}: Permission denied"
+    assert run.server.creates() == []
+
+
+def failing_derivation(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    """``write_answer`` saves ``response.json`` of scenario ``name``, then writing its
+    ``candidate.txt`` fails (a full disk): the answer is recorded, its record is not complete."""
+    real = records_module.write_atomic
+
+    def write(path: Path, data: bytes, **kwargs: Any) -> None:
+        if path.parent.name == name and path.name == "candidate.txt":
+            raise OSError(28, f"No space left on device {KEY}")
+        real(path, data, **kwargs)
+
+    monkeypatch.setattr(records_module, "write_atomic", write)
+
+
+def test_a_recorded_answer_whose_record_fails_says_so_and_the_release_completes_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The review's #3 and TASK-005c3s S3-6: it said "could not be recorded" although
+    # response.json was saved; a held batch is completed only by the release.
+    server = FakeBatches()
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:2])
+    with monkeypatch.context() as patch:
+        failing_derivation(patch, "02-hotel-reception")
+        with pytest.raises(RunStopped) as raised:
+            run()
+
+    assert str(raised.value) == (
+        "02-hotel-reception: recorded, but its record could not be completed (OSError); it is "
+        "completed when the batch is released" + HELD
+    )
+    assert run.states() == ["held"]
+    assert run.recorded() == list(ALL_SCENARIOS[:2])
+    run.echo.clear()
+
+    run(release="msgbatch_01")
+
+    assert run.echo[:2] == [
+        "batch msgbatch_01 released after review",
+        "02-hotel-reception: record completed (candidate.txt, comparison.json)",
+    ]
+    assert server.creates() == [list(ALL_SCENARIOS[:2])]
+
+
+def test_an_answer_that_was_not_saved_is_still_could_not_be_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pauses: list[float]
+) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:1])
+    monkeypatch.setattr(os, "replace", RefusedReplace(10, "response.json"))
+
+    with pytest.raises(
+        RunStopped, match=r"^01-pharmacy: could not be recorded \(PermissionError\)"
+    ):
+        run()
+
+
+def test_a_recorded_answer_that_cannot_be_stat_ed_stops_the_run_before_any_create(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # TASK-005c3s S1-1: on 3.14 the scenario counted as pending (or recorded) depending on the
+    # OS; on 3.12 the error was raised. Now presence is decided by our code: the error stops.
+    server = FakeBatches()
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:2])
+    scenario = load_scenario(run.corpus / "01-pharmacy")
+    write_answer(run.model_dir / "01-pharmacy", scenario, HAIKU, anthropic_message(HAIKU))
+    target = run.model_dir / "01-pharmacy" / "response.json"
+    real = os.stat
+
+    def stat(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+        if Path(path) == target:
+            raise PermissionError(13, "Permission denied", str(path))
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", stat)
+
+    with pytest.raises(PermissionError):
+        run()
+
+    assert server.creates() == []

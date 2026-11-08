@@ -21,6 +21,7 @@ from runner_helpers import (
     truth_text,
 )
 
+import potakt.evaluation.records as records_module
 import potakt.evaluation.runner as runner_module
 from potakt.evaluation import CORPUS_PATH, load_scenario, write_answer
 from potakt.evaluation.runner import GEMINI_URL, USER_AGENT, run_gemini
@@ -337,6 +338,36 @@ def test_an_answer_that_cannot_be_recorded_stops_with_its_type_only(
     )
     assert run.recorded() == ["01-pharmacy"]
     assert run.server.sent() == ["01-pharmacy", "02-hotel-reception"]
+
+
+def test_a_saved_answer_whose_record_fails_says_so_and_the_next_run_completes_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # TASK-005c3h H8 (the review's #3): response.json was saved, then candidate.txt failed.
+    run = make_run(tmp_path, FakeGemini(), ALL_SCENARIOS[:2])
+    real = records_module.write_atomic
+
+    def write(path: Path, data: bytes, **kwargs: Any) -> None:
+        if path.parent.name == "01-pharmacy" and path.name == "candidate.txt":
+            raise OSError(28, f"No space left on device {KEY}")
+        real(path, data, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(records_module, "write_atomic", write)
+        with pytest.raises(RunStopped) as raised:
+            run()
+
+    assert str(raised.value) == (
+        "01-pharmacy: recorded, but its record could not be completed (OSError); the next run "
+        "completes it; send this message to the reviewer"
+    )
+    run.echo.clear()
+
+    run()
+
+    assert run.echo[0] == "01-pharmacy: record completed (candidate.txt, comparison.json)"
+    assert run.server.sent() == ["01-pharmacy", "02-hotel-reception"]
+    assert run.recorded() == list(ALL_SCENARIOS[:2])
 
 
 def test_an_interrupt_while_recording_is_not_swallowed(

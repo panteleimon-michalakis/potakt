@@ -35,12 +35,13 @@ _REDACTED = "[redacted]"
 # TASK-005c3d H7: the headers that carry an API key, and the one host each may be sent to.
 # ``x-api-key`` is no longer sent (the Anthropic key goes in ``authorization``) but stays a key
 # header: redacted and bound to the Anthropic host.
-KEY_HEADERS = frozenset({"authorization", "x-api-key", "x-goog-api-key"})
 _KEY_HOSTS = {
     "authorization": "api.anthropic.com",
     "x-api-key": "api.anthropic.com",
     "x-goog-api-key": "generativelanguage.googleapis.com",
 }
+# TASK-005c3h H8 (the review's #39): one list of names, so a key header always has its host.
+KEY_HEADERS = frozenset(_KEY_HOSTS)
 # Connection-level failures: no HTTP response arrived (``HTTPError`` is caught before these).
 # TASK-005c3g G6: ``urllib`` wraps only the sending of a request in ``URLError``; reading the
 # answer (``getresponse`` and the body) can raise a plain ``OSError``, for example a Winsock error

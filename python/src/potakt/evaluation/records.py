@@ -43,6 +43,7 @@ __all__ = [
     "UNSAVED_RESPONSE_FILE",
     "Answer",
     "answer_of",
+    "present",
     "refused_pause",
     "rescore_run",
     "retry_refused",
@@ -178,6 +179,20 @@ def score_answer(scenario: LoadedScenario, answer: Answer) -> tuple[str, Compari
     return candidate, compare_models(truth, InvalidModel((issue_at((), message),)))
 
 
+def present(path: Path) -> bool:
+    """TASK-005c3h H8 (TASK-005c3s S1-1): whether ``path`` exists, decided the same way on every
+    supported Python: ``True`` if ``os.stat`` succeeds, ``False`` for ``FileNotFoundError`` or
+    ``NotADirectoryError``; any other ``OSError`` is raised (fail closed). ``Path.exists`` is
+    not: on 3.14 it returns ``False`` for any ``OSError`` (on Windows without calling
+    ``os.stat``), on 3.12 it raises most of them, so a record could count as missing and be
+    sent again on one of them only."""
+    try:
+        os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    return True
+
+
 def write_request(run_dir: Path, payload: dict[str, Any]) -> None:
     """Write ``request.json`` as ``render_payload(payload)``; the same bytes again are accepted.
 
@@ -185,7 +200,7 @@ def write_request(run_dir: Path, payload: dict[str, Any]) -> None:
     """
     data = render_payload(payload).encode("utf-8")
     path = run_dir / REQUEST_FILE
-    if path.exists():
+    if present(path):
         if path.read_bytes() != data:
             raise FileExistsError(f"{path} exists with a different request")
         return
@@ -203,7 +218,7 @@ def write_answer(
     If deriving fails, ``response.json`` stays and ``rescore_run`` completes the record.
     """
     path = run_dir / RESPONSE_FILE
-    if path.exists():
+    if present(path):
         raise FileExistsError(f"{path} exists: a recorded answer is never replaced")
     run_dir.mkdir(parents=True, exist_ok=True)
     write_atomic(path, _response_bytes(response), keep=True)  # TASK-005c3g G5

@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from potakt.evaluation.compare import CATEGORIES, Category
 from potakt.evaluation.records import COMPARISON_FILE, REGISTERED_MODELS, RESPONSE_FILE, answer_of
 from potakt.evaluation.scenario import METADATA_FILE, Scenario
+from potakt.evaluation.transport import server_text
 
 # The corpus of ADR-0007 §2, resolved from the repository root (src layout, like INSTRUCTION_PATH).
 CORPUS_PATH = Path(__file__).resolve().parents[4] / "docs" / "validation" / "scenarios"
@@ -224,7 +225,10 @@ class Summary:
             complete = f"no (missing: {', '.join(self.missing)})"
         else:
             complete = f"no (not scored: {', '.join(self.not_scored)})"
-        stops = ", ".join(f"{name} {count}" for name, count in sorted(self.stops.items()))
+        # TASK-005c3h H8 (the review's #9): a stop is a server string, shown through server_text.
+        stops = ", ".join(
+            f"{server_text(name)} {count}" for name, count in sorted(self.stops.items())
+        )
         lines = [
             f"Test A summary: {self.model}",
             f"Scenarios: {self.scenarios_run} scored, {self.valid} valid",

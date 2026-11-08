@@ -42,6 +42,7 @@ from potakt.evaluation.records import (
     RESPONSE_FILE,
     UNSAVED_RESPONSE_FILE,
     answer_of,
+    present,
     rescore_run,
     retry_refused,
     write_answer,
@@ -60,7 +61,6 @@ from potakt.evaluation.test_a import (
     ANTHROPIC_PREFIX,
     EFFORT,
     GEMINI_MAX_OUTPUT_TOKENS,
-    INSTRUCTION_PATH,
     STRONG_MODEL,
     Prompt,
     check_registered,
@@ -352,7 +352,7 @@ def _entry(item: object) -> _Batch | None:
 
 def _load_state(model_dir: Path) -> list[_Batch]:
     path = model_dir / BATCH_STATE_FILE
-    if not path.is_file():
+    if not present(path):  # TASK-005c3h H8: an unreadable state is never "no state"
         return []
     invalid = RunStopped(f"{path} is not a valid batch state; it was not changed")
     try:
@@ -384,7 +384,7 @@ def _all_batch_ids(runs_dir: Path) -> set[str]:
     return {
         batch.id
         for model_dir in model_dirs
-        if (model_dir / BATCH_STATE_FILE).is_file()
+        if present(model_dir / BATCH_STATE_FILE)
         for batch in _load_state(model_dir)
         if batch.id is not None
     }
@@ -456,19 +456,16 @@ def _corpus_names(corpus_dir: Path) -> list[str]:
 
 
 def pending_scenarios(corpus_dir: Path, model_dir: Path) -> list[str]:
-    """The corpus scenarios whose run directory has no ``response.json``, in UTF-8 byte order."""
+    """The corpus scenarios whose run directory has no ``response.json``, in UTF-8 byte order
+    (``present``: one that cannot be stat'ed raises, TASK-005c3h H8)."""
     return [
-        name
-        for name in _corpus_names(corpus_dir)
-        if not (model_dir / name / RESPONSE_FILE).exists()
+        name for name in _corpus_names(corpus_dir) if not present(model_dir / name / RESPONSE_FILE)
     ]
 
 
 def recorded_scenarios(corpus_dir: Path, model_dir: Path) -> list[str]:
     """The corpus scenarios with a recorded ``response.json``, in UTF-8 byte order."""
-    return [
-        name for name in _corpus_names(corpus_dir) if (model_dir / name / RESPONSE_FILE).exists()
-    ]
+    return [name for name in _corpus_names(corpus_dir) if present(model_dir / name / RESPONSE_FILE)]
 
 
 def corpus_scenarios(corpus_dir: Path) -> list[str]:
@@ -477,6 +474,27 @@ def corpus_scenarios(corpus_dir: Path) -> list[str]:
 
 
 UNEXPECTED_RECORD = "{name}: could not be recorded ({kind})"
+# TASK-005c3h H8 (the review's #3, TASK-005c3s S3-6): response.json was saved, a derived file was
+# not. A held Claude batch is completed only when it is released; Gemini by the next run.
+RECORDED_INCOMPLETE = "{name}: recorded, but its record could not be completed ({kind}); {when}"
+COMPLETED_ON_RELEASE = "it is completed when the batch is released"
+COMPLETED_NEXT_RUN = "the next run completes it"
+
+
+def _record_failure(run_dir: Path, name: str, kind: str, when: str) -> str:
+    """The message of a recording that raised an exception of type ``kind``: ``RECORDED_INCOMPLETE``
+    if ``response.json`` was saved before it, else ``UNEXPECTED_RECORD``. Never raises: a
+    ``response.json`` that cannot even be stat'ed counts as not saved (the batch is held, or the
+    Gemini run stops, either way)."""
+    try:
+        saved = present(run_dir / RESPONSE_FILE)
+    except OSError:
+        saved = False
+    if saved:
+        return RECORDED_INCOMPLETE.format(name=name, kind=kind, when=when)
+    return UNEXPECTED_RECORD.format(name=name, kind=kind)
+
+
 UNEXPECTED_COMPLETION = (
     "{name}: the record could not be completed ({kind}); send this message to the reviewer"
 )
@@ -523,7 +541,7 @@ def _check_unsaved(corpus_dir: Path, model_dir: Path, open_batch: _Batch | None)
     lines: list[str] = []
     for name in pending_scenarios(corpus_dir, model_dir):
         path = model_dir / name / UNSAVED_RESPONSE_FILE
-        if not path.exists():
+        if not present(path):
             continue
         if name not in exempt:
             raise RunStopped(UNSAVED.format(name=name, path=path))
@@ -575,13 +593,17 @@ def _load(corpus_dir: Path, name: str) -> LoadedScenario:
 def _render(corpus_dir: Path, name: str) -> Prompt:
     """The Test A prompt of one scenario; ``RunStopped`` (TASK-005c3d H10) if the instruction
     file cannot be read (the wording of ``eval prompt``) or the bundle cannot be built (for
-    example an undecodable CSV file)."""
+    example an undecodable CSV file). TASK-005c3h H8 (the review's #10): an ``OSError`` that
+    names another file (a CSV file of the scenario) names that file and the scenario."""
     scenario = _load(corpus_dir, name)
     try:
         return render_test_a(scenario)
     except OSError as error:
-        path = error.filename or INSTRUCTION_PATH
         reason = error.strerror or type(error).__name__
+        instruction = test_a_module.INSTRUCTION_PATH  # the file render_test_a reads
+        if error.filename is not None and Path(error.filename) != instruction:
+            raise RunStopped(f"{name}: cannot read {error.filename}: {reason}") from None
+        path = error.filename or instruction
         raise RunStopped(f"cannot read the instruction file {path}: {reason}") from None
     except ValueError as error:
         raise RunStopped(f"{name}: {error}") from None
@@ -949,7 +971,7 @@ class _AnthropicRun:
         reviewer's "send them all again": nothing is recorded. Malformed lines, unknown ids and
         duplicates never refuse the file: they are why a batch is held."""
         batch_id = cast(str, batch.id)  # a held entry always names its batch (_entry)
-        pending = [n for n in batch.scenarios if not (self.model_dir / n / RESPONSE_FILE).exists()]
+        pending = [n for n in batch.scenarios if not present(self.model_dir / n / RESPONSE_FILE)]
         if not pending:
             return
         path = self.model_dir / _results_file(batch_id)
@@ -1322,13 +1344,14 @@ class _AnthropicRun:
         if isinstance(error, RunStopped):
             text = server_text(str(error), secret_values(self.headers))
             return text if text.startswith(f"{name}: ") else f"{name}: {text}"
-        return UNEXPECTED_RECORD.format(name=name, kind=type(error).__name__)
+        kind = type(error).__name__
+        return _record_failure(self.model_dir / name, name, kind, COMPLETED_ON_RELEASE)
 
     def _record_result(self, name: str, result: dict[str, object]) -> str | None:
         """Record one result line; return a problem, if any."""
         run_dir = self.model_dir / name
         kind = cast(str, result["type"])
-        if (run_dir / RESPONSE_FILE).exists():
+        if present(run_dir / RESPONSE_FILE):
             self.echo(f"{name}: already recorded")
             return None
         if kind == "succeeded":
@@ -1430,7 +1453,7 @@ def _every_entry(runs_dir: Path) -> list[_Batch]:
     return [
         batch
         for model_dir in runs_dir.iterdir()
-        if (model_dir / BATCH_STATE_FILE).is_file()
+        if present(model_dir / BATCH_STATE_FILE)
         for batch in _load_state(model_dir)
     ]
 
@@ -1544,7 +1567,8 @@ def _run_gemini(
             line = recorded_line(name, model, document, comparison)
         except Exception as error:  # never its text (TASK-005c3d H9)
             kind = type(error).__name__
-            raise RunStopped(UNEXPECTED_RECORD.format(name=name, kind=kind) + TO_REVIEWER) from None
+            failure = _record_failure(model_dir / name, name, kind, COMPLETED_NEXT_RUN)
+            raise RunStopped(failure + TO_REVIEWER) from None
         echo(line)
 
 

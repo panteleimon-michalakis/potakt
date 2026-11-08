@@ -1294,6 +1294,90 @@ def test_an_unexpected_error_exits_1_without_its_text(
     assert not (runs / LOCK).exists()
 
 
+INTERRUPTED_RUN = "interrupted: run the same command again to resume (nothing is lost)\n"
+
+
+@pytest.mark.parametrize("yes", [False, True], ids=["dry-run", "yes"])
+def test_ctrl_c_while_the_corpus_is_listed_exits_1_with_the_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, yes: bool
+) -> None:
+    # TASK-005c3h H8 (the review's #15): Typer turned it into exit 130 with no message.
+    monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
+
+    def interrupted(corpus: Path) -> list[str]:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "corpus_scenarios", interrupted)
+
+    result = eval_run(tmp_path, HAIKU, *(["--yes"] if yes else []))
+
+    assert result.exit_code == 1
+    assert result.stderr == INTERRUPTED_RUN
+
+
+def test_ctrl_c_during_the_final_summary_exits_1_with_the_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_real_transport: Sleeps
+) -> None:
+    monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
+    server = FakeBatches(clock=no_real_transport)  # its Date follows the run's clock
+    monkeypatch.setattr(cli, "make_transport", lambda: server)
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:1])
+    runs = tmp_path / "runs"
+
+    def interrupted(model_dir: Path, corpus_dir: Path) -> Any:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "summarize", interrupted)
+
+    result = eval_run(runs, HAIKU, "--yes", corpus=corpus)
+
+    assert result.exit_code == 1
+    assert result.stderr == INTERRUPTED_RUN
+    assert not (runs / LOCK).exists()
+    # The same command again: nothing to run (the answer is recorded), then the summary.
+    monkeypatch.setattr(cli, "summarize", summarize)
+    again = eval_run(runs, HAIKU, "--yes", corpus=corpus)
+    assert again.exit_code == 0, again.output
+    assert "Complete: yes\n" in again.stdout
+
+
+def test_a_recorded_answer_that_cannot_be_stat_ed_exits_1_with_no_create(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # TASK-005c3h H8 (TASK-005c3s S1-1): on 3.14 Path.exists() returned False for any OSError
+    # (and on Windows never called os.stat), on 3.12 it raised: now our code decides, and an
+    # unreadable record stops the run, the same on both.
+    monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
+    server = FakeBatches()
+    monkeypatch.setattr(cli, "make_transport", lambda: server)
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:2])
+    runs = tmp_path / "runs"
+    write_answer(
+        runs / HAIKU / "01-pharmacy",
+        load_scenario(corpus / "01-pharmacy"),
+        HAIKU,
+        anthropic_message(HAIKU),
+    )
+    target = runs / HAIKU / "01-pharmacy" / "response.json"
+    real = os.stat
+
+    def stat(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+        if Path(path) == target:
+            raise PermissionError(13, "Permission denied", str(path))
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", stat)
+
+    result = eval_run(runs, HAIKU, "--yes", corpus=corpus)
+
+    assert_clean_exit_1(result, "")
+    assert result.stderr == (
+        "eval run stopped by an unexpected error (PermissionError): run the dry run and send its "
+        "output and this message to the reviewer\n"
+    )
+    assert server.creates() == []
+
+
 def test_a_missing_key_keeps_its_own_message(tmp_path: Path) -> None:
     # typer.Exit subclasses RuntimeError in Typer 0.27.3: the last resort must not catch it.
     result = eval_run(tmp_path, HAIKU, "--yes")

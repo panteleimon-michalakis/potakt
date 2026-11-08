@@ -431,6 +431,21 @@ def test_a_gemini_run_counts_its_finish_reason(tmp_path: Path) -> None:
     assert "Stops: MAX_TOKENS 1" in summary.to_text().splitlines()
 
 
+def test_the_stops_line_shows_a_server_stop_string_safely(tmp_path: Path) -> None:
+    # TASK-005c3h H8 (the review's #9): an escape and a line break of a server's stop string
+    # reached the terminal; the JSON keeps the stop exactly.
+    stop = "MAX\x1b[2J\nTOKENS"
+    candidate = {"content": {"parts": [{"text": "{}"}]}, "finishReason": stop}
+    runs = one_run(tmp_path, "gemini-3.8-flash", {"candidates": [candidate]})
+
+    summary = summarize(runs, CORPUS)
+
+    assert json.loads(summary.to_json())["stops"] == {stop: 1}
+    text = summary.to_text()
+    assert "Stops: MAX?[2J?TOKENS 1" in text.splitlines()
+    assert "\x1b" not in text
+
+
 def test_a_run_without_a_readable_response_has_no_stop(tmp_path: Path) -> None:
     runs = copy_runs(tmp_path)
     (runs / "01-pharmacy" / "response.json").unlink()
