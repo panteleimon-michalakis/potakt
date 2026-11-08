@@ -290,10 +290,10 @@ Commit each model's records right after its run and its checks, before the next 
      and has exactly one line there, a succeeded one, with nothing sent (a scenario with two
      lines, or with an errored, expired or unreadable one, is sent again):
      `<scenario>: recorded from the kept results of batch <id>`. If that file is missing or
-     cannot be read, it prints
-     `the kept results of batch <id> cannot be read; its pending scenarios will be sent again`.
-     Then it prints `batch <id> released after review` and continues: the scenarios still
-     pending are sent in a new batch. If one of those recordings fails, it stops with
+     cannot be read, it stops with `cannot read the kept results <path>: <reason>; batch <id> is
+     still held: send this message to the reviewer`, with nothing recorded or sent. Then it
+     prints `batch <id> released after review` and continues: the scenarios still pending are
+     sent in a new batch. If one of those recordings fails, it stops with
      `<scenario>: could not be recorded (<type>); batch <id> is still held: send this message to
      the reviewer`: the batch stays held and nothing was sent; send the message to the reviewer.
 - **Errored, expired and canceled results.** `<scenario>: errored (<type>); pending` (only the

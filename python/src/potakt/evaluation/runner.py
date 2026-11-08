@@ -438,22 +438,40 @@ UNSAVED = (
 )
 
 
-def _check_unsaved(corpus_dir: Path, model_dir: Path) -> None:
+# TASK-005c3h H5: a leftover of a scenario of the open batch, whose results are downloaded again.
+REPLACED = "{name}: a leftover {file} will be replaced by the answer of batch {id}"
+
+
+def _check_unsaved(corpus_dir: Path, model_dir: Path, open_batch: "_Batch | None") -> list[str]:
     """TASK-005c3g G5: ``RunStopped`` before anything is sent if a pending scenario keeps an
     answer that could not be saved (``response.json.tmp``): sending it again would pay twice and
-    lose the first answer. A recorded scenario's leftover temporary file is ignored."""
+    lose the first answer. A recorded scenario's leftover temporary file is ignored.
+
+    TASK-005c3h H5: a pending scenario of ``open_batch`` (the ``open`` entry of a Claude model;
+    ``None`` for Gemini) is no stop: the batch's results are downloaded again and ``write_answer``
+    overwrites the file. Returns the ``REPLACED`` line of each such scenario."""
+    exempt = () if open_batch is None else open_batch.scenarios
+    lines: list[str] = []
     for name in pending_scenarios(corpus_dir, model_dir):
         path = model_dir / name / UNSAVED_RESPONSE_FILE
-        if path.exists():
+        if not path.exists():
+            continue
+        if name not in exempt:
             raise RunStopped(UNSAVED.format(name=name, path=path))
+        batch_id = cast(str, cast("_Batch", open_batch).id)  # an open entry names its batch
+        lines.append(REPLACED.format(name=name, file=UNSAVED_RESPONSE_FILE, id=batch_id))
+    return lines
 
 
 # TASK-005c3g G4: the release of a held batch and its kept results.
-KEPT_UNREADABLE = (
-    "the kept results of batch {id} cannot be read; its pending scenarios will be sent again"
-)
-RECORDED_FROM_KEPT = "{name}: recorded from the kept results of batch {id}"
 STILL_HELD = "; batch {id} is still held: send this message to the reviewer"
+# TASK-005c3h H2: a kept results file that cannot be read, or that holds no result of the batch,
+# keeps the batch held: releasing it would send again answers the file may hold.
+KEPT_UNREADABLE = "cannot read the kept results {path}: {reason}" + STILL_HELD
+KEPT_NOT_RESULTS = "{path} holds no result of batch {id}" + STILL_HELD
+RECORDED_FROM_KEPT = "{name}: recorded from the kept results of batch {id}"
+# TASK-005c3h H3: the same --release command, run again after a stop that followed the release.
+ALREADY_RELEASED = "batch {id} was already released"
 
 
 def _kept_results(raw: bytes) -> dict[str, list[object]]:
@@ -702,9 +720,13 @@ class _AnthropicRun:
         held = next((b for b in _load_state(self.model_dir) if b.state == "held"), None)
         if held is not None:
             raise RunStopped(HELD_STOP.format(id=held.id, problems="; ".join(held.problems)))
+        # G2: before any other request; TASK-005c3h H4: also before the future check, so a slow
+        # laptop clock gets the clock stop.
+        self._check_clock()
         self._check_started_at()
-        _check_unsaved(self.corpus_dir, self.model_dir)  # G5: after the release (G4)
-        self._check_clock()  # G2: before any other request
+        opened = next((b for b in _load_state(self.model_dir) if b.state == "open"), None)
+        for line in _check_unsaved(self.corpus_dir, self.model_dir, opened):  # G5, H5
+            self.echo(line)
         _complete_records(self.corpus_dir, self.model_dir, self.model, self.echo)
         adopted = self._reconcile_earlier()
         pending = pending_scenarios(self.corpus_dir, self.model_dir)
@@ -763,8 +785,15 @@ class _AnthropicRun:
     def _release(self, batch_id: str) -> None:
         """E4: the held entry ``batch_id`` becomes ``done`` (its problems kept, for the record)
         after the reviewer's decision; ``RunStopped`` if no held entry has that id. TASK-005c3g
-        G4: first, ``_record_kept`` records what the batch's kept results already hold."""
+        G4: first, ``_record_kept`` records what the batch's kept results already hold.
+
+        TASK-005c3h H3: a ``done`` entry with that id and problems was held and released before
+        (a stop after the release, such as the clock check, advises the same command again): it
+        is announced and the run goes on as one without ``--release``."""
         batches = _load_state(self.model_dir)
+        if any(b.state == "done" and b.problems and b.id == batch_id for b in batches):
+            self.echo(ALREADY_RELEASED.format(id=batch_id))
+            return
         index = next(
             (i for i, b in enumerate(batches) if b.state == "held" and b.id == batch_id), None
         )
@@ -779,19 +808,30 @@ class _AnthropicRun:
         """TASK-005c3g G4: before a held ``batch`` is released, record each of its scenarios
         without ``response.json`` whose kept ``batch-<id>.results.jsonl`` has exactly one line,
         a ``succeeded`` one with a message object, as ``_record_result`` does; nothing is sent.
-        The others stay pending and are sent again. If the file cannot be read, it says so and
-        records nothing. If a recording fails, the batch stays held and ``RunStopped`` names each
-        failed scenario (H9 wording)."""
+        The others stay pending and are sent again. If a recording fails, the batch stays held
+        and ``RunStopped`` names each failed scenario (H9 wording).
+
+        TASK-005c3h H2: the file is read with ``retry_refused``. ``RunStopped`` before anything
+        is recorded, saved or sent, the batch still held, if it cannot be read (a missing file
+        included), or if it has non-blank lines but none is a result of a scenario of the batch
+        (an array, a pretty-printed file: TASK-005c3s S3-3). A file of whitespace only is the
+        reviewer's "send them all again": nothing is recorded. Malformed lines, unknown ids and
+        duplicates never refuse the file: they are why a batch is held."""
         batch_id = cast(str, batch.id)  # a held entry always names its batch (_entry)
         pending = [n for n in batch.scenarios if not (self.model_dir / n / RESPONSE_FILE).exists()]
         if not pending:
             return
+        path = self.model_dir / _results_file(batch_id)
         try:
-            raw = (self.model_dir / _results_file(batch_id)).read_bytes()
-        except OSError:
-            self.echo(KEPT_UNREADABLE.format(id=batch_id))
-            return
+            raw = retry_refused(path.read_bytes, self.sleep)
+        except OSError as error:
+            reason = error.strerror or type(error).__name__
+            raise RunStopped(
+                KEPT_UNREADABLE.format(path=path, reason=reason, id=batch_id)
+            ) from None
         lines = _kept_results(raw)
+        if raw.strip() and not any(name in batch.scenarios for name in lines):
+            raise RunStopped(KEPT_NOT_RESULTS.format(path=path, id=batch_id))
         failures: list[str] = []
         for name in pending:
             found = lines.get(name, [])
@@ -1342,7 +1382,7 @@ def _run_gemini(
     if not pending:
         echo("nothing to run")
         return
-    _check_unsaved(corpus_dir, model_dir)  # TASK-005c3g G5: before the first request
+    _check_unsaved(corpus_dir, model_dir, None)  # TASK-005c3g G5: before the first request
     url = GEMINI_URL.format(model=model)
     checked = _JsonObjectOnly(transport)
     for name in pending:
@@ -1735,8 +1775,19 @@ GEMINI_COST_LINE = (
 
 def run_plan(model: str, corpus_dir: Path, runs_dir: Path) -> str:
     """What ``eval run`` would do for ``model``, one fact per line, ending with ``\\n``. Reads
-    no key and sends nothing."""
+    no key and sends nothing.
+
+    TASK-005c3h H5: ``RunStopped`` (the ``--yes`` message) for a leftover ``response.json.tmp``
+    that ``--yes`` would stop on; a leftover of the open batch adds its ``REPLACED`` line. While
+    a batch is held the leftovers are not checked: ``--yes`` stops on the held batch first, and
+    ``--release`` first records what the kept results hold."""
     model_dir = runs_dir / model_directory_name(model)
+    anthropic = model.startswith(ANTHROPIC_PREFIX)
+    batches = _load_state(model_dir) if anthropic else []
+    replaced: list[str] = []
+    if not any(batch.state == "held" for batch in batches):
+        opened = next((batch for batch in batches if batch.state == "open"), None)
+        replaced = _check_unsaved(corpus_dir, model_dir, opened)
     pending = pending_scenarios(corpus_dir, model_dir)
     recorded = recorded_scenarios(corpus_dir, model_dir)
     lines = [
@@ -1745,9 +1796,9 @@ def run_plan(model: str, corpus_dir: Path, runs_dir: Path) -> str:
         f"Pending ({len(pending)}): {', '.join(pending) or 'none'}",
         f"Recorded ({len(recorded)}): {', '.join(recorded) or 'none'}",
     ]
-    if model.startswith(ANTHROPIC_PREFIX):
+    if anthropic:
         # One entry at most is creating or open (_load_state); the dry run never lists batches.
-        for batch in _load_state(model_dir):
+        for batch in batches:
             count = len(batch.scenarios)
             if batch.state == "open":
                 lines.append(f"Open batch: {batch.id} ({count} scenarios), resumed by --yes")
@@ -1761,6 +1812,7 @@ def run_plan(model: str, corpus_dir: Path, runs_dir: Path) -> str:
                     f"Unconfirmed create request: started {batch.started_at} ({count} scenarios); "
                     "--yes checks for its batch before sending anything"
                 )
+        lines += replaced
         cost = cost_upper_bound(model, corpus_dir, pending)
         lines.append(
             f"Cost upper bound: ${cost:.4f} ({len(pending)} requests; input: the UTF-8 bytes of "

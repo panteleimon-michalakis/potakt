@@ -183,6 +183,72 @@ def test_the_dry_run_shows_an_unconfirmed_create_request_and_lists_nothing(
     assert "Open batch" not in result.stdout
 
 
+def leftover(runs: Path, model: str, name: str) -> Path:
+    """A ``response.json.tmp`` left by an earlier run for scenario ``name``."""
+    path = runs / model / name / "response.json.tmp"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"{}\n")
+    return path
+
+
+def unsaved_message(name: str, path: Path) -> str:
+    return (
+        f"{name}: an answer that could not be saved is kept in {path}; nothing was sent; send this "
+        "message to the reviewer and do not delete or rename the file\n"
+    )
+
+
+@pytest.mark.parametrize("model", [HAIKU, GEMINI])
+def test_the_dry_run_stops_on_a_leftover_answer_that_yes_would_stop_on(
+    tmp_path: Path, model: str
+) -> None:
+    # TASK-005c3h H5 (the review's #16): the dry run priced a scenario that --yes stops on.
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:2])
+    runs = tmp_path / "runs"
+    path = leftover(runs, model, "02-hotel-reception")
+
+    result = eval_run(runs, model, corpus=corpus)
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert result.stderr == unsaved_message("02-hotel-reception", path)
+
+
+def test_the_dry_run_says_that_a_leftover_of_the_open_batch_will_be_replaced(
+    tmp_path: Path,
+) -> None:
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:2])
+    runs = tmp_path / "runs"
+    write_state(runs / HAIKU, batch_entry("msgbatch_07", ALL_SCENARIOS[:2], "open"))
+    leftover(runs, HAIKU, "02-hotel-reception")
+
+    result = eval_run(runs, HAIKU, corpus=corpus)
+
+    assert result.exit_code == 0, result.stderr
+    lines = result.stdout.splitlines()
+    assert (
+        "02-hotel-reception: a leftover response.json.tmp will be replaced by the answer of batch "
+        "msgbatch_07"
+    ) in lines
+    assert "Open batch: msgbatch_07 (2 scenarios), resumed by --yes" in lines
+
+
+def test_the_dry_run_of_a_held_batch_shows_the_plan_whatever_its_leftovers(
+    tmp_path: Path,
+) -> None:
+    # --yes stops on the held batch before it looks at leftovers, and --release first records
+    # what the kept results hold: the dry run cannot know which leftovers will remain.
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:2])
+    runs = tmp_path / "runs"
+    held_state(runs)
+    leftover(runs, HAIKU, "01-pharmacy")
+
+    result = eval_run(runs, HAIKU, corpus=corpus)
+
+    assert result.exit_code == 0, result.stderr
+    assert any(line.startswith("Held batch: msgbatch_07") for line in result.stdout.splitlines())
+
+
 def prompt_bytes(name: str) -> int:
     prompt = render_test_a(load_scenario(CORPUS_PATH / name))
     return len(prompt.system.encode("utf-8")) + len(prompt.user.encode("utf-8"))
@@ -535,6 +601,8 @@ def test_a_held_batch_stops_yes_and_release_resumes(
         anthropic_message(HAIKU),
     )
     held_state(runs)
+    # TASK-005c3h H2: the reviewer emptied the kept results file ("send them all again").
+    (runs / HAIKU / "batch-msgbatch_07.results.jsonl").write_bytes(b"")
 
     stopped = eval_run(runs, HAIKU, "--yes", corpus=corpus)
     released = eval_run(runs, HAIKU, "--yes", "--release", "msgbatch_07", corpus=corpus)
@@ -546,9 +614,6 @@ def test_a_held_batch_stops_yes_and_release_resumes(
     )
     assert released.exit_code == 0, released.stderr
     assert released.stdout.startswith(
-        # TASK-005c3g G4: this held batch has no kept results file.
-        "the kept results of batch msgbatch_07 cannot be read; its pending scenarios will be "
-        "sent again\n"
         "batch msgbatch_07 released after review\nbatch msgbatch_01 created for 1 scenarios\n"
     )
     assert server.creates() == [["02-hotel-reception"]]
@@ -1938,7 +2003,9 @@ def test_the_runbook_quotes_the_reconciliation_messages_and_the_new_rules() -> N
         "`cannot summarize <dir>: <reason>`",
         # TASK-005c3g G4: the release records from the kept results first.
         "`" + runner_module.RECORDED_FROM_KEPT.format(name="<scenario>", id="<id>") + "`",
-        "`" + runner_module.KEPT_UNREADABLE.format(id="<id>") + "`",
+        "`"
+        + runner_module.KEPT_UNREADABLE.format(path="<path>", reason="<reason>", id="<id>")
+        + "`",
         # TASK-005c3g G2: the preflight's clock line.
         "`clock: within <n> s of api.anthropic.com`",
         # TASK-005c3g G7: an error type that a repeat cannot fix holds the batch.

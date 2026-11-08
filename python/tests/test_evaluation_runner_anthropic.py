@@ -50,6 +50,7 @@ from potakt.evaluation import (
     write_answer,
     write_request,
 )
+from potakt.evaluation.records import refused_pause
 from potakt.evaluation.runner import (
     ANTHROPIC_VERSION,
     BATCH_STATE_FILE,
@@ -1960,16 +1961,13 @@ def test_a_release_stops_for_another_held_batch(tmp_path: Path) -> None:
         batch_entry("msgbatch_01", ["01-pharmacy"], "held", problems=["p1"]),
         batch_entry("msgbatch_02", ["02-hotel-reception"], "held", problems=["p2"]),
     )
+    # TASK-005c3h H2: the reviewer emptied the kept results file ("send them all again").
+    (run.model_dir / "batch-msgbatch_01.results.jsonl").write_bytes(b"")
 
     with pytest.raises(RunStopped, match=r"^batch msgbatch_02 is held for the reviewer: p2; "):
         run(release="msgbatch_01")
 
-    assert run.echo == [
-        # TASK-005c3g G4: this held batch has no kept results file.
-        "the kept results of batch msgbatch_01 cannot be read; its pending scenarios will be "
-        "sent again",
-        "batch msgbatch_01 released after review",
-    ]
+    assert run.echo == ["batch msgbatch_01 released after review"]
     assert run.states() == ["done", "held"]
     assert run.server.calls == []
 
@@ -2005,6 +2003,7 @@ def test_the_attempt_cap_counts_held_batches(tmp_path: Path) -> None:
     done = [batch_entry(f"msgbatch_9{n}", ["02-hotel-reception"], "done") for n in range(3)]
     held = batch_entry("msgbatch_99", ["02-hotel-reception"], "held", problems=["p1"])
     write_state(run.model_dir, *done, held)
+    (run.model_dir / "batch-msgbatch_99.results.jsonl").write_bytes(b"")  # H2: send it again
 
     with pytest.raises(RunStopped, match="02-hotel-reception was sent in 4 batches"):
         run(release="msgbatch_99")  # released, it still counts
@@ -2160,18 +2159,34 @@ def test_a_recording_that_fails_during_the_release_keeps_the_batch_held_and_send
     assert run.server.creates() == []
 
 
-def test_a_missing_kept_results_file_releases_as_before_and_says_so(tmp_path: Path) -> None:
+def kept_unreadable(run: Run, reason: str) -> str:
+    """TASK-005c3h H2: the stop of a release whose kept results file cannot be read."""
+    return (
+        f"cannot read the kept results {run.model_dir / KEPT}: {reason}; batch msgbatch_01 is "
+        "still held: send this message to the reviewer"
+    )
+
+
+def test_a_missing_kept_results_file_keeps_the_batch_held_and_sends_nothing(
+    tmp_path: Path,
+) -> None:
+    # The review's #1: a missing file released the batch, and the run re-sent every scenario.
     run = held_with(tmp_path)
     (run.model_dir / KEPT).unlink()
+    before = (run.model_dir / BATCH_STATE_FILE).read_bytes()
 
-    run(release="msgbatch_01")
+    with pytest.raises(RunStopped) as raised:
+        run(release="msgbatch_01")
 
-    assert run.echo[:2] == [
-        "the kept results of batch msgbatch_01 cannot be read; its pending scenarios will be "
-        "sent again",
-        "batch msgbatch_01 released after review",
-    ]
-    assert run.server.creates() == [list(ALL_SCENARIOS[:2])]
+    # The reason is the OS's text for a missing file: only its place is checked (DoD 6).
+    head, tail = kept_unreadable(run, "<reason>").split("<reason>")
+    assert str(raised.value).startswith(head)
+    assert str(raised.value).endswith(tail)
+    assert run.states() == ["held"]
+    assert (run.model_dir / BATCH_STATE_FILE).read_bytes() == before
+    assert run.server.calls == []
+    assert run.echo == []
+    assert run.recorded() == []
 
 
 def test_a_release_with_every_scenario_recorded_reads_nothing_and_says_nothing_about_it(
@@ -2189,23 +2204,135 @@ def test_a_release_with_every_scenario_recorded_reads_nothing_and_says_nothing_a
     assert after_the_clock(run.server) == []
 
 
-def test_an_unreadable_kept_results_file_releases_as_before_and_says_so(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    run = held_with(tmp_path, result_line("01-pharmacy", succeeded()))
+def refused_kept_reads(monkeypatch: pytest.MonkeyPatch, times: int) -> list[int]:
+    """``Path.read_bytes`` of the kept results file raises ``PermissionError`` (WinError 5 or 32
+    as Python reports it) for its first ``times`` reads; returns the count of refusals."""
     real_read = Path.read_bytes
+    refused = [0]
 
     def read_bytes(self: Path) -> bytes:
-        if self.name == KEPT:
+        if self.name == KEPT and refused[0] < times:
+            refused[0] += 1
             raise PermissionError(13, "Permission denied")
         return real_read(self)
 
     monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    return refused
+
+
+@pytest.mark.parametrize("times", [1, 9])
+def test_a_refused_read_of_the_kept_results_is_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, times: int
+) -> None:
+    # The review's #1: the read had no retry while every write had one.
+    run = held_with(
+        tmp_path,
+        result_line("01-pharmacy", succeeded()),
+        result_line("02-hotel-reception", succeeded()),
+    )
+    refused = refused_kept_reads(monkeypatch, times)
 
     run(release="msgbatch_01")
 
-    assert run.echo[0].startswith("the kept results of batch msgbatch_01 cannot be read; ")
+    assert refused == [times]
+    assert run.sleeps == [refused_pause(attempt) for attempt in range(times)]
+    assert run.echo[:3] == [
+        recorded_from("01-pharmacy"),
+        recorded_from("02-hotel-reception"),
+        "batch msgbatch_01 released after review",
+    ]
+    assert run.server.creates() == []
+    assert run.recorded() == list(ALL_SCENARIOS[:2])
+
+
+def test_ten_refused_reads_of_the_kept_results_keep_the_batch_held_and_send_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = held_with(tmp_path, result_line("01-pharmacy", succeeded()))
+    refused_kept_reads(monkeypatch, 10)
+
+    with pytest.raises(RunStopped) as raised:
+        run(release="msgbatch_01")
+
+    assert str(raised.value) == kept_unreadable(run, "Permission denied")
+    assert run.sleeps == [refused_pause(attempt) for attempt in range(9)]
+    assert run.states() == ["held"]
+    assert run.server.calls == []
+    assert run.recorded() == []
+
+
+def pretty_results(*lines: dict[str, Any]) -> bytes:
+    return json.dumps(list(lines), indent=2).encode()
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        json.dumps(
+            [result_line(name, succeeded()) for name in ALL_SCENARIOS[:2]]
+        ).encode() + b"\n",
+        pretty_results(*(result_line(name, succeeded()) for name in ALL_SCENARIOS[:2])),
+        json.dumps({"results": [result_line("01-pharmacy", succeeded())]}).encode() + b"\r\n",
+        b"{not json\n" + json.dumps(result_line("09-other", succeeded())).encode() + b"\n",
+    ],
+    ids=["array", "pretty-printed", "wrapper", "malformed-and-unknown-id"],
+)  # fmt: skip
+def test_a_kept_file_with_no_result_of_the_batch_keeps_it_held_and_sends_nothing(
+    tmp_path: Path, data: bytes
+) -> None:
+    # TASK-005c3s S3-3: a file restored in another shape was read as "no results", and the
+    # release sent every scenario again although their answers were in it.
+    run = held_with(tmp_path)
+    (run.model_dir / KEPT).write_bytes(data)
+    before = (run.model_dir / BATCH_STATE_FILE).read_bytes()
+
+    with pytest.raises(RunStopped) as raised:
+        run(release="msgbatch_01")
+
+    assert str(raised.value) == (
+        f"{run.model_dir / KEPT} holds no result of batch msgbatch_01; batch msgbatch_01 is still "
+        "held: send this message to the reviewer"
+    )
+    assert (run.model_dir / BATCH_STATE_FILE).read_bytes() == before
+    assert run.server.calls == []
+    assert run.recorded() == []
+
+
+@pytest.mark.parametrize("data", [b"", b"\r\n", b"\n\n", b"\r\n \t\r\n"])
+def test_a_kept_file_of_whitespace_only_releases_and_sends_every_pending_scenario_again(
+    tmp_path: Path, data: bytes
+) -> None:
+    # The reviewer's explicit "send them all again" (runbook §8: New-Item writes 0 bytes).
+    run = held_with(tmp_path)
+    (run.model_dir / KEPT).write_bytes(data)
+
+    run(release="msgbatch_01")
+
+    assert run.echo[0] == "batch msgbatch_01 released after review"
     assert run.server.creates() == [list(ALL_SCENARIOS[:2])]
+    assert run.recorded() == list(ALL_SCENARIOS[:2])
+
+
+def test_the_original_kept_file_of_a_held_batch_still_records_its_good_lines(
+    tmp_path: Path,
+) -> None:
+    # A malformed line and a duplicate are why such a batch is held: never a reason to refuse it.
+    run = held_with(
+        tmp_path,
+        b"{not json",
+        result_line("01-pharmacy", succeeded()),
+        result_line("01-pharmacy", succeeded()),
+        result_line("02-hotel-reception", succeeded()),
+    )
+
+    run(release="msgbatch_01")
+
+    assert run.echo[:2] == [
+        recorded_from("02-hotel-reception"),
+        "batch msgbatch_01 released after review",
+    ]
+    assert run.server.creates() == [["01-pharmacy"]]
+    assert run.recorded() == list(ALL_SCENARIOS[:2])
 
 
 # --- TASK-005c3g G5: an answer that could not be saved is never sent again --------------------
@@ -2228,7 +2355,8 @@ def test_a_leftover_unsaved_answer_stops_the_run_before_any_request(tmp_path: Pa
         run()
 
     assert str(raised.value) == unsaved_stop(kept)
-    assert run.server.calls == []
+    # TASK-005c3h H4: only the free clock call comes before this check.
+    assert [(call.method, call.url) for call in run.server.calls] == [("GET", CLOCK_URL)]
     assert kept.read_bytes() == b'{"kept": "answer"}\n'
     assert sorted(path.name for path in run.model_dir.rglob("*")) == [
         "01-pharmacy",
@@ -2399,9 +2527,10 @@ def test_a_leftover_started_at_in_the_near_future_is_capped_at_180_seconds(
 
 
 @pytest.mark.parametrize("state", ["creating", "done", "failed"])
-def test_an_entry_started_more_than_ten_minutes_in_the_future_stops_before_any_call(
+def test_an_entry_started_more_than_ten_minutes_in_the_future_stops_after_the_clock_call_only(
     tmp_path: Path, state: str
 ) -> None:
+    # TASK-005c3h H4: the clock call comes first (a slow laptop gets the clock stop), then this.
     run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:1])
     started_at = "2026-11-02T10:10:01Z"  # NOW + 10 min + 1 s
     write_state(
@@ -2416,7 +2545,7 @@ def test_an_entry_started_more_than_ten_minutes_in_the_future_stops_before_any_c
         "batches.json has an entry started at 2026-11-02T10:10:01Z, in the future: the clock or "
         "the file is wrong; send batches.json to the reviewer"
     )
-    assert run.server.calls == []
+    assert [(call.method, call.url) for call in run.server.calls] == [("GET", CLOCK_URL)]
     assert run.sleeps == []
     assert (run.model_dir / BATCH_STATE_FILE).read_bytes() == before
 
@@ -3400,16 +3529,43 @@ def test_the_clock_is_checked_before_any_other_request_and_before_a_record_is_co
     assert run.echo == []
 
 
-def test_the_held_release_and_future_checks_come_before_the_clock_check(tmp_path: Path) -> None:
+def test_the_clock_check_comes_before_the_future_check_and_after_the_held_check(
+    tmp_path: Path,
+) -> None:
+    # TASK-005c3h H4: release, then held, then the clock call, then the future check.
     run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:1])
     run.skew = timedelta(minutes=15)
     later = batch_entry(None, ["01-pharmacy"], "failed", started_at="2026-11-02T10:40:00Z")
     write_state(run.model_dir, later)
 
-    with pytest.raises(RunStopped, match=r"in the future"):
-        run()  # the laptop is 15 min fast, so 10:40 is only 25 min ahead: still in the future
+    with pytest.raises(RunStopped) as raised:
+        run()  # 10:40 is in the future, but the laptop clock is checked first
 
+    assert str(raised.value) == clock_stop(900)
+    assert [(call.method, call.url) for call in run.server.calls] == [("GET", CLOCK_URL)]
+    held = batch_entry("msgbatch_01", ["01-pharmacy"], "held", problems=["p1"])
+    write_state(run.model_dir, held, later)
+    run.server.calls.clear()
+    with pytest.raises(RunStopped, match=r"^batch msgbatch_01 is held for the reviewer: p1; "):
+        run()
     assert run.server.calls == []
+
+
+def test_a_slow_laptop_clock_gets_the_clock_stop_and_not_the_future_stop(tmp_path: Path) -> None:
+    # The review's #12: the future check ran first, so a slow laptop was told to send
+    # batches.json to the reviewer instead of syncing its clock. An entry stamped by the API's
+    # clock 4 minutes ago is 11 minutes ahead of a laptop 15 minutes slow (5 minutes ago would
+    # be exactly at the 10-minute edge, which the future check allows).
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:1])
+    run.skew = -timedelta(minutes=15)
+    stamped = batch_entry(None, ["01-pharmacy"], "failed", started_at=iso(-timedelta(minutes=4)))
+    write_state(run.model_dir, stamped)
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == clock_stop(900)
+    assert [(call.method, call.url) for call in run.server.calls] == [("GET", CLOCK_URL)]
 
 
 def test_the_audits_lost_create_at_a_fast_clock_cannot_happen_any_more(tmp_path: Path) -> None:
@@ -3448,3 +3604,179 @@ def test_the_audit_looks_back_to_ten_minutes_before_the_earliest_created_at(
         unrecorded("msgbatch_dup", 1, "2026-11-02T09:45:00Z"),
         unrecorded("msgbatch_edge", 1, "2026-11-02T09:20:00Z"),
     ]
+
+
+# --- TASK-005c3h H3: a release can be repeated --------------------------------------------------
+
+ALREADY_RELEASED = "batch msgbatch_01 was already released"
+
+
+def test_a_release_stopped_by_the_clock_is_completed_by_the_same_command(tmp_path: Path) -> None:
+    # The review's #5: the clock stop says "run again", but the same --release then stopped with
+    # "msgbatch_01 is not a held batch".
+    run = held_with(tmp_path, result_line("02-hotel-reception", succeeded()))
+    run.server.register(list(ALL_SCENARIOS[:2]))  # the held batch: the next one is msgbatch_02
+    run.skew = timedelta(minutes=15)
+    with pytest.raises(RunStopped) as raised:
+        run(release="msgbatch_01")
+    assert str(raised.value) == clock_stop(900)
+    assert run.states() == ["done"]
+    assert run.echo == [
+        recorded_from("02-hotel-reception"),
+        "batch msgbatch_01 released after review",
+    ]
+    run.skew = timedelta(0)  # the owner synced the clock
+    run.echo.clear()
+
+    run(release="msgbatch_01")
+
+    assert run.echo[0] == ALREADY_RELEASED
+    assert run.server.creates() == [["01-pharmacy"]]
+    assert run.recorded() == list(ALL_SCENARIOS[:2])
+    assert run.states() == ["done", "done"]
+    assert problems_of(run, 0) == ["p1"]
+    assert problems_of(run, 1) == []
+
+
+def test_a_release_stopped_by_an_unsaved_answer_is_completed_by_the_same_command(
+    tmp_path: Path,
+) -> None:
+    run = held_with(tmp_path, result_line("02-hotel-reception", succeeded()))
+    kept = run.model_dir / "01-pharmacy" / "response.json.tmp"
+    kept.parent.mkdir(parents=True)
+    kept.write_bytes(b"{}\n")
+    with pytest.raises(RunStopped) as raised:
+        run(release="msgbatch_01")
+    assert str(raised.value) == unsaved_stop(kept)
+    assert run.states() == ["done"]
+    kept.unlink()  # the reviewer decided that the file holds no answer
+    run.echo.clear()
+
+    run(release="msgbatch_01")
+
+    assert run.echo[0] == ALREADY_RELEASED
+    assert run.server.creates() == [["01-pharmacy"]]
+    assert run.recorded() == list(ALL_SCENARIOS[:2])
+
+
+@pytest.mark.parametrize("problems", [[], ["p1"]])
+def test_a_release_of_another_batch_id_still_stops(tmp_path: Path, problems: list[str]) -> None:
+    # Only a done entry with problems (held, then released) is "already released".
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:1])
+    write_state(
+        run.model_dir, batch_entry("msgbatch_01", ALL_SCENARIOS[:1], "done", problems=problems)
+    )
+
+    with pytest.raises(RunStopped) as raised:
+        run(release="msgbatch_02" if problems else "msgbatch_01")
+
+    expected = "msgbatch_02" if problems else "msgbatch_01"
+    assert str(raised.value) == f"{expected} is not a held batch of claude-haiku-5-5"
+    assert run.server.calls == []
+
+
+# --- TASK-005c3h H5: a leftover answer file of the open batch -----------------------------------
+
+
+def replaced_line(name: str, batch_id: str = "msgbatch_01") -> str:
+    return (
+        f"{name}: a leftover response.json.tmp will be replaced by the answer of batch {batch_id}"
+    )
+
+
+class InterruptedReplace:
+    """``os.replace`` interrupted (Ctrl+C) once, for the first replace of a ``response.json``:
+    ``write_answer`` keeps the complete, synced temporary file (``keep``)."""
+
+    def __init__(self) -> None:
+        self.real = os.replace
+        self.done = False
+
+    def __call__(self, source: object, destination: object) -> None:
+        if not self.done and Path(str(destination)).name == "response.json":
+            self.done = True
+            raise KeyboardInterrupt
+        self.real(cast(Any, source), cast(Any, destination))
+
+
+def test_an_interrupted_recording_is_resumed_by_the_same_command_with_no_new_batch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The review's #2: "interrupted: run the same command again to resume" then stopped on the
+    # leftover response.json.tmp of a scenario whose results are simply downloaded again.
+    server = FakeBatches(outcome=lambda n, s: succeeded(truth_text(s)))
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:2])
+    monkeypatch.setattr(os, "replace", InterruptedReplace())
+    with pytest.raises(KeyboardInterrupt):
+        run()
+    monkeypatch.setattr(os, "replace", InterruptedReplace().real)
+    kept = run.model_dir / "01-pharmacy" / "response.json.tmp"
+    assert kept.is_file()
+    assert run.states() == ["open"]
+    run.echo.clear()
+
+    run()
+
+    assert run.echo[:2] == [replaced_line("01-pharmacy"), "resuming batch msgbatch_01"]
+    assert server.creates() == [list(ALL_SCENARIOS[:2])]
+    assert run.recorded() == list(ALL_SCENARIOS[:2])
+    assert run.states() == ["done"]
+    assert sorted(run.model_dir.rglob("*.tmp")) == []
+    message = json.loads(server.results("msgbatch_01").splitlines()[-1])["result"]["message"]
+    expected = json.dumps(message, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
+    assert (run.model_dir / "01-pharmacy" / "response.json").read_bytes() == expected.encode()
+
+
+def test_a_truncated_leftover_of_the_open_batch_is_replaced_by_the_downloaded_answer(
+    tmp_path: Path,
+) -> None:
+    server = FakeBatches()
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:2])
+    batch_id = server.register(list(ALL_SCENARIOS[:2]))
+    write_state(run.model_dir, batch_entry(batch_id, ALL_SCENARIOS[:2], "open"))
+    kept = run.model_dir / "02-hotel-reception" / "response.json.tmp"
+    kept.parent.mkdir(parents=True)
+    kept.write_bytes(b'{\n  "content": [\n    {"te')
+
+    run()
+
+    assert run.echo[:2] == [replaced_line("02-hotel-reception"), "resuming batch msgbatch_01"]
+    assert server.creates() == []
+    assert run.recorded() == list(ALL_SCENARIOS[:2])
+    assert sorted(run.model_dir.rglob("*.tmp")) == []
+    assert (
+        json.loads((run.model_dir / "02-hotel-reception" / "response.json").read_bytes())
+        == (succeeded()["message"])
+    )
+
+
+@pytest.mark.parametrize("state", ["done", "failed", "creating"])
+def test_a_leftover_of_a_scenario_of_no_open_batch_still_stops(tmp_path: Path, state: str) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:2])
+    write_state(run.model_dir, batch_entry("msgbatch_01", ALL_SCENARIOS[:2], state))
+    kept = run.model_dir / "01-pharmacy" / "response.json.tmp"
+    kept.parent.mkdir(parents=True)
+    kept.write_bytes(b"{}\n")
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == unsaved_stop(kept)
+    assert [(call.method, call.url) for call in run.server.calls] == [("GET", CLOCK_URL)]
+    assert kept.read_bytes() == b"{}\n"
+
+
+def test_only_the_open_batchs_scenarios_are_exempt(tmp_path: Path) -> None:
+    server = FakeBatches()
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:2])
+    batch_id = server.register(["02-hotel-reception"])
+    write_state(run.model_dir, batch_entry(batch_id, ["02-hotel-reception"], "open"))
+    for name in ALL_SCENARIOS[:2]:
+        (run.model_dir / name).mkdir(parents=True)
+        (run.model_dir / name / "response.json.tmp").write_bytes(b"{}\n")
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == unsaved_stop(run.model_dir / "01-pharmacy" / "response.json.tmp")
+    assert after_the_clock(server) == []
