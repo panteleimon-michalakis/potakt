@@ -67,7 +67,9 @@ truth; if a task seems to contradict it, **stop and ask** instead of improvising
 ## Work log
 Every task keeps a work log at `.tasks/logs/TASK-XXX.md` (local only: `.tasks/` is gitignored, never
 commit it). Create it before the first change and append an entry after every step (each TDD cycle,
-each commit, each gate run, each problem). Each entry has: local time; the step; files touched;
+each commit, each gate run, each problem). Each entry has: local time, copied from the output of
+`Get-Date -Format 'yyyy-MM-dd HH:mm'` run in the same step (never estimated or typed from memory; a
+time corrected later keeps a note with its clock evidence); the step; files touched;
 commands run with their outcome (last lines only, e.g. `318 passed`); **decisions taken and the
 reason in one or two sentences**, plus alternatives rejected; tools, plugins and MCP used and what
 for; problems found and how they were resolved; deviations from the task. Keep it concise and
@@ -109,6 +111,9 @@ Every task; the evidence goes in the report.
 - Temporary mutations for red evidence: copies **inside the scratchpad** (never `$TEMP`), restore, then
   prove nothing is left with `git diff --stat`.
 - Scratch files never go into the repository.
+- Evidence that a report cites (probe scripts and their outputs, verifier scripts) is copied at the
+  end of the task into `.tasks/evidence/TASK-XXX/` (gitignored, outside `%TEMP%`) with a scratchpad
+  helper run by `uv run python -I`; the report gives that path. It is never committed.
 - A PreToolUse hook on the owner's machine blocks in-place `sed`/`perl`/`awk`, shell redirection into
   repository source files, Python reading a script from stdin and any command that could print a
   secret (environment dumps, secret-like variable names, `.env` files); reading `.env` files is
