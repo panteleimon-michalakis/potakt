@@ -9,14 +9,14 @@ mutation of the corpus truths, so that showing a rule in the schema never change
 import json
 import re
 import shutil
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from functools import cache
 from pathlib import Path
 from typing import Any, Literal, cast, get_args
 
 import pytest
-from hypothesis import assume, given, settings
+from hypothesis import assume, given, note, settings
 from hypothesis import strategies as st
 from jsonschema import Draft202012Validator
 from message_templates import HOLE, collect_templates, template_pattern
@@ -31,7 +31,14 @@ from potakt.model import (
     validate_data,
 )
 from potakt.model.catalog import _HardOrSoft
-from potakt.model.common import RESERVED_ATTRIBUTE_NAMES
+from potakt.model.common import (
+    RESERVED_ATTRIBUTE_NAMES,
+    Condition,
+    ConditionOp,
+    ProvenanceKind,
+)
+from potakt.model.data import CsvDecimal, CsvDelimiter
+from potakt.model.scope import in_scope
 
 PYTHON = Path(__file__).resolve().parents[1]
 REPO = PYTHON.parent
@@ -259,6 +266,20 @@ def duplicate_first_baseline_entry(document: Document) -> None:
     baseline.append(dict(baseline[0]))
 
 
+# ``json.dumps`` writes a float as ``5.0``; a value ``raw_number("5e0")`` is written as ``5e0``.
+RAW_NUMBER = "<raw number>"
+
+
+def raw_number(text: str) -> str:
+    return RAW_NUMBER + text
+
+
+def dump(document: Document) -> str:
+    """``document`` as JSON text, with every ``raw_number`` written as the bare number."""
+    text = json.dumps(document, ensure_ascii=False)
+    return re.sub(f'"{re.escape(RAW_NUMBER)}([^"]*)"', r"\1", text)
+
+
 C01, C02, C03, C04, C06 = (
     "01-pharmacy",
     "02-hotel-reception",
@@ -315,7 +336,8 @@ TYPE_TEXT = (
     "with an optional sign); `float` a number written with the file's `decimal` separator (with "
     "decimal `,` a `.` is rejected, never read as a thousands separator); `bool` one of "
     "`true`/`false`, `yes`/`no`, `1`/`0` in any letter case; `list` items split by `separator`. "
-    "An empty cell means no value. A cell that cannot be read this way makes the model invalid."
+    "An empty cell means no value, except in a `list` column, where it is an empty list. A cell "
+    "that cannot be read this way makes the model invalid."
 )
 DECIMAL_TEXT = "`,` needs a `delimiter` other than `,`."
 SOURCE_PATH_TEXT = (
@@ -352,6 +374,11 @@ LIMIT_TEXT = (
     "to 100000, with `measure` `hours` up to 8784 in whole minutes."
 )
 HORIZON_TEXT = "`end` is not before `start`."
+# TASK-005e1 follow-up: decision 2, and the reviewer's decision on horizon dates.
+INTEGER_TEXT = (
+    "Every integer (`type` `integer`) is written as plain digits: `5`, not `5.0` or `5e0`."
+)
+HORIZON_DATE_TEXT = "A calendar date written as `YYYY-MM-DD`, from 1970-01-01 to 2999-12-31."
 # Texts of the extra rows found by the AST test (for the reviewer's ruling).
 HOURS_TEXT = "Hours, more than 0 and in whole minutes, e.g. `11` or `7.5` (not `7.501`)."
 CSV_FILE_TEXT = (
@@ -415,9 +442,26 @@ TEXTS: tuple[tuple[str, str], ...] = (
     ("/$defs/RequiresAttributeParams", REQUIRES_TEXT),
     ("/$defs/PeriodLimitParams/properties/limit", LIMIT_TEXT),
     ("/$defs/Horizon", HORIZON_TEXT),
+    ("", INTEGER_TEXT),
+    ("/$defs/Horizon/properties/start", HORIZON_DATE_TEXT),
+    ("/$defs/Horizon/properties/end", HORIZON_DATE_TEXT),
 )
 
 RULES: tuple[Rule, ...] = (
+    Rule(
+        "integer-literals",
+        "D",
+        "",  # the root
+        INTEGER_TEXT,
+        tuple(
+            Slip(
+                C03,
+                lambda d, value=value: put(constraint(d, "rest-12h"), "weight", value),
+                "Input should be a valid integer",
+            )
+            for value in (5.0, raw_number("5e0"))
+        ),
+    ),
     Rule(
         "one-coverage",
         "S",
@@ -860,6 +904,43 @@ RULES: tuple[Rule, ...] = (
         ),
     ),
     Rule(
+        "horizon-date-shape",
+        "S",
+        "/$defs/Horizon/properties/start/pattern",
+        slips=tuple(
+            Slip(
+                C03,
+                lambda d, written=written: put(d["horizon"], "start", written),
+                f"{written!r} is not a date written as YYYY-MM-DD",
+            )
+            for written in ("5", "", "1794787200")
+        ),
+    ),
+    Rule(
+        "horizon-date",
+        "D",
+        "/$defs/Horizon/properties/start",
+        HORIZON_DATE_TEXT,
+        (
+            Slip(
+                C03,
+                lambda d: put(d["horizon"], "start", "2026-02-30"),
+                "Input should be a valid date in the format YYYY-MM-DD, day value is outside "
+                "expected range",
+            ),
+            Slip(
+                C03,
+                lambda d: put(d["horizon"], "start", "1969-12-31"),
+                "start 1969-12-31 is before the minimum of 1970-01-01",
+            ),
+            Slip(
+                C03,
+                lambda d: put(d["horizon"], "end", "3000-01-01"),
+                "end 3000-01-01 is after the maximum of 2999-12-31",
+            ),
+        ),
+    ),
+    Rule(
         "horizon",
         "D",
         "/$defs/Horizon",
@@ -1022,6 +1103,7 @@ MESSAGE_TO_RULE: dict[str, str] = {
     ),
     "exactly one 'coverage' constraint is required, found none": "one-coverage",
     "horizon end {} is before its start {}": "horizon",
+    "{} is not a date written as YYYY-MM-DD": "horizon-date-shape",
     "horizon is {} days long; at most {} days are allowed": "horizon",
     "invalid JSON at line {}, column {}: {}": "json-syntax",
     "limit attribute {} is bound as {}; it must be bound as 'int' or 'float'": "period-limit",
@@ -1079,12 +1161,21 @@ MESSAGE_TO_RULE: dict[str, str] = {
     "{}: starts on {}, outside the horizon {} to {}": "task-columns",
 }
 
+# Pydantic's own messages, passed on by ``validation._message``: the AST collector cannot see them.
+# The bounds of a horizon date need no entry: ``{} is before the minimum of {}`` and ``{} is after
+# the maximum of {}`` are templates of the code (``datetime-bounds``).
+PYDANTIC_TEMPLATES: dict[str, str] = {
+    "Input should be a valid integer": "integer-literals",
+    "Input should be a valid date in the format YYYY-MM-DD, {}": "horizon-date",
+}
+
 # The run-time loop: the templates a slip's message may match (rules S and D), and the prefixes
 # of the wrappers that pass a message on (``<file> line <n>, column <c>: <message>``).
+SHOWN = frozenset({"S", "D"})
 LIVE_PATTERNS = tuple(
-    template_pattern(template)
-    for template, rule in MESSAGE_TO_RULE.items()
-    if RULE_BY_ID[rule].kind != "X"
+    (RULE_BY_ID[rule].kind, template_pattern(template))
+    for template, rule in (*MESSAGE_TO_RULE.items(), *PYDANTIC_TEMPLATES.items())
+    if RULE_BY_ID[rule].kind in SHOWN
 )
 WRAPPER_PREFIXES = tuple(
     template_pattern(template.removesuffix(HOLE))
@@ -1094,17 +1185,17 @@ WRAPPER_PREFIXES = tuple(
 
 
 @cache
-def matches_a_template(message: str) -> bool:
-    """``message`` is one of a rule's templates, possibly passed on by a wrapper, or several
-    messages joined by ``"; "`` (Pydantic merges the messages of one path)."""
-    if any(pattern.fullmatch(message) for pattern in LIVE_PATTERNS):
+def matches_a_template(message: str, kinds: frozenset[str] = SHOWN) -> bool:
+    """``message`` is one of the templates of a rule of ``kinds``, possibly passed on by a
+    wrapper, or several messages joined by ``"; "`` (Pydantic merges the messages of one path)."""
+    if any(kind in kinds and pattern.fullmatch(message) for kind, pattern in LIVE_PATTERNS):
         return True
     for prefix in WRAPPER_PREFIXES:
         for end in range(1, len(message)):
-            if prefix.fullmatch(message[:end]) and matches_a_template(message[end:]):
+            if prefix.fullmatch(message[:end]) and matches_a_template(message[end:], kinds):
                 return True
     parts = message.split("; ")
-    return len(parts) > 1 and all(matches_a_template(part) for part in parts)
+    return len(parts) > 1 and all(matches_a_template(part, kinds) for part in parts)
 
 
 def resolve(pointer: str) -> Any:
@@ -1122,7 +1213,7 @@ def validator_messages(document: Document, slip: Slip, folder: Path) -> list[str
     of the slip's scenario, copied into ``folder``."""
     scenario = CORPUS_PATH / slip.scenario
     try:
-        dm = parse_decision_model(json.dumps(document, ensure_ascii=False))
+        dm = parse_decision_model(dump(document))
     except DecisionModelError as error:
         return [issue.message for issue in error.issues]
     csv_files = sorted(path.name for path in scenario.glob("*.csv"))
@@ -1197,7 +1288,31 @@ def test_each_slip_breaks_its_rule(rule: Rule, slip: Slip, tmp_path: Path) -> No
     assert any(slip.message in message for message in messages), messages
     assert [message for message in messages if not matches_a_template(message)] == []
     if rule.kind == "S":
-        assert schema_errors(document) != [], "the schema accepts a slip of an S rule"
+        assert schema_errors(json.loads(dump(document))) != [], "the schema accepts an S slip"
+
+
+def test_the_pydantic_templates_are_not_in_the_code_and_name_rules() -> None:
+    assert PYDANTIC_TEMPLATES.keys().isdisjoint(TEMPLATES)
+    assert set(PYDANTIC_TEMPLATES.values()) <= RULE_BY_ID.keys()
+
+
+@pytest.mark.parametrize("value", [5.0, raw_number("5e0")], ids=["5.0", "5e0"])
+def test_an_integer_written_with_a_fraction_or_exponent_gets_pydantics_message(
+    value: object,
+) -> None:
+    document = truth(C03)
+    put(constraint(document, "rest-12h"), "weight", value)
+    text = dump(document)
+    assert '"weight": 5.0' in text or '"weight": 5e0' in text
+
+    with pytest.raises(DecisionModelError) as caught:
+        parse_decision_model(text)
+
+    assert [str(issue) for issue in caught.value.issues] == [
+        "/constraints/5/weight: Input should be a valid integer"
+    ]
+    put(constraint(document, "rest-12h"), "weight", 5)
+    parse_decision_model(dump(document))  # plain digits are accepted
 
 
 @pytest.mark.parametrize("rule", [r for r in RULES if r.kind == "S"], ids=lambda r: r.id)
@@ -1217,7 +1332,7 @@ def test_each_d_rule_is_stated_where_it_points(rule: Rule) -> None:
     assert rule.phrase in stated
 
 
-@pytest.mark.parametrize(("pointer", "text"), TEXTS, ids=[p for p, _ in TEXTS])
+@pytest.mark.parametrize(("pointer", "text"), TEXTS, ids=[p or "(root)" for p, _ in TEXTS])
 def test_the_texts_of_decision_3_are_in_the_schema_verbatim(pointer: str, text: str) -> None:
     printed = json.loads(render_json_schema())  # what `potakt schema` prints
     node: Any = printed
@@ -1247,6 +1362,27 @@ def test_every_hard_or_soft_template_carries_the_weight_rule() -> None:
         assert {key: defs[name][key] for key in WEIGHT_IFF_SOFT} == WEIGHT_IFF_SOFT, name
 
 
+def test_the_schema_shows_no_pydantic_constraint_names() -> None:
+    # A bound placed after a ``BeforeValidator`` leaks into the schema as ``"ge"``/``"le"``, which
+    # are not JSON Schema keywords.
+    leaked = [
+        f"{path}/{key}"
+        for path, node in _nodes(SCHEMA)
+        if isinstance(node, dict)
+        for key in cast("Document", node)
+        if key in ("ge", "le", "gt", "lt") and path[-1:] != ("properties",)
+    ]
+
+    assert leaked == []
+
+
+def test_both_horizon_dates_carry_the_date_pattern() -> None:
+    for name in ("start", "end"):
+        assert resolve(f"/$defs/Horizon/properties/{name}/pattern") == (
+            "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        )
+
+
 def test_the_schema_reserves_exactly_the_reserved_attribute_names() -> None:
     names = resolve("/$defs/ResourceBinding/properties/attributes/propertyNames/not/enum")
 
@@ -1266,3 +1402,227 @@ def test_02_without_a_separator_stays_valid_with_the_default(tmp_path: Path) -> 
 
     assert validator_messages(document, Slip(C02, lambda _: None, ""), tmp_path) == []
     assert schema_errors(document) == []
+
+
+def test_an_empty_list_cell_is_an_empty_list_and_an_empty_str_cell_is_no_value(
+    tmp_path: Path,
+) -> None:
+    # Decision 3: what `cell-types` states. 03's agents: `skills` is a `list`, `contract` a `str`.
+    (tmp_path / "agents.csv").write_text(
+        "agent_id,name,skills,contract,max_hours\nA01,Ann,,,40\n", encoding="utf-8", newline=""
+    )
+    shutil.copyfile(CORPUS_PATH / C03 / "shifts.csv", tmp_path / "shifts.csv")
+    dm = parse_decision_model(dump(truth(C03)))
+
+    (resource,) = load_instance(dm, tmp_path).resources
+    skills_ne = Condition.model_validate({"attribute": "skills", "op": "ne", "value": "billing"})
+    contract_ne = Condition.model_validate({"attribute": "contract", "op": "ne", "value": "full"})
+
+    assert resource.attributes["skills"] == []
+    assert "contract" not in resource.attributes
+    assert in_scope([skills_ne], resource.attributes)
+    assert not in_scope([contract_ne], resource.attributes)
+
+
+# --- the two-way differential property (TASK-005e1 follow-up, decision 1) -----------------------
+
+JsonPath = tuple[str | int, ...]
+
+ODD_LEAVES: tuple[object, ...] = (
+    *(None, 0, 1, -1, 2.5, 5.0, 10001, "5", "", True, [], {}, ["a"]),
+    *(100000, 100001, 8784, 8785, 7.501),
+    *("1794787200", "2026-02-30", "1969-12-31", "3000-01-01", "2026-11-16T00:00"),
+)
+ODD_PARAMS: tuple[object, ...] = (*ODD_LEAVES, {"attribute": "max_hours"}, {"attribute": "x"})
+WEIGHTS: tuple[object, ...] = (None, 1, 5, 5.0, 0, 10000, 10001)
+CONDITION_ATTRIBUTES = ("id", "weekday", "start_hour", "skill")
+CONDITION_VALUES: tuple[object, ...] = ("x", 3, 2.5, True, ["x"], [], None)
+# Not "a\n": ECMA-262's `$` ends the input, so a conforming validator rejects it; only Python's
+# `re` lets it through.
+ATTRIBUTE_NAMES = (
+    *("Skill", "id", "date", "weekday", "1abc", "a-b", "a b"),
+    *("\N{GREEK SMALL LETTER ALPHA WITH TONOS}", "ok_name"),
+)
+SEPARATORS: tuple[object, ...] = (None, ";", ",", "", "|")
+DELIMITERS: tuple[object, ...] = (*get_args(CsvDelimiter), "|", "")
+DECIMALS: tuple[object, ...] = (*get_args(CsvDecimal), "")
+VERSIONS: tuple[object, ...] = (1, 2, 5, 1.0, 2.0)
+
+Draw = Callable[..., Any]
+
+
+def _nodes(node: object, path: JsonPath = ()) -> Iterator[tuple[JsonPath, object]]:
+    yield path, node
+    if isinstance(node, dict):
+        for key, value in cast("Document", node).items():
+            yield from _nodes(value, (*path, key))
+    elif isinstance(node, list):
+        for index, value in enumerate(cast("list[object]", node)):
+            yield from _nodes(value, (*path, index))
+
+
+def _at(document: Document, path: JsonPath) -> Any:
+    node: Any = document
+    for part in path:
+        node = node[part]
+    return node
+
+
+def _fresh(value: object) -> object:
+    return json.loads(json.dumps(value))  # a new list or object each time
+
+
+def _bindings(document: Document) -> list[Document]:
+    data = document["data"]
+    return [data[kind] for kind in ("resources", "tasks") if isinstance(data.get(kind), dict)]
+
+
+def replace_leaf(draw: Draw, document: Document) -> str:
+    leaves = [path for path, node in _nodes(document) if path and not isinstance(node, dict | list)]
+    path = draw(st.sampled_from(leaves), label="leaf")
+    value = draw(st.sampled_from(ODD_LEAVES), label="value")
+    _at(document, path[:-1])[path[-1]] = _fresh(value)
+    return f"leaf {path} = {value!r}"
+
+
+def delete_key(draw: Draw, document: Document) -> str:
+    keys = [
+        (path, key) for path, node in _nodes(document) if isinstance(node, dict) for key in node
+    ]
+    path, key = draw(st.sampled_from(keys), label="key")
+    del _at(document, path)[key]
+    return f"delete {(*path, key)}"
+
+
+def set_hardness(draw: Draw, document: Document) -> str:
+    rule = draw(st.sampled_from(document["constraints"]), label="rule")
+    rule["hardness"] = draw(st.sampled_from(("hard", "soft")), label="hardness")
+    if draw(st.booleans(), label="drop weight"):
+        rule.pop("weight", None)
+    else:
+        rule["weight"] = draw(st.sampled_from(WEIGHTS), label="weight")
+    return f"rule {rule['id']}: hardness {rule['hardness']}, weight {rule.get('weight', '-')!r}"
+
+
+def set_provenance(draw: Draw, document: Document) -> str:
+    rule = draw(st.sampled_from(document["constraints"]), label="rule")
+    provenance: Document = {"kind": draw(st.sampled_from(get_args(ProvenanceKind)), label="kind")}
+    if draw(st.booleans(), label="quote"):
+        provenance["quote"] = "a quote"
+    if draw(st.booleans(), label="source"):
+        provenance["source"] = "a file and a column"
+    rule["provenance"] = provenance
+    return f"rule {rule['id']}: provenance {provenance}"
+
+
+def add_condition(draw: Draw, document: Document) -> str:
+    rule = draw(st.sampled_from(document["constraints"]), label="rule")
+    kind = draw(st.sampled_from(("resources", "tasks")), label="kind")
+    condition = {
+        "attribute": draw(st.sampled_from(CONDITION_ATTRIBUTES), label="attribute"),
+        "op": draw(st.sampled_from(get_args(ConditionOp)), label="op"),
+        "value": _fresh(draw(st.sampled_from(CONDITION_VALUES), label="condition value")),
+    }
+    rule.setdefault("scope", {}).setdefault(kind, []).append(condition)
+    return f"rule {rule['id']}: {kind} condition {condition}"
+
+
+def add_attribute(draw: Draw, document: Document) -> str:
+    binding = draw(st.sampled_from(_bindings(document)), label="binding")
+    name = draw(st.sampled_from(ATTRIBUTE_NAMES), label="name")
+    binding.setdefault("attributes", {})[name] = {"column": "a column", "type": "str"}
+    return f"attribute {name!r} on {binding['source']}"
+
+
+def set_dialect(draw: Draw, document: Document) -> str:
+    binding = draw(st.sampled_from(_bindings(document)), label="binding")
+    csv = dict(binding.get("csv", {}))
+    for key, values in (("delimiter", DELIMITERS), ("decimal", DECIMALS)):
+        if draw(st.booleans(), label=f"set {key}"):
+            csv[key] = draw(st.sampled_from(values), label=key)
+        else:
+            csv.pop(key, None)
+    binding["csv"] = csv
+    attributes = [a for b in _bindings(document) for a in b.get("attributes", {}).values()]
+    if attributes and draw(st.booleans(), label="separator"):
+        attribute = draw(st.sampled_from(attributes), label="attribute")
+        attribute["separator"] = draw(st.sampled_from(SEPARATORS), label="separator value")
+        return f"csv {csv} on {binding['source']}; attribute {attribute}"
+    return f"csv {csv} on {binding['source']}"
+
+
+def duplicate_constraint_id(draw: Draw, document: Document) -> str:
+    rules = document["constraints"]
+    i, j = draw(st.lists(st.integers(0, len(rules) - 1), min_size=2, max_size=2, unique=True))
+    rules[j]["id"] = rules[i]["id"]
+    return f"constraint {j} takes the id of constraint {i}"
+
+
+def set_versions(draw: Draw, document: Document) -> str:
+    document["version"] = draw(st.sampled_from(VERSIONS), label="version")
+    if draw(st.booleans(), label="parent"):
+        document["parent_version"] = draw(st.sampled_from(VERSIONS), label="parent_version")
+    else:
+        document.pop("parent_version", None)
+    return f"version {document['version']!r}, parent {document.get('parent_version', '-')!r}"
+
+
+def swap_horizon(draw: Draw, document: Document) -> str:
+    horizon = document["horizon"]
+    horizon["start"], horizon["end"] = horizon["end"], horizon["start"]
+    return f"horizon {horizon}"
+
+
+def set_parameter(draw: Draw, document: Document) -> str:
+    rule = draw(st.sampled_from([r for r in document["constraints"] if r.get("params")]))
+    key = draw(st.sampled_from(sorted(rule["params"])), label="parameter")
+    value = draw(st.sampled_from(ODD_PARAMS), label="parameter value")
+    rule["params"][key] = _fresh(value)
+    return f"rule {rule['id']}: params.{key} = {value!r}"
+
+
+MUTATIONS = (
+    replace_leaf,
+    delete_key,
+    set_hardness,
+    set_provenance,
+    add_condition,
+    add_attribute,
+    set_dialect,
+    duplicate_constraint_id,
+    set_versions,
+    swap_horizon,
+    set_parameter,
+)
+ONLY_D = frozenset({"D"})
+
+
+@st.composite
+def one_mutation(draw: st.DrawFn) -> tuple[str, Document, str]:
+    """One of the ten truths with one arbitrary mutation, and what the mutation did."""
+    truth = draw(st.sampled_from(TRUTHS), label="truth")
+    document = cast("Document", json.loads(json.dumps(truth)))
+    operator = draw(st.sampled_from(MUTATIONS), label="operator")
+    return truth["id"], document, operator(draw, document)
+
+
+@settings(deadline=None, max_examples=300)
+@given(mutant=one_mutation())
+def test_the_schema_and_the_validator_disagree_only_on_stated_rules(
+    mutant: tuple[str, Document, str],
+) -> None:
+    model_id, document, change = mutant
+    note(f"{model_id}: {change}")
+    try:
+        parse_decision_model(dump(document))
+    except DecisionModelError as error:
+        issues = list(error.issues)
+    else:
+        issues = []
+    errors = schema_errors(document)
+
+    if not issues:  # (a) the validator accepts it, so the schema does
+        assert errors == []
+    elif not errors:  # (b) only the validator rejects it: by a rule a description states
+        unstated = [str(issue) for issue in issues if not matches_a_template(issue.message, ONLY_D)]
+        assert unstated == []

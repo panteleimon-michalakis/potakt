@@ -134,8 +134,9 @@ class AttributeBinding(StrictModel):
             "(digits with an optional sign); `float` a number written with the file's `decimal` "
             "separator (with decimal `,` a `.` is rejected, never read as a thousands separator); "
             "`bool` one of `true`/`false`, `yes`/`no`, `1`/`0` in any letter case; `list` items "
-            "split by `separator`. An empty cell means no value. A cell that cannot be read this "
-            "way makes the model invalid."
+            "split by `separator`. An empty cell means no value, except in a `list` column, "
+            "where it is an empty list. A cell that cannot be read this way makes the model "
+            "invalid."
         )
     )
     separator: str | None = Field(

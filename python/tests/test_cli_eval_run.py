@@ -291,8 +291,8 @@ def test_the_whole_corpus_cost_bounds_of_the_two_claude_models() -> None:
 
     # TASK-005e1: the schema section states every rule, the instruction is longer (was $0.1834
     # and $7.3373).
-    assert f"{cost_upper_bound(HAIKU, CORPUS_PATH, names):.4f}" == "0.1906"
-    assert f"{cost_upper_bound(OPUS, CORPUS_PATH, names):.4f}" == "7.6238"
+    assert f"{cost_upper_bound(HAIKU, CORPUS_PATH, names):.4f}" == "0.1908"
+    assert f"{cost_upper_bound(OPUS, CORPUS_PATH, names):.4f}" == "7.6301"
 
 
 def test_the_dry_run_of_a_complete_model_has_nothing_pending(tmp_path: Path) -> None:
@@ -1092,7 +1092,7 @@ PROMPT_DIFFERS = (
 )
 SCHEMA_DIFFERS = (
     "the schema section differs from the one ADR-0007 §7 pins (SHA256 "
-    "7a2a1a6860df80e494bba95d7389ed22978c4d6bb5236e0fd5cae1b2d24501d4); nothing was sent"
+    "afd54559d52d492c8ce49914a886be49b2f377187d11098f8fff7395dec9c02c); nothing was sent"
 )
 EVERY_RUN = [(HAIKU, False), (HAIKU, True), (GEMINI, False), (GEMINI, True)]
 EVERY_RUN_IDS = ["haiku-dry-run", "haiku-yes", "gemini-dry-run", "gemini-yes"]

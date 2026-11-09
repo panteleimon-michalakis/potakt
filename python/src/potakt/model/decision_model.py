@@ -1,11 +1,20 @@
 """The Decision Model root and its structural (cross-field) validation (ADR-0004)."""
 
+import json
+import re
 from datetime import date
 from functools import cache
 from typing import Annotated, Literal, Self
 from zoneinfo import ZoneInfo, available_timezones
 
-from pydantic import AfterValidator, Field, model_validator
+from pydantic import (
+    AfterValidator,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    model_validator,
+)
 
 from potakt.model.catalog import Constraint, Coverage, Stability
 from potakt.model.common import Loc, StrictModel, custom_error, raise_errors
@@ -29,15 +38,34 @@ Timezone = Annotated[str, AfterValidator(_check_timezone)]
 
 
 MAX_HORIZON_DAYS = 366
+DATE_PATTERN = "[0-9]{4}-[0-9]{2}-[0-9]{2}"  # ASCII digits only
 # ADR-0006 §6: the tz database is reliable from 1970; the ISO weeks and UTC conversions of any
 # horizon in this range stay far from datetime's limits. JSON Schema has no date bounds, so the
 # description states them.
+_DATE_BOUNDS = Field(ge=date(1970, 1, 1), le=date(2999, 12, 31))
+# Pydantic's own strict JSON parsing of a date, bounds included. After a ``BeforeValidator``,
+# Pydantic checks the returned value in Python mode, where a string is never a date; parsing the
+# string here keeps Pydantic's messages and the wording of the bounds as they were.
+_JSON_DATE = TypeAdapter(Annotated[date, _DATE_BOUNDS], config=ConfigDict(strict=True))
+
+
+def _check_date_shape(value: object) -> object:
+    # ADR-0004: horizon dates are ISO dates. Pydantic alone also reads a string of digits as a
+    # Unix timestamp ("1794787200" as 2026-11-16); other inputs go on to Pydantic unchanged.
+    if not isinstance(value, str):
+        return value
+    if re.fullmatch(DATE_PATTERN, value) is None:
+        raise custom_error(f"{value!r} is not a date written as YYYY-MM-DD")
+    return _JSON_DATE.validate_json(json.dumps(value))
+
+
 HorizonDate = Annotated[
     date,
+    _DATE_BOUNDS,  # also for a ``date`` given in Python; before the validator, so the schema
+    BeforeValidator(_check_date_shape),  # shows no ``ge``/``le`` (not JSON Schema keywords)
     Field(
-        ge=date(1970, 1, 1),
-        le=date(2999, 12, 31),
-        description="A date from 1970-01-01 to 2999-12-31",
+        description="A calendar date written as `YYYY-MM-DD`, from 1970-01-01 to 2999-12-31.",
+        json_schema_extra={"pattern": f"^{DATE_PATTERN}$"},
     ),
 ]
 
@@ -79,7 +107,10 @@ class Assumption(StrictModel):
 
 
 class DecisionModel(StrictModel):
-    """A typed, solver-agnostic description of an assignment decision problem (DM 0.2)."""
+    __doc__ = (
+        "A typed, solver-agnostic description of an assignment decision problem (DM 0.2). Every "
+        "integer (`type` `integer`) is written as plain digits: `5`, not `5.0` or `5e0`."
+    )
 
     schema_version: Literal["0.2"]
     id: str = Field(min_length=1)

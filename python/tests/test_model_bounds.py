@@ -15,6 +15,7 @@ import pytest
 from helpers import RESOURCES_CSV, constraint, minimal_dm, structural_issues, write_scenario
 from hypothesis import given, settings
 from hypothesis import strategies as st
+from pydantic import ValidationError
 from test_model_data import load_issues, only_issue, with_constraints
 
 from potakt.checker import CheckResult, check
@@ -29,6 +30,7 @@ from potakt.model import (
     validate_solution,
 )
 from potakt.model.common import check_whole_minutes, is_whole
+from potakt.model.decision_model import Horizon
 
 AFTER_MAX_TIME = "is after the maximum of 3000-01-01T00:00"
 
@@ -66,6 +68,22 @@ def test_late_9999_horizon_is_an_issue_not_a_crash() -> None:
         "/horizon/start: start 9999-12-25 is after the maximum of 2999-12-31",
         "/horizon/end: end 9999-12-31 is after the maximum of 2999-12-31",
     ]
+
+
+@pytest.mark.parametrize("written", ["1794787200", "20261116", "2026-11-16T00:00", "5", ""])
+def test_a_horizon_date_not_written_as_yyyy_mm_dd_is_rejected(written: str) -> None:
+    # TASK-005e1 follow-up: Pydantic read "1794787200" as a Unix timestamp (2026-11-16); ADR-0004
+    # horizon dates are ISO dates.
+    assert issue_strings(horizon(written, "2026-11-22")) == [
+        f"/horizon/start: {written!r} is not a date written as YYYY-MM-DD"
+    ]
+
+
+def test_a_horizon_date_given_in_python_keeps_its_bounds() -> None:
+    with pytest.raises(ValidationError) as caught:
+        Horizon(start=date(1969, 12, 31), end=date(1970, 1, 6))
+
+    assert [error["type"] for error in caught.value.errors()] == ["greater_than_equal"]
 
 
 def window_rule(start: str, end: str) -> dict[str, Any]:

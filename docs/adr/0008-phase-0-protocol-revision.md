@@ -34,8 +34,10 @@ the revision in one place. Where it changes ADR-0007, it says so, and ADR-0007 p
   enforces on a Decision Model and on its bindings to the data: by a JSON Schema draft 2020-12
   keyword where one expresses the rule exactly, by a description otherwise. An inventory test maps
   every validation message in the code to the place where the schema shows its rule. The set of
-  valid Decision Models does not change; a differential test checks that the committed schema
-  accepts every model the validator accepts.
+  valid Decision Models does not change, with one exception: a horizon date written as a
+  Unix-timestamp string (for example "1794787200"), which the parser accepted by accident and
+  ADR-0004 never allowed, is now rejected. A differential test checks, both ways, that the schema
+  and the validator disagree only on rules a description states.
 - The instruction asks for a model that "conforms to the schema and to the rules its descriptions
   state", and to "bind the data files you need by their file names exactly as given (no folder)".
 - The pins in force are listed in Appendix A; every change before the freeze updates them.
@@ -153,6 +155,6 @@ the dates.
 
 ## Appendix A — pins in force
 - Instruction `docs/validation/prompts/test-a.md`: SHA256 `2dcb497384a35ae227ccc8df46349d6179162687093ac16e0cd48be9f406263c`.
-- Schema section (`potakt schema`): SHA256 `7a2a1a6860df80e494bba95d7389ed22978c4d6bb5236e0fd5cae1b2d24501d4`.
+- Schema section (`potakt schema`): SHA256 `afd54559d52d492c8ce49914a886be49b2f377187d11098f8fff7395dec9c02c`.
 - Payloads: the 30 values of `PAYLOAD_SHA256` in `python/src/potakt/evaluation/runner.py` at the
   commit that last changed this appendix.

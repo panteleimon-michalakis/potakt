@@ -147,7 +147,7 @@
           "type": "string"
         },
         "type": {
-          "description": "How every non-empty cell of the column is read: `str` as is; `int` a whole number (digits with an optional sign); `float` a number written with the file's `decimal` separator (with decimal `,` a `.` is rejected, never read as a thousands separator); `bool` one of `true`/`false`, `yes`/`no`, `1`/`0` in any letter case; `list` items split by `separator`. An empty cell means no value. A cell that cannot be read this way makes the model invalid.",
+          "description": "How every non-empty cell of the column is read: `str` as is; `int` a whole number (digits with an optional sign); `float` a number written with the file's `decimal` separator (with decimal `,` a `.` is rejected, never read as a thousands separator); `bool` one of `true`/`false`, `yes`/`no`, `1`/`0` in any letter case; `list` items split by `separator`. An empty cell means no value, except in a `list` column, where it is an empty list. A cell that cannot be read this way makes the model invalid.",
           "enum": [
             "str",
             "int",
@@ -556,14 +556,16 @@
       "description": "The planning period: ``start`` and ``end`` dates, both inclusive, at most 366 days. `end` is not before `start`.",
       "properties": {
         "start": {
-          "description": "A date from 1970-01-01 to 2999-12-31",
+          "description": "A calendar date written as `YYYY-MM-DD`, from 1970-01-01 to 2999-12-31.",
           "format": "date",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
           "title": "Start",
           "type": "string"
         },
         "end": {
-          "description": "A date from 1970-01-01 to 2999-12-31",
+          "description": "A calendar date written as `YYYY-MM-DD`, from 1970-01-01 to 2999-12-31.",
           "format": "date",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
           "title": "End",
           "type": "string"
         }
@@ -2027,7 +2029,7 @@
     }
   },
   "additionalProperties": false,
-  "description": "A typed, solver-agnostic description of an assignment decision problem (DM 0.2).",
+  "description": "A typed, solver-agnostic description of an assignment decision problem (DM 0.2). Every integer (`type` `integer`) is written as plain digits: `5`, not `5.0` or `5e0`.",
   "properties": {
     "schema_version": {
       "const": "0.2",
