@@ -89,10 +89,11 @@ def test_schema_section_is_the_committed_schema_and_its_sha256_is_pinned() -> No
     assert hashlib.sha256(data).hexdigest() == runner_module.SCHEMA_SHA256
 
 
-def test_prompt_file_sha256_is_pinned_in_the_adr() -> None:
+def test_prompt_file_sha256_is_pinned() -> None:
     digest = hashlib.sha256(INSTRUCTION_PATH.read_bytes()).hexdigest()
 
-    assert digest == pinned_sha256(r"`docs/validation/prompts/test-a\.md`")
+    # TASK-005e1: the pin in force is the runner's (ADR-0007's is superseded before any run).
+    assert digest == runner_module.INSTRUCTION_SHA256
 
 
 def test_render_is_deterministic() -> None:

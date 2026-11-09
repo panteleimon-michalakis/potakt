@@ -368,7 +368,11 @@ CSV_HEADER_TEXT = (
 REQUIRED_CELLS_TEXT = (
     "Cells of the `id`, `start`, `end`, `demand` and `resource_id` columns must not be empty."
 )
-TEST_A_SOURCE_TEXT = "by their file names"
+TEST_A_SOURCE_TEXT = (
+    "conforms to the schema and to the rules its\ndescriptions state, that captures what the "
+    "request asks for:\n- bind the data files you need by their file names exactly as given (no "
+    "folder), with the delimiter,\n  decimal separator and encoding of each file as given;"
+)
 DATETIME_BOUNDS_TEXT = "from 1970-01-01T00:00 to 3000-01-01T00:00"
 
 HARD_OR_SOFT_DEFS = (

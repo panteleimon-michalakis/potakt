@@ -36,7 +36,6 @@ from test_evaluation_runner_anthropic import (
     succeeded,
 )
 from test_evaluation_runner_gemini import FakeGemini
-from test_evaluation_test_a import pinned_sha256
 from typer.testing import CliRunner, Result
 
 import potakt.cli as cli
@@ -289,9 +288,10 @@ def test_the_whole_corpus_cost_bounds_of_the_two_claude_models() -> None:
     # TASK-005c3g G8: the Haiku bound with 64000 output tokens per request (was $0.1034).
     names = runner_module.corpus_scenarios(CORPUS_PATH)
 
-    # TASK-005e1: the schema section states every rule (was $0.1834 and $7.3373).
+    # TASK-005e1: the schema section states every rule, the instruction is longer (was $0.1834
+    # and $7.3373).
     assert f"{cost_upper_bound(HAIKU, CORPUS_PATH, names):.4f}" == "0.1906"
-    assert f"{cost_upper_bound(OPUS, CORPUS_PATH, names):.4f}" == "7.6222"
+    assert f"{cost_upper_bound(OPUS, CORPUS_PATH, names):.4f}" == "7.6238"
 
 
 def test_the_dry_run_of_a_complete_model_has_nothing_pending(tmp_path: Path) -> None:
@@ -1087,7 +1087,7 @@ def assert_clean_exit_1(result: Result, message: str) -> None:
 
 PROMPT_DIFFERS = (
     "the prompt file differs from the one ADR-0007 §7 pins (SHA256 "
-    "65c4ce708a56ae1c44a804aa78e7666d00a36e76422f60756dfb98aef39bf990); nothing was sent"
+    "2dcb497384a35ae227ccc8df46349d6179162687093ac16e0cd48be9f406263c); nothing was sent"
 )
 SCHEMA_DIFFERS = (
     "the schema section differs from the one ADR-0007 §7 pins (SHA256 "
@@ -1098,11 +1098,12 @@ EVERY_RUN_IDS = ["haiku-dry-run", "haiku-yes", "gemini-dry-run", "gemini-yes"]
 
 
 def test_the_pins_in_the_code_are_the_adr_ones() -> None:
-    prompt = pinned_sha256(r"`docs/validation/prompts/test-a\.md`")
-
-    assert prompt == runner_module.INSTRUCTION_SHA256
-    # TASK-005e1: the schema section changed before any LLM run; ADR-0007 keeps its old pin
-    # (superseded) and ADR-0008 Appendix A records the new one (checked there once it exists).
+    # TASK-005e1: the prompt file and the schema section changed before any LLM run; ADR-0007
+    # keeps its old pins (superseded) and ADR-0008 Appendix A records the new ones (checked
+    # there once it exists).
+    assert runner_module.INSTRUCTION_SHA256 == (
+        "2dcb497384a35ae227ccc8df46349d6179162687093ac16e0cd48be9f406263c"
+    )
     assert runner_module.SCHEMA_SHA256 == (
         "7a2a1a6860df80e494bba95d7389ed22978c4d6bb5236e0fd5cae1b2d24501d4"
     )

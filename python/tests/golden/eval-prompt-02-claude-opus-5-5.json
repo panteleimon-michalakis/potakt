@@ -10,5 +10,5 @@
   "output_config": {
     "effort": "high"
   },
-  "system": "You will receive a manager's request for a one-week staff schedule, the data files it refers to, and\nthe JSON Schema of a Decision Model.\n\nWrite one Decision Model, as a single JSON object that conforms to the schema, that captures what the\nrequest asks for:\n- bind the data files by their file names, with the delimiter, decimal separator and encoding of each\n  file as given;\n- encode the rules the request states, and no others;\n- if the request asks for something the schema cannot express, do not encode it; mention it in\n  `assumptions` instead.\n\nAnswer with the JSON object only.\n"
+  "system": "You will receive a manager's request for a one-week staff schedule, the data files it refers to, and\nthe JSON Schema of a Decision Model.\n\nWrite one Decision Model, as a single JSON object that conforms to the schema and to the rules its\ndescriptions state, that captures what the request asks for:\n- bind the data files you need by their file names exactly as given (no folder), with the delimiter,\n  decimal separator and encoding of each file as given;\n- encode the rules the request states, and no others;\n- if the request asks for something the schema cannot express, do not encode it; mention it in\n  `assumptions` instead.\n\nAnswer with the JSON object only.\n"
 }

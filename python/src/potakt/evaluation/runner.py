@@ -1875,7 +1875,7 @@ def take_lock(runs_dir: Path, model: str, now: datetime) -> RunLock:
 
 # TASK-005c3g G8: the SHA256 values that ADR-0007 §7 «Prompt» pins (a test compares them with the
 # ADR), checked by every eval run before anything is rendered.
-INSTRUCTION_SHA256 = "65c4ce708a56ae1c44a804aa78e7666d00a36e76422f60756dfb98aef39bf990"
+INSTRUCTION_SHA256 = "2dcb497384a35ae227ccc8df46349d6179162687093ac16e0cd48be9f406263c"
 SCHEMA_SHA256 = "7a2a1a6860df80e494bba95d7389ed22978c4d6bb5236e0fd5cae1b2d24501d4"
 PIN_DIFFERS = "the {what} differs from the one ADR-0007 §7 pins (SHA256 {pinned}); nothing was sent"
 # TASK-005c3h H7 (ADR-0007 §7, amendment of TASK-005c3h): the SHA256 of the UTF-8 bytes of each
@@ -1887,75 +1887,75 @@ PAYLOAD_SHA256: Mapping[tuple[str, str], str] = MappingProxyType(
         (model, name): digest
         for model, digests in {
             "claude-haiku-5-5": {
-                "01-pharmacy": "7c7ca5e4824fe36874a63bd9add3fd5a67bc3cc654832183acf53df6309dc73e",
+                "01-pharmacy": "9e4b268398b255b7aedbd3c157dc37c418fca415ba5cf0e2a3ec62ade2096692",
                 "02-hotel-reception": (
-                    "73f074a6f4a7933decf9d2352a8d4eaf4804a2934b0d2c99dda8eaec0eae83d1"
+                    "33c5e582f68fa6020f2575cbbf5c3114b1d4cb18fbfd4565f787c693b99ff778"
                 ),
                 "03-call-centre": (
-                    "f641425806789efc47d0ce767712890780a06e1769d6412e83f7d173ae2254e9"
+                    "aa35242f938e0c7c2ce1fa55644111235fb3ffd09c3e6632f548bbca487a21fc"
                 ),
-                "04-restaurant": "e3a4bc0886546ace3ad1e889af9954e8131f6ddb39c28b321c9f6bd4c4b295f6",
+                "04-restaurant": "df2b704bb01c9187e41e4220224c013e31303e6a90cb80d25d457f53d719939b",
                 "05-supermarket-checkouts": (
-                    "21558257d71ba732cc23375d6c393bc766c1f767859e4a33101a64c073a56363"
+                    "4ecaa78f97f673d841308c89708904a1e41755f2f1cd8244677e7cb6863d8e3a"
                 ),
                 "06-ambulance-crews": (
-                    "11ca5561d952e6e9ad0db339a0af4e337df4db8352ad514e8074cbd2d541e91e"
+                    "e339d57622a494bd11e0ee757a8339cb3808c0a0446f912aa423156fd63e1af3"
                 ),
                 "07-security-guards": (
-                    "3668ac0f2c906686c115b605a2f7c39ef6d1097211243bfbabf3f5ccee548912"
+                    "0815d610bfb77bea368740490be55c687d18d97bf3c1fa9d6281b83d2a6ea62a"
                 ),
-                "08-warehouse": "1b21603e8041f5f504df17139e8b568f235a96afc49aa5d2b0722594df75b7cb",
-                "09-care-home": "d5b08794ceb152431b4030af3f02dc12f931dba2934117b10f1dc0c31d92e481",
+                "08-warehouse": "58c18338f157bbaa04c62f630ca2407ba2aeb2ed4f83b81e2b85057c9a6d07b3",
+                "09-care-home": "911c50070c758bcf876c68a938f2cf595645d356fb5bd796d04df0eb0d211daa",
                 "10-municipal-nursery": (
-                    "267c5022afaaec98441f44220ba8f887f4cab44a55d7ee6ee92bd775b51185a3"
+                    "dbeeebe6e5a29c1338ea6c3716b6e6eb333f36256c0693e4534853aaa98766a0"
                 ),
             },
             "gemini-3.8-flash": {
-                "01-pharmacy": "a9d167abfd270c166c410753282b69cfe0afe81b89bc6ff0ff5631336f92c2a0",
+                "01-pharmacy": "9f72fb57c4e25dab878583fa95c2b04ee997b925c5a1effddd72d9544efba193",
                 "02-hotel-reception": (
-                    "acad2c5119380996d15756012e69ab20d2c2f9e0f8dcb60ca30c1c9cc34e7e8a"
+                    "777251e24d646a83df0a459b0b5c65c5ef8a1876fcce15a6a90b61008272a850"
                 ),
                 "03-call-centre": (
-                    "6672726ec2331eafe82b4c8f03e6a10c8f3250d6873738290b8d42c4b5385a6d"
+                    "b7e6b18933de912c43890231d8255163743da3248d09be77f74f93467632b307"
                 ),
-                "04-restaurant": "f864c2f43108231f4fb2d97870e188f3a49955e4bfd191802249a8c9779e9dec",
+                "04-restaurant": "e9e6580ea0adf79242d54ee181b907efe1ec406407d02d6c791ec234c0e3ef6e",
                 "05-supermarket-checkouts": (
-                    "df3d64bd1d9fd25ee4e26ab8bda571da6b72c3265876960ae46ab975dae92caa"
+                    "b194dc595ba8f12f89ce40216315b13f985aa95988b6b19f8d1033770c4cf9e3"
                 ),
                 "06-ambulance-crews": (
-                    "57410ec16a6e75ff08615a224eff2e1805d596b0c80703ebd525f970f436eab7"
+                    "1c664390a9975e5f9e98703abe9172cc5a27c3acafeecd6f4a088045d260fd22"
                 ),
                 "07-security-guards": (
-                    "766491cadbbc0a46750c76537b57b84393773f26b3260ae48535f7750a49cfae"
+                    "2face974010b134802e78e7ac652b4e0b3af343f2831ad876246985e7c70c86e"
                 ),
-                "08-warehouse": "d693a78fd7616d7cd3424f5761031dc5b7cddba348895b105c64fafcdad60ad4",
-                "09-care-home": "465f596b8e9aaea7572aa804cf431f91de127e60034687840a76f2a2e883a9a0",
+                "08-warehouse": "61e78a888cdb8f2d2a7237f9b63ad8efc4180f57ba3e9dc1d93dfa7964c4e103",
+                "09-care-home": "a9df05f8898807162327ecc2f78367ee739f5c1844a00e28f51bcbe8e6b067ef",
                 "10-municipal-nursery": (
-                    "faa1572855e851288a5639fa7e58a6a961e2e5ff244c9e520c724d5b299c7863"
+                    "c4ec07849b03a818ab8e047d6b0ff6200eb9e648e809ff7dfcf68c708b32df16"
                 ),
             },
             "claude-opus-5-5": {
-                "01-pharmacy": "bb15710ef23f6de5cdc00ec541cad83238e5bb8cb04d9c52958f70074bbc1cca",
+                "01-pharmacy": "47807e3828d48375587aa694c89e73b8887e726d757b8c202861c4368f4ae159",
                 "02-hotel-reception": (
-                    "d3cfe6f0fec7067d9e26345cd5f6559b76dcd9f5043e9faf4a0be01b8ef40f94"
+                    "74e8600aa6b0b963dae8be593c7fceef2a6f57c560c536f099d629f06ad002f1"
                 ),
                 "03-call-centre": (
-                    "87cd1a945af9165dd6a7415e8f004890085c45acf5382b392d8f48640afe9ffb"
+                    "ae28d2be035286791131d62d118926cc2e4ef776b7700a0eac83d8d64a8228c7"
                 ),
-                "04-restaurant": "f7c7b2b01f6d366fff6038a7ace9109e5b99217f1bd8e0366c3399578199f4fe",
+                "04-restaurant": "3f347598214653d48ef37b7166f87b9fa3ef72cab69b65eb464d17ab4c738211",
                 "05-supermarket-checkouts": (
-                    "7b31693f5af0205c4cf98c02b537cca37fb0a6442c61880fec126afccbd0e440"
+                    "81708be040aca347609cbb83888326408bc8767c4e0a2378f1bf1a0344f3675d"
                 ),
                 "06-ambulance-crews": (
-                    "6f63e75248254284ceb04dd2698258cfb636177653bf07bd66f6fea5e18e9851"
+                    "ca327b949f210bca0097a0ed8bf6275c6531ea9ba1475d5ca65fdefafea74ace"
                 ),
                 "07-security-guards": (
-                    "dcf8af24abefb10551cac1296fc20b9cd90681fbc77ff4d8b1d53ac2c79496d8"
+                    "06e88920a717886e56df8d9ed885b405ffa679531b9f39a545f49ef60a000d54"
                 ),
-                "08-warehouse": "c6f068a0913527d284d565277be85b2dd85fcbbbe9d98079560eb9d4389bcc7a",
-                "09-care-home": "97029720558a72925ff4aa8e3d448e160f17d825064904cf8f2bacea982cbbd5",
+                "08-warehouse": "8770a2cba8a70862cc5eca18d02db8ad65057ec7c891f0963601f25b4857184c",
+                "09-care-home": "6d3af04b01500af4010d02d78146275a33fee0b781de9b6627ebdc7f84434e4b",
                 "10-municipal-nursery": (
-                    "0ae7adbd41bc59c5e8a9a498b4a768f48a15f428f00e97498a775614aacfd541"
+                    "a987b7f0e7268b02379493302c4f5bb7119b1a1b4c21a7ae35fef755a22be071"
                 ),
             },
         }.items()
