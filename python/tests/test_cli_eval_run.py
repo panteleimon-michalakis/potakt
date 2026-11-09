@@ -1087,11 +1087,11 @@ def assert_clean_exit_1(result: Result, message: str) -> None:
 # --- TASK-005c3g G8: the prompt and the schema are checked at run time -----------------------
 
 PROMPT_DIFFERS = (
-    "the prompt file differs from the one ADR-0007 §7 pins (SHA256 "
+    "the prompt file differs from the one ADR-0008 Appendix A pins (SHA256 "
     "2dcb497384a35ae227ccc8df46349d6179162687093ac16e0cd48be9f406263c); nothing was sent"
 )
 SCHEMA_DIFFERS = (
-    "the schema section differs from the one ADR-0007 §7 pins (SHA256 "
+    "the schema section differs from the one ADR-0008 Appendix A pins (SHA256 "
     "afd54559d52d492c8ce49914a886be49b2f377187d11098f8fff7395dec9c02c); nothing was sent"
 )
 EVERY_RUN = [(HAIKU, False), (HAIKU, True), (GEMINI, False), (GEMINI, True)]

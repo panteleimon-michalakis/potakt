@@ -1877,7 +1877,9 @@ def take_lock(runs_dir: Path, model: str, now: datetime) -> RunLock:
 # ADR), checked by every eval run before anything is rendered.
 INSTRUCTION_SHA256 = "2dcb497384a35ae227ccc8df46349d6179162687093ac16e0cd48be9f406263c"
 SCHEMA_SHA256 = "afd54559d52d492c8ce49914a886be49b2f377187d11098f8fff7395dec9c02c"
-PIN_DIFFERS = "the {what} differs from the one ADR-0007 §7 pins (SHA256 {pinned}); nothing was sent"
+PIN_DIFFERS = (
+    "the {what} differs from the one ADR-0008 Appendix A pins (SHA256 {pinned}); nothing was sent"
+)
 # TASK-005c3h H7 (ADR-0007 §7, amendment of TASK-005c3h): the SHA256 of the UTF-8 bytes of each
 # request.json (``render_payload``), by (model, scenario), re-rendered on 2026-11-10 (TASK-005e1;
 # first rendered by TASK-005c3g G8; the test of the payloads compares this table with its own).
@@ -1994,9 +1996,10 @@ def _check_requests(corpus_dir: Path, names: list[str], model: str) -> None:
 def check_pins() -> None:
     """TASK-005c3g G8: ``RunStopped`` unless the prompt file (its bytes) and the schema section
     (the UTF-8 text that ``render_test_a`` puts after the schema heading) have the SHA256 values
-    that ADR-0007 §7 pins, computed as the tests of ``test_a`` compute them. Reads the module
-    attributes of ``test_a`` that ``render_test_a`` uses, so it checks exactly what is sent. An
-    unreadable prompt file stops with the wording of ``_render``."""
+    that ADR-0008 Appendix A (which revises ADR-0007 §7) pins, computed as the tests of ``test_a``
+    compute them. Reads the module attributes of ``test_a`` that ``render_test_a`` uses, so it
+    checks exactly what is sent. An unreadable prompt file stops with the wording of
+    ``_render``."""
     path = test_a_module.INSTRUCTION_PATH
     try:
         data = path.read_bytes()

@@ -382,11 +382,11 @@ the reviewer.
   run too. Send the message to the reviewer, who decides whether the file holds a complete
   answer, and leave the file where it is. (A leftover of a scenario of the open batch does not
   stop the run: see `… will be replaced by the answer of batch <id>` above.)
-- **A changed prompt or schema.** `the prompt file differs from the one ADR-0007 §7 pins (SHA256
-  <sha256>); nothing was sent` or `the schema section differs from the one ADR-0007 §7 pins
-  (SHA256 <sha256>); nothing was sent` (every run, the dry run too): the prompt or the code is
-  not the one pre-registered, so no answer would count. Run `git status` from the repository
-  root, do not run `--yes`, and send both outputs to the reviewer.
+- **A changed prompt or schema.** `the prompt file differs from the one ADR-0008 Appendix A pins
+  (SHA256 <sha256>); nothing was sent` or `the schema section differs from the one ADR-0008
+  Appendix A pins (SHA256 <sha256>); nothing was sent` (every run, the dry run too): the prompt
+  or the code is not the one pre-registered, so no answer would count. Run `git status` from the
+  repository root, do not run `--yes`, and send both outputs to the reviewer.
 - **A changed request.** `<scenario>: the request for <model> differs from the one the harness
   pins (SHA256 <sha256>); nothing was sent` or `<scenario>: no request is pinned for <model>;
   nothing was sent` (every run, the dry run too): the request of that scenario, as rendered from
