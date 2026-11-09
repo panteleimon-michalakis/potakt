@@ -66,6 +66,20 @@
     "Apart": {
       "additionalProperties": false,
       "description": "The two resources should not work the same task.",
+      "else": {
+        "properties": {
+          "weight": {
+            "type": "null"
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "hardness": {
+            "const": "soft"
+          }
+        }
+      },
       "properties": {
         "id": {
           "minLength": 1,
@@ -112,6 +126,7 @@
             }
           ],
           "default": null,
+          "description": "Required (an integer from 1 to 10000) when `hardness` is `soft`; must be omitted or null when `hardness` is `hard`.",
           "title": "Weight"
         },
         "template": {
@@ -131,6 +146,16 @@
         "template",
         "params"
       ],
+      "then": {
+        "properties": {
+          "weight": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "weight"
+        ]
+      },
       "title": "Apart",
       "type": "object"
     },
@@ -168,6 +193,15 @@
     "AttributeBinding": {
       "additionalProperties": false,
       "description": "Maps one CSV column to a typed attribute.",
+      "if": {
+        "properties": {
+          "type": {
+            "not": {
+              "const": "list"
+            }
+          }
+        }
+      },
       "properties": {
         "column": {
           "minLength": 1,
@@ -175,6 +209,7 @@
           "type": "string"
         },
         "type": {
+          "description": "How every non-empty cell of the column is read: `str` as is; `int` a whole number (digits with an optional sign); `float` a number written with the file's `decimal` separator (with decimal `,` a `.` is rejected, never read as a thousands separator); `bool` one of `true`/`false`, `yes`/`no`, `1`/`0` in any letter case; `list` items split by `separator`. An empty cell means no value. A cell that cannot be read this way makes the model invalid.",
           "enum": [
             "str",
             "int",
@@ -196,6 +231,7 @@
             }
           ],
           "default": null,
+          "description": "Only for `type` `list`: the separator between the items of one cell. Default `;`.",
           "title": "Separator"
         }
       },
@@ -203,6 +239,13 @@
         "column",
         "type"
       ],
+      "then": {
+        "properties": {
+          "separator": {
+            "type": "null"
+          }
+        }
+      },
       "title": "AttributeBinding",
       "type": "object"
     },
@@ -324,9 +367,71 @@
     },
     "Condition": {
       "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "enum": [
+                  "in",
+                  "not_in"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "type": "array"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "contains"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "not": {
+                  "type": "array"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "enum": [
+                  "gte",
+                  "lte"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "type": [
+                  "number",
+                  "string"
+                ]
+              }
+            }
+          }
+        }
+      ],
       "description": "One filter ``{attribute, op, value}``; the conditions of a scope are combined with AND.",
       "properties": {
         "attribute": {
+          "description": "`id`, or the name of an attribute bound under `data.resources.attributes` (in resource conditions) or `data.tasks.attributes` (in task conditions). Task conditions may also use the derived attributes of each task's local start: `weekday` (`mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun`), `start_hour` (an integer 0–23), `duration_hours` (a number) and `date` (`YYYY-MM-DD`). A condition on an attribute that a resource or task has no value for never holds, also with `ne` and `not_in`.",
           "minLength": 1,
           "title": "Attribute",
           "type": "string"
@@ -365,6 +470,7 @@
               "type": "array"
             }
           ],
+          "description": "A list for `in` and `not_in`; a single value (not a list) for `contains`, which holds when a `list` attribute contains it; a number or a string for `gte` and `lte`. Ids are written exactly as in the data: a condition on an id that does not exist selects nothing with `eq` and everything with `ne`.",
           "title": "Value"
         }
       },
@@ -432,6 +538,16 @@
     "CsvDialect": {
       "additionalProperties": false,
       "description": "How a CSV file is written (ADR-0006 §5): delimiter, decimal separator and encoding.\n\nThe defaults read a plain UTF-8 file (BOM tolerated). ``decimal`` applies to ``float`` cells\nonly; Greek-locale Excel writes ``;``, ``,`` and Windows-1253.",
+      "if": {
+        "properties": {
+          "decimal": {
+            "const": ","
+          }
+        },
+        "required": [
+          "decimal"
+        ]
+      },
       "properties": {
         "delimiter": {
           "default": ",",
@@ -445,6 +561,7 @@
         },
         "decimal": {
           "default": ".",
+          "description": "`,` needs a `delimiter` other than `,`.",
           "enum": [
             ".",
             ","
@@ -463,12 +580,24 @@
           "type": "string"
         }
       },
+      "then": {
+        "properties": {
+          "delimiter": {
+            "not": {
+              "const": ","
+            }
+          }
+        },
+        "required": [
+          "delimiter"
+        ]
+      },
       "title": "CsvDialect",
       "type": "object"
     },
     "DataBindings": {
       "additionalProperties": false,
-      "description": "Where the resources and tasks of a DM come from.",
+      "description": "Where the resources and tasks of a DM come from. Every `source` (here and in `unavailable` rules) names an existing CSV file in the model's folder, written in the declared `encoding` (a UTF-8 byte order mark is allowed only with `utf-8`); its first row is the header. Each column that a binding names must appear exactly once in the header (names and cells are trimmed); a row may not have more fields than the header. Cells of the `id`, `start`, `end`, `demand` and `resource_id` columns must not be empty.",
       "properties": {
         "resources": {
           "$ref": "#/$defs/ResourceBinding"
@@ -486,7 +615,7 @@
     },
     "Horizon": {
       "additionalProperties": false,
-      "description": "The planning period: ``start`` and ``end`` dates, both inclusive, at most 366 days.",
+      "description": "The planning period: ``start`` and ``end`` dates, both inclusive, at most 366 days. `end` is not before `start`.",
       "properties": {
         "start": {
           "description": "A date from 1970-01-01 to 2999-12-31",
@@ -511,6 +640,20 @@
     "MaxConsecutiveDays": {
       "additionalProperties": false,
       "description": "A resource works at most ``days`` consecutive days.",
+      "else": {
+        "properties": {
+          "weight": {
+            "type": "null"
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "hardness": {
+            "const": "soft"
+          }
+        }
+      },
       "properties": {
         "id": {
           "minLength": 1,
@@ -557,6 +700,7 @@
             }
           ],
           "default": null,
+          "description": "Required (an integer from 1 to 10000) when `hardness` is `soft`; must be omitted or null when `hardness` is `hard`.",
           "title": "Weight"
         },
         "template": {
@@ -576,6 +720,16 @@
         "template",
         "params"
       ],
+      "then": {
+        "properties": {
+          "weight": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "weight"
+        ]
+      },
       "title": "MaxConsecutiveDays",
       "type": "object"
     },
@@ -598,6 +752,20 @@
     "MaxPerPeriod": {
       "additionalProperties": false,
       "description": "Upper bound of a measure (count or hours) per resource per period.",
+      "else": {
+        "properties": {
+          "weight": {
+            "type": "null"
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "hardness": {
+            "const": "soft"
+          }
+        }
+      },
       "properties": {
         "id": {
           "minLength": 1,
@@ -644,6 +812,7 @@
             }
           ],
           "default": null,
+          "description": "Required (an integer from 1 to 10000) when `hardness` is `soft`; must be omitted or null when `hardness` is `hard`.",
           "title": "Weight"
         },
         "template": {
@@ -663,12 +832,36 @@
         "template",
         "params"
       ],
+      "then": {
+        "properties": {
+          "weight": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "weight"
+        ]
+      },
       "title": "MaxPerPeriod",
       "type": "object"
     },
     "MinPerPeriod": {
       "additionalProperties": false,
       "description": "Lower bound of a measure (count or hours) per resource per period.",
+      "else": {
+        "properties": {
+          "weight": {
+            "type": "null"
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "hardness": {
+            "const": "soft"
+          }
+        }
+      },
       "properties": {
         "id": {
           "minLength": 1,
@@ -715,6 +908,7 @@
             }
           ],
           "default": null,
+          "description": "Required (an integer from 1 to 10000) when `hardness` is `soft`; must be omitted or null when `hardness` is `hard`.",
           "title": "Weight"
         },
         "template": {
@@ -734,12 +928,36 @@
         "template",
         "params"
       ],
+      "then": {
+        "properties": {
+          "weight": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "weight"
+        ]
+      },
       "title": "MinPerPeriod",
       "type": "object"
     },
     "MinRest": {
       "additionalProperties": false,
       "description": "The gap between consecutive tasks of a resource is at least ``hours``.",
+      "else": {
+        "properties": {
+          "weight": {
+            "type": "null"
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "hardness": {
+            "const": "soft"
+          }
+        }
+      },
       "properties": {
         "id": {
           "minLength": 1,
@@ -786,6 +1004,7 @@
             }
           ],
           "default": null,
+          "description": "Required (an integer from 1 to 10000) when `hardness` is `soft`; must be omitted or null when `hardness` is `hard`.",
           "title": "Weight"
         },
         "template": {
@@ -805,6 +1024,16 @@
         "template",
         "params"
       ],
+      "then": {
+        "properties": {
+          "weight": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "weight"
+        ]
+      },
       "title": "MinRest",
       "type": "object"
     },
@@ -824,6 +1053,7 @@
               "type": "number"
             }
           ],
+          "description": "Hours, more than 0 and in whole minutes, e.g. `11` or `7.5` (not `7.501`).",
           "title": "Hours"
         }
       },
@@ -836,6 +1066,20 @@
     "NoOverlap": {
       "additionalProperties": false,
       "description": "A resource cannot work two time-overlapping tasks.",
+      "else": {
+        "properties": {
+          "weight": {
+            "type": "null"
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "hardness": {
+            "const": "soft"
+          }
+        }
+      },
       "properties": {
         "id": {
           "minLength": 1,
@@ -882,6 +1126,7 @@
             }
           ],
           "default": null,
+          "description": "Required (an integer from 1 to 10000) when `hardness` is `soft`; must be omitted or null when `hardness` is `hard`.",
           "title": "Weight"
         },
         "template": {
@@ -900,6 +1145,16 @@
         "hardness",
         "template"
       ],
+      "then": {
+        "properties": {
+          "weight": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "weight"
+        ]
+      },
       "title": "NoOverlap",
       "type": "object"
     },
@@ -912,6 +1167,40 @@
     },
     "PeriodLimitParams": {
       "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "measure": {
+                "const": "count"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "limit": {
+                "maximum": 100000
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "measure": {
+                "const": "hours"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "limit": {
+                "maximum": 8784
+              }
+            }
+          }
+        }
+      ],
       "properties": {
         "measure": {
           "enum": [
@@ -931,6 +1220,7 @@
           "type": "string"
         },
         "limit": {
+          "description": "A number, or `{\"attribute\": …}` naming a resource attribute bound as `int` or `float` that every in-scope resource has. Limits are at least 0; with `measure` `count` whole numbers up to 100000, with `measure` `hours` up to 8784 in whole minutes.",
           "oneOf": [
             {
               "anyOf": [
@@ -1040,6 +1330,46 @@
     },
     "Provenance": {
       "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "utterance"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "quote": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "quote"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "data"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "source": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "source"
+            ]
+          }
+        }
+      ],
       "description": "Where a rule came from: a user utterance, a data column, an assumption or a default.",
       "properties": {
         "kind": {
@@ -1076,6 +1406,7 @@
             }
           ],
           "default": null,
+          "description": "Required when `kind` is `utterance`: the words of the request the rule comes from.",
           "title": "Quote"
         },
         "source": {
@@ -1089,6 +1420,7 @@
             }
           ],
           "default": null,
+          "description": "Required when `kind` is `data`: where in the data the rule comes from (free text, e.g. a file and a column).",
           "title": "Source"
         }
       },
@@ -1101,6 +1433,20 @@
     "RequiresAttribute": {
       "additionalProperties": false,
       "description": "A resource may work a task only if its attribute matches the task's requirement.\n\nTasks without the task attribute, or with an empty list, are unrestricted.",
+      "else": {
+        "properties": {
+          "weight": {
+            "type": "null"
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "hardness": {
+            "const": "soft"
+          }
+        }
+      },
       "properties": {
         "id": {
           "minLength": 1,
@@ -1147,6 +1493,7 @@
             }
           ],
           "default": null,
+          "description": "Required (an integer from 1 to 10000) when `hardness` is `soft`; must be omitted or null when `hardness` is `hard`.",
           "title": "Weight"
         },
         "template": {
@@ -1166,11 +1513,22 @@
         "template",
         "params"
       ],
+      "then": {
+        "properties": {
+          "weight": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "weight"
+        ]
+      },
       "title": "RequiresAttribute",
       "type": "object"
     },
     "RequiresAttributeParams": {
       "additionalProperties": false,
+      "description": "`task_attribute` and `resource_attribute` name attributes bound in `data.tasks.attributes` and `data.resources.attributes`.",
       "properties": {
         "task_attribute": {
           "minLength": 1,
@@ -1201,9 +1559,10 @@
     },
     "ResourceBinding": {
       "additionalProperties": false,
-      "description": "CSV binding for resources: id column plus typed attribute columns.",
+      "description": "CSV binding for resources: id column plus typed attribute columns. `id` values are unique; the file has at least one resource.",
       "properties": {
         "source": {
+          "description": "A path relative to the model's folder, e.g. `staff.csv`; it may not leave that folder.",
           "title": "Source",
           "type": "string"
         },
@@ -1215,6 +1574,22 @@
         "attributes": {
           "additionalProperties": {
             "$ref": "#/$defs/AttributeBinding"
+          },
+          "description": "Keys are attribute names: lower-case snake_case (`^[a-z][a-z0-9_]*$`), none of `id`, `start`, `end`, `demand`, `weekday`, `start_hour`, `duration_hours`, `date` (reserved). The CSV column itself may have any name (`column`).",
+          "propertyNames": {
+            "not": {
+              "enum": [
+                "id",
+                "start",
+                "end",
+                "demand",
+                "weekday",
+                "start_hour",
+                "duration_hours",
+                "date"
+              ]
+            },
+            "pattern": "^[a-z][a-z0-9_]*$"
           },
           "title": "Attributes",
           "type": "object"
@@ -1234,6 +1609,7 @@
       "additionalProperties": false,
       "properties": {
         "resource_ids": {
+          "description": "Two different resource ids from the data, written exactly as there.",
           "items": {
             "minLength": 1,
             "type": "string"
@@ -1337,6 +1713,7 @@
       "additionalProperties": false,
       "properties": {
         "baseline": {
+          "description": "Pairs of a task id and a resource id from the data, written exactly as there; each pair at most once.",
           "items": {
             "$ref": "#/$defs/BaselineAssignment"
           },
@@ -1352,9 +1729,10 @@
     },
     "TaskBinding": {
       "additionalProperties": false,
-      "description": "CSV binding for tasks: id, start, end and demand columns plus typed attribute columns.",
+      "description": "CSV binding for tasks: id, start, end and demand columns plus typed attribute columns. `start` and `end` cells are ISO-8601 local date-times without a UTC offset, in whole minutes (e.g. `2026-11-02T07:00` or `2026-11-02 07:00`); `end` is after `start`, at most 24 h later, and every task starts inside the horizon. `demand` cells are whole numbers from 1 to 10000. `id` values are unique; the file has at least one task.",
       "properties": {
         "source": {
+          "description": "A path relative to the model's folder, e.g. `staff.csv`; it may not leave that folder.",
           "title": "Source",
           "type": "string"
         },
@@ -1366,6 +1744,22 @@
         "attributes": {
           "additionalProperties": {
             "$ref": "#/$defs/AttributeBinding"
+          },
+          "description": "Keys are attribute names: lower-case snake_case (`^[a-z][a-z0-9_]*$`), none of `id`, `start`, `end`, `demand`, `weekday`, `start_hour`, `duration_hours`, `date` (reserved). The CSV column itself may have any name (`column`).",
+          "propertyNames": {
+            "not": {
+              "enum": [
+                "id",
+                "start",
+                "end",
+                "demand",
+                "weekday",
+                "start_hour",
+                "duration_hours",
+                "date"
+              ]
+            },
+            "pattern": "^[a-z][a-z0-9_]*$"
           },
           "title": "Attributes",
           "type": "object"
@@ -1401,7 +1795,7 @@
     },
     "TimeWindow": {
       "additionalProperties": false,
-      "description": "A local time interval ``[start, end)`` during which a resource is unavailable.",
+      "description": "A local time interval ``[start, end)`` during which a resource is unavailable. `end` is after `start`; `resource_id` is a resource id from the data, written exactly as there.",
       "properties": {
         "resource_id": {
           "minLength": 1,
@@ -1493,6 +1887,20 @@
     "Unavailable": {
       "additionalProperties": false,
       "description": "A resource cannot work tasks that overlap its unavailability windows.",
+      "else": {
+        "properties": {
+          "weight": {
+            "type": "null"
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "hardness": {
+            "const": "soft"
+          }
+        }
+      },
       "properties": {
         "id": {
           "minLength": 1,
@@ -1539,6 +1947,7 @@
             }
           ],
           "default": null,
+          "description": "Required (an integer from 1 to 10000) when `hardness` is `soft`; must be omitted or null when `hardness` is `hard`.",
           "title": "Weight"
         },
         "template": {
@@ -1558,11 +1967,44 @@
         "template",
         "params"
       ],
+      "then": {
+        "properties": {
+          "weight": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "weight"
+        ]
+      },
       "title": "Unavailable",
       "type": "object"
     },
     "UnavailableParams": {
       "additionalProperties": false,
+      "anyOf": [
+        {
+          "properties": {
+            "windows": {
+              "minItems": 1
+            }
+          },
+          "required": [
+            "windows"
+          ]
+        },
+        {
+          "properties": {
+            "source": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "source"
+          ]
+        }
+      ],
+      "description": "At least one of `windows` (non-empty) or `source`.",
       "properties": {
         "windows": {
           "items": {
@@ -1610,9 +2052,10 @@
     },
     "WindowsBinding": {
       "additionalProperties": false,
-      "description": "CSV binding for unavailability windows (one row per window).",
+      "description": "CSV binding for unavailability windows (one row per window). `start` and `end` cells as in the tasks file; `resource_id` cells are resource ids from the data, written exactly as there.",
       "properties": {
         "source": {
+          "description": "A path relative to the model's folder, e.g. `staff.csv`; it may not leave that folder.",
           "title": "Source",
           "type": "string"
         },
@@ -1674,6 +2117,7 @@
         }
       ],
       "default": null,
+      "description": "When given, lower than `version`.",
       "title": "Parent Version"
     },
     "status": {
@@ -1715,6 +2159,7 @@
       "default": null
     },
     "timezone": {
+      "description": "An IANA time zone key exactly as the tz database writes it (case-sensitive), e.g. `Europe/Athens`. Every local date-time of the model and of its data files is in this zone; a local time skipped by a daylight-saving change is invalid.",
       "title": "Timezone",
       "type": "string"
     },
@@ -1725,6 +2170,18 @@
       "$ref": "#/$defs/DataBindings"
     },
     "constraints": {
+      "contains": {
+        "properties": {
+          "template": {
+            "const": "coverage"
+          }
+        },
+        "required": [
+          "template"
+        ],
+        "type": "object"
+      },
+      "description": "The rules of the model. Exactly one constraint has `template` `coverage`. Every constraint `id` is unique within the model.",
       "items": {
         "discriminator": {
           "mapping": {
@@ -1786,11 +2243,14 @@
           }
         ]
       },
+      "maxContains": 1,
+      "minContains": 1,
       "minItems": 1,
       "title": "Constraints",
       "type": "array"
     },
     "assumptions": {
+      "description": "Every assumption `id` is unique within the model.",
       "items": {
         "$ref": "#/$defs/Assumption"
       },

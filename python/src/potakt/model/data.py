@@ -81,7 +81,15 @@ LocalDateTime = Annotated[
     AfterValidator(check_datetime_bounds),
     WithJsonSchema(LOCAL_DATETIME_JSON_SCHEMA),
 ]
-SourcePath = Annotated[str, AfterValidator(check_source_path)]
+SourcePath = Annotated[
+    str,
+    AfterValidator(check_source_path),
+    Field(
+        description=(
+            "A path relative to the model's folder, e.g. `staff.csv`; it may not leave that folder."
+        )
+    ),
+]
 ColumnName = Annotated[str, Field(min_length=1)]
 
 
@@ -92,7 +100,10 @@ class _FrozenModel(StrictModel):
 
 
 class TimeWindow(_FrozenModel):
-    """A local time interval ``[start, end)`` during which a resource is unavailable."""
+    __doc__ = (
+        "A local time interval ``[start, end)`` during which a resource is unavailable. `end` is "
+        "after `start`; `resource_id` is a resource id from the data, written exactly as there."
+    )
 
     resource_id: str = Field(min_length=1)
     start: LocalDateTime
@@ -108,9 +119,32 @@ class TimeWindow(_FrozenModel):
 class AttributeBinding(StrictModel):
     """Maps one CSV column to a typed attribute."""
 
+    # TASK-005e1: ``_check_separator`` as schema keywords (ADR-0008 D2).
+    model_config = ConfigDict(
+        json_schema_extra={
+            "if": {"properties": {"type": {"not": {"const": "list"}}}},
+            "then": {"properties": {"separator": {"type": "null"}}},
+        }
+    )
+
     column: ColumnName
-    type: ColumnType
-    separator: str | None = Field(default=None, min_length=1)
+    type: ColumnType = Field(
+        description=(
+            "How every non-empty cell of the column is read: `str` as is; `int` a whole number "
+            "(digits with an optional sign); `float` a number written with the file's `decimal` "
+            "separator (with decimal `,` a `.` is rejected, never read as a thousands separator); "
+            "`bool` one of `true`/`false`, `yes`/`no`, `1`/`0` in any letter case; `list` items "
+            "split by `separator`. An empty cell means no value. A cell that cannot be read this "
+            "way makes the model invalid."
+        )
+    )
+    separator: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Only for `type` `list`: the separator between the items of one cell. Default `;`."
+        ),
+    )
 
     @model_validator(mode="after")
     def _check_separator(self) -> Self:
@@ -133,8 +167,19 @@ class CsvDialect(StrictModel):
     only; Greek-locale Excel writes ``;``, ``,`` and Windows-1253.
     """
 
+    # TASK-005e1: ``_check_decimal`` as schema keywords (the default delimiter is ``,``).
+    model_config = ConfigDict(
+        json_schema_extra={
+            "if": {"properties": {"decimal": {"const": ","}}, "required": ["decimal"]},
+            "then": {
+                "required": ["delimiter"],
+                "properties": {"delimiter": {"not": {"const": ","}}},
+            },
+        }
+    )
+
     delimiter: CsvDelimiter = ","
-    decimal: CsvDecimal = "."
+    decimal: CsvDecimal = Field(default=".", description="`,` needs a `delimiter` other than `,`.")
     encoding: CsvEncoding = "utf-8"
 
     @model_validator(mode="after")
@@ -145,10 +190,37 @@ class CsvDialect(StrictModel):
         return self
 
 
+# In this order in the schema (``RESERVED_ATTRIBUTE_NAMES`` is a set; a test keeps them equal).
+RESERVED_ATTRIBUTE_ORDER = (
+    "id",
+    "start",
+    "end",
+    "demand",
+    "weekday",
+    "start_hour",
+    "duration_hours",
+    "date",
+)
+
+
 class _EntityBinding(StrictModel):
     source: SourcePath
     id: ColumnName
-    attributes: dict[str, AttributeBinding] = Field(default_factory=dict[str, AttributeBinding])
+    attributes: dict[str, AttributeBinding] = Field(
+        default_factory=dict[str, AttributeBinding],
+        description=(
+            "Keys are attribute names: lower-case snake_case (`^[a-z][a-z0-9_]*$`), none of `id`, "
+            "`start`, `end`, `demand`, `weekday`, `start_hour`, `duration_hours`, `date` "
+            "(reserved). The CSV column itself may have any name (`column`)."
+        ),
+        # TASK-005e1: ``_check_attribute_names`` as schema keywords.
+        json_schema_extra={
+            "propertyNames": {
+                "pattern": f"^{ATTRIBUTE_NAME_PATTERN.pattern}$",
+                "not": {"enum": list(RESERVED_ATTRIBUTE_ORDER)},
+            }
+        },
+    )
     csv: CsvDialect = Field(default_factory=CsvDialect)
 
     @model_validator(mode="after")
@@ -165,11 +237,20 @@ class _EntityBinding(StrictModel):
 
 
 class ResourceBinding(_EntityBinding):
-    """CSV binding for resources: id column plus typed attribute columns."""
+    __doc__ = (
+        "CSV binding for resources: id column plus typed attribute columns. `id` values are "
+        "unique; the file has at least one resource."
+    )
 
 
 class TaskBinding(_EntityBinding):
-    """CSV binding for tasks: id, start, end and demand columns plus typed attribute columns."""
+    __doc__ = (
+        "CSV binding for tasks: id, start, end and demand columns plus typed attribute columns. "
+        "`start` and `end` cells are ISO-8601 local date-times without a UTC offset, in whole "
+        "minutes (e.g. `2026-11-02T07:00` or `2026-11-02 07:00`); `end` is after `start`, at most "
+        "24 h later, and every task starts inside the horizon. `demand` cells are whole numbers "
+        "from 1 to 10000. `id` values are unique; the file has at least one task."
+    )
 
     start: ColumnName
     end: ColumnName
@@ -177,7 +258,11 @@ class TaskBinding(_EntityBinding):
 
 
 class WindowsBinding(StrictModel):
-    """CSV binding for unavailability windows (one row per window)."""
+    __doc__ = (
+        "CSV binding for unavailability windows (one row per window). `start` and `end` cells as "
+        "in the tasks file; `resource_id` cells are resource ids from the data, written exactly "
+        "as there."
+    )
 
     source: SourcePath
     resource_id: ColumnName
@@ -187,7 +272,14 @@ class WindowsBinding(StrictModel):
 
 
 class DataBindings(StrictModel):
-    """Where the resources and tasks of a DM come from."""
+    __doc__ = (
+        "Where the resources and tasks of a DM come from. Every `source` (here and in "
+        "`unavailable` rules) names an existing CSV file in the model's folder, written in the "
+        "declared `encoding` (a UTF-8 byte order mark is allowed only with `utf-8`); its first "
+        "row is the header. Each column that a binding names must appear exactly once in the "
+        "header (names and cells are trimmed); a row may not have more fields than the header. "
+        "Cells of the `id`, `start`, `end`, `demand` and `resource_id` columns must not be empty."
+    )
 
     resources: ResourceBinding
     tasks: TaskBinding

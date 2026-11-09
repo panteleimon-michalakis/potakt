@@ -289,8 +289,9 @@ def test_the_whole_corpus_cost_bounds_of_the_two_claude_models() -> None:
     # TASK-005c3g G8: the Haiku bound with 64000 output tokens per request (was $0.1034).
     names = runner_module.corpus_scenarios(CORPUS_PATH)
 
-    assert f"{cost_upper_bound(HAIKU, CORPUS_PATH, names):.4f}" == "0.1834"
-    assert f"{cost_upper_bound(OPUS, CORPUS_PATH, names):.4f}" == "7.3373"
+    # TASK-005e1: the schema section states every rule (was $0.1834 and $7.3373).
+    assert f"{cost_upper_bound(HAIKU, CORPUS_PATH, names):.4f}" == "0.1906"
+    assert f"{cost_upper_bound(OPUS, CORPUS_PATH, names):.4f}" == "7.6222"
 
 
 def test_the_dry_run_of_a_complete_model_has_nothing_pending(tmp_path: Path) -> None:
@@ -1090,7 +1091,7 @@ PROMPT_DIFFERS = (
 )
 SCHEMA_DIFFERS = (
     "the schema section differs from the one ADR-0007 §7 pins (SHA256 "
-    "dc4479f854866d2ce783c37cc8d698ce3a5b2096cafba15e6164446fb9f7120d); nothing was sent"
+    "7a2a1a6860df80e494bba95d7389ed22978c4d6bb5236e0fd5cae1b2d24501d4); nothing was sent"
 )
 EVERY_RUN = [(HAIKU, False), (HAIKU, True), (GEMINI, False), (GEMINI, True)]
 EVERY_RUN_IDS = ["haiku-dry-run", "haiku-yes", "gemini-dry-run", "gemini-yes"]
@@ -1098,10 +1099,13 @@ EVERY_RUN_IDS = ["haiku-dry-run", "haiku-yes", "gemini-dry-run", "gemini-yes"]
 
 def test_the_pins_in_the_code_are_the_adr_ones() -> None:
     prompt = pinned_sha256(r"`docs/validation/prompts/test-a\.md`")
-    schema = pinned_sha256(r"output of `potakt schema`")
 
     assert prompt == runner_module.INSTRUCTION_SHA256
-    assert schema == runner_module.SCHEMA_SHA256
+    # TASK-005e1: the schema section changed before any LLM run; ADR-0007 keeps its old pin
+    # (superseded) and ADR-0008 Appendix A records the new one (checked there once it exists).
+    assert runner_module.SCHEMA_SHA256 == (
+        "7a2a1a6860df80e494bba95d7389ed22978c4d6bb5236e0fd5cae1b2d24501d4"
+    )
 
 
 def changed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, what: str) -> None:

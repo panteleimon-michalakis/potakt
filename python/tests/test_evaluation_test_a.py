@@ -10,6 +10,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+import potakt.evaluation.runner as runner_module
 import potakt.evaluation.test_a as test_a_module
 from potakt.evaluation import (
     INSTRUCTION_PATH,
@@ -79,12 +80,13 @@ def test_user_message_is_the_bundle_then_the_schema(name: str) -> None:
     assert schema == render_json_schema()
 
 
-def test_schema_section_is_the_committed_schema_and_its_sha256_is_pinned_in_the_adr() -> None:
+def test_schema_section_is_the_committed_schema_and_its_sha256_is_pinned() -> None:
     schema = render_test_a(load_scenario(CORPUS / "01-pharmacy")).user.split(SCHEMA_HEADING)[1]
 
     data = schema.encode("utf-8")
     assert data == (REPO / "spec" / "decision-model.schema.json").read_bytes()
-    assert hashlib.sha256(data).hexdigest() == pinned_sha256(r"output of `potakt schema`")
+    # TASK-005e1: the pin in force is the runner's (ADR-0007's is superseded before any run).
+    assert hashlib.sha256(data).hexdigest() == runner_module.SCHEMA_SHA256
 
 
 def test_prompt_file_sha256_is_pinned_in_the_adr() -> None:

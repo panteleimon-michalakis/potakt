@@ -98,10 +98,39 @@ def check_whole_minutes(hours: float) -> float:
 class Provenance(StrictModel):
     """Where a rule came from: a user utterance, a data column, an assumption or a default."""
 
+    # TASK-005e1: the schema shows the rules of ``_check_required_details`` (ADR-0008 D2).
+    model_config = ConfigDict(
+        json_schema_extra={
+            "allOf": [
+                {
+                    "if": {"properties": {"kind": {"const": "utterance"}}},
+                    "then": {"required": ["quote"], "properties": {"quote": {"type": "string"}}},
+                },
+                {
+                    "if": {"properties": {"kind": {"const": "data"}}},
+                    "then": {"required": ["source"], "properties": {"source": {"type": "string"}}},
+                },
+            ]
+        }
+    )
+
     kind: ProvenanceKind
     turn_id: str | None = Field(default=None, min_length=1)
-    quote: str | None = Field(default=None, min_length=1)
-    source: str | None = Field(default=None, min_length=1)
+    quote: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Required when `kind` is `utterance`: the words of the request the rule comes from."
+        ),
+    )
+    source: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Required when `kind` is `data`: where in the data the rule comes from (free text, "
+            "e.g. a file and a column)."
+        ),
+    )
 
     @model_validator(mode="after")
     def _check_required_details(self) -> Self:
@@ -115,9 +144,47 @@ class Provenance(StrictModel):
 class Condition(StrictModel):
     """One filter ``{attribute, op, value}``; the conditions of a scope are combined with AND."""
 
-    attribute: str = Field(min_length=1)
+    # TASK-005e1: the value shape of each ``op`` (``_check_value_shape``) as schema keywords.
+    model_config = ConfigDict(
+        json_schema_extra={
+            "allOf": [
+                {
+                    "if": {"properties": {"op": {"enum": ["in", "not_in"]}}},
+                    "then": {"properties": {"value": {"type": "array"}}},
+                },
+                {
+                    "if": {"properties": {"op": {"const": "contains"}}},
+                    "then": {"properties": {"value": {"not": {"type": "array"}}}},
+                },
+                {
+                    "if": {"properties": {"op": {"enum": ["gte", "lte"]}}},
+                    "then": {"properties": {"value": {"type": ["number", "string"]}}},
+                },
+            ]
+        }
+    )
+
+    attribute: str = Field(
+        min_length=1,
+        description=(
+            "`id`, or the name of an attribute bound under `data.resources.attributes` (in "
+            "resource conditions) or `data.tasks.attributes` (in task conditions). Task "
+            "conditions may also use the derived attributes of each task's local start: "
+            "`weekday` (`mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun`), `start_hour` (an "
+            "integer 0\N{EN DASH}23), `duration_hours` (a number) and `date` (`YYYY-MM-DD`). A "
+            "condition on an attribute that a resource or task has no value for never holds, "
+            "also with `ne` and `not_in`."
+        ),
+    )
     op: ConditionOp
-    value: AttributeValue
+    value: AttributeValue = Field(
+        description=(
+            "A list for `in` and `not_in`; a single value (not a list) for `contains`, which "
+            "holds when a `list` attribute contains it; a number or a string for `gte` and "
+            "`lte`. Ids are written exactly as in the data: a condition on an id that does not "
+            "exist selects nothing with `eq` and everything with `ne`."
+        )
+    )
 
     @model_validator(mode="after")
     def _check_value_shape(self) -> Self:

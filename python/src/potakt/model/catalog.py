@@ -9,6 +9,7 @@ from typing import Annotated, Literal, Self, get_args
 
 from pydantic import (
     AfterValidator,
+    ConfigDict,
     Discriminator,
     Field,
     Tag,
@@ -19,6 +20,7 @@ from pydantic import (
 )
 
 from potakt.model.common import (
+    MAX_COUNT,
     MAX_DAYS,
     MAX_HOURS,
     MAX_WEIGHT,
@@ -105,8 +107,24 @@ class _SoftOnly(_ConstraintBase):
 
 
 class _HardOrSoft(_ConstraintBase):
+    # TASK-005e1: "weight iff soft" (``_check_weight``) as schema keywords; inherited by every
+    # hard-or-soft template (ADR-0008 D2).
+    model_config = ConfigDict(
+        json_schema_extra={
+            "if": {"properties": {"hardness": {"const": "soft"}}},
+            "then": {"required": ["weight"], "properties": {"weight": {"type": "integer"}}},
+            "else": {"properties": {"weight": {"type": "null"}}},
+        }
+    )
+
     hardness: Hardness
-    weight: Weight | None = None
+    weight: Weight | None = Field(
+        default=None,
+        description=(
+            "Required (an integer from 1 to 10000) when `hardness` is `soft`; must be omitted or "
+            "null when `hardness` is `hard`."
+        ),
+    )
 
     @model_validator(mode="after")
     def _check_weight(self) -> Self:
@@ -125,13 +143,20 @@ class NoParams(StrictModel):
 
 
 class RequiresAttributeParams(StrictModel):
+    __doc__ = (
+        "`task_attribute` and `resource_attribute` name attributes bound in "
+        "`data.tasks.attributes` and `data.resources.attributes`."
+    )
+
     task_attribute: str = Field(min_length=1)
     resource_attribute: str = Field(min_length=1)
     match: Literal["contains", "equals"]
 
 
 class MinRestParams(StrictModel):
-    hours: Hours
+    hours: Hours = Field(
+        description="Hours, more than 0 and in whole minutes, e.g. `11` or `7.5` (not `7.501`)."
+    )
 
 
 class AttributeRef(StrictModel):
@@ -159,9 +184,33 @@ LIMIT_SHAPE = 'limit must be a number (at least 0) or {"attribute": "<resource a
 
 
 class PeriodLimitParams(StrictModel):
+    # TASK-005e1: the maximum of a literal limit depends on ``measure`` (``above_limit_maximum``);
+    # ``maximum`` ignores the ``{"attribute": …}`` form, so these keywords are exact.
+    model_config = ConfigDict(
+        json_schema_extra={
+            "allOf": [
+                {
+                    "if": {"properties": {"measure": {"const": "count"}}},
+                    "then": {"properties": {"limit": {"maximum": MAX_COUNT}}},
+                },
+                {
+                    "if": {"properties": {"measure": {"const": "hours"}}},
+                    "then": {"properties": {"limit": {"maximum": MAX_HOURS}}},
+                },
+            ]
+        }
+    )
+
     measure: Measure
     period: Period
-    limit: Limit
+    limit: Limit = Field(
+        description=(
+            'A number, or `{"attribute": \N{HORIZONTAL ELLIPSIS}}` naming a resource attribute '
+            "bound as `int` or `float` that every in-scope resource has. Limits are at least 0; "
+            "with `measure` `count` whole numbers up to 100000, with `measure` `hours` up to "
+            "8784 in whole minutes."
+        )
+    )
 
     @field_validator("limit", mode="wrap")
     @classmethod
@@ -201,6 +250,18 @@ class MaxConsecutiveDaysParams(StrictModel):
 
 
 class UnavailableParams(StrictModel):
+    """At least one of `windows` (non-empty) or `source`."""
+
+    # TASK-005e1: ``_check_not_empty`` as a schema keyword.
+    model_config = ConfigDict(
+        json_schema_extra={
+            "anyOf": [
+                {"required": ["windows"], "properties": {"windows": {"minItems": 1}}},
+                {"required": ["source"], "properties": {"source": {"type": "object"}}},
+            ]
+        }
+    )
+
     windows: list[TimeWindow] = Field(default_factory=list[TimeWindow])
     source: WindowsBinding | None = None
 
@@ -222,7 +283,9 @@ class BalanceParams(StrictModel):
 
 
 class ResourcePairParams(StrictModel):
-    resource_ids: ResourcePair
+    resource_ids: ResourcePair = Field(
+        description="Two different resource ids from the data, written exactly as there."
+    )
 
 
 class BaselineAssignment(StrictModel):
@@ -231,7 +294,12 @@ class BaselineAssignment(StrictModel):
 
 
 class StabilityParams(StrictModel):
-    baseline: list[BaselineAssignment]
+    baseline: list[BaselineAssignment] = Field(
+        description=(
+            "Pairs of a task id and a resource id from the data, written exactly as there; each "
+            "pair at most once."
+        )
+    )
 
 
 # --- templates -------------------------------------------------------------------------------

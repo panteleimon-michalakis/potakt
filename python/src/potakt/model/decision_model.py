@@ -43,7 +43,10 @@ HorizonDate = Annotated[
 
 
 class Horizon(StrictModel):
-    """The planning period: ``start`` and ``end`` dates, both inclusive, at most 366 days."""
+    __doc__ = (
+        "The planning period: ``start`` and ``end`` dates, both inclusive, at most 366 days. "
+        "`end` is not before `start`."
+    )
 
     start: HorizonDate
     end: HorizonDate
@@ -81,17 +84,44 @@ class DecisionModel(StrictModel):
     schema_version: Literal["0.2"]
     id: str = Field(min_length=1)
     version: int = Field(ge=1)
-    parent_version: int | None = Field(default=None, ge=1)
+    parent_version: int | None = Field(
+        default=None, ge=1, description="When given, lower than `version`."
+    )
     status: Literal["draft", "confirmed", "approved"]
     title: str = Field(min_length=1)
     language: Literal["en", "el"]
     archetype: Literal["assignment"]
     vocabulary: Vocabulary | None = None
-    timezone: Timezone
+    timezone: Timezone = Field(
+        description=(
+            "An IANA time zone key exactly as the tz database writes it (case-sensitive), e.g. "
+            "`Europe/Athens`. Every local date-time of the model and of its data files is in "
+            "this zone; a local time skipped by a daylight-saving change is invalid."
+        )
+    )
     horizon: Horizon
     data: DataBindings
-    constraints: list[Constraint] = Field(min_length=1)
-    assumptions: list[Assumption] = Field(default_factory=list[Assumption])
+    constraints: list[Constraint] = Field(
+        min_length=1,
+        description=(
+            "The rules of the model. Exactly one constraint has `template` `coverage`. Every "
+            "constraint `id` is unique within the model."
+        ),
+        # TASK-005e1: ``_coverage_errors`` as schema keywords (ADR-0008 D2).
+        json_schema_extra={
+            "contains": {
+                "type": "object",
+                "properties": {"template": {"const": "coverage"}},
+                "required": ["template"],
+            },
+            "minContains": 1,
+            "maxContains": 1,
+        },
+    )
+    assumptions: list[Assumption] = Field(
+        default_factory=list[Assumption],
+        description="Every assumption `id` is unique within the model.",
+    )
     objective: Literal["lexicographic_hard_then_soft"] = "lexicographic_hard_then_soft"
 
     @property
