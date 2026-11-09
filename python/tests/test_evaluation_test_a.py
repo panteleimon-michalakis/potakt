@@ -44,9 +44,38 @@ def adr_section_7() -> str:
 
 
 def pinned_sha256(pattern: str) -> str:
-    found = re.search(pattern + r" \(SHA256 `([0-9a-f]{64})`\)", adr_section_7())
-    assert found, f"no SHA256 after {pattern!r} in ADR-0007 §7"
+    """The SHA256 that ADR-0007 §7 pinned first, now marked superseded (TASK-005e1)."""
+    found = re.search(
+        pattern + r" \(SHA256 `([0-9a-f]{64})`\) \(superseded: ADR-0008, Appendix A\)",
+        adr_section_7(),
+    )
+    assert found, f"no superseded SHA256 after {pattern!r} in ADR-0007 §7"
     return found.group(1)
+
+
+ADR_0008 = REPO / "docs" / "adr" / "0008-phase-0-protocol-revision.md"
+
+
+def pin_in_force(label: str) -> str:
+    """The SHA256 that ADR-0008 Appendix A pins after ``label`` (the pins in force)."""
+    text = ADR_0008.read_text(encoding="utf-8")
+    appendix = " ".join(text[text.index("## Appendix A") :].split())
+    found = re.search(re.escape(label) + r": SHA256 `([0-9a-f]{64})`", appendix)
+    assert found, f"no SHA256 after {label!r} in ADR-0008 Appendix A"
+    return found.group(1)
+
+
+INSTRUCTION_PIN = "Instruction `docs/validation/prompts/test-a.md`"
+SCHEMA_PIN = "Schema section (`potakt schema`)"
+
+
+def test_adr_0007_keeps_its_first_pins_marked_superseded() -> None:
+    assert pinned_sha256(r"`docs/validation/prompts/test-a\.md`") == (
+        "65c4ce708a56ae1c44a804aa78e7666d00a36e76422f60756dfb98aef39bf990"
+    )
+    assert pinned_sha256(r"output of `potakt schema`") == (
+        "dc4479f854866d2ce783c37cc8d698ce3a5b2096cafba15e6164446fb9f7120d"
+    )
 
 
 # --- the prompt ------------------------------------------------------------------------------
@@ -85,15 +114,17 @@ def test_schema_section_is_the_committed_schema_and_its_sha256_is_pinned() -> No
 
     data = schema.encode("utf-8")
     assert data == (REPO / "spec" / "decision-model.schema.json").read_bytes()
-    # TASK-005e1: the pin in force is the runner's (ADR-0007's is superseded before any run).
-    assert hashlib.sha256(data).hexdigest() == runner_module.SCHEMA_SHA256
+    # TASK-005e1: the pin in force is ADR-0008's (ADR-0007's is superseded before any run).
+    assert hashlib.sha256(data).hexdigest() == pin_in_force(SCHEMA_PIN)
+    assert pin_in_force(SCHEMA_PIN) == runner_module.SCHEMA_SHA256
 
 
 def test_prompt_file_sha256_is_pinned() -> None:
     digest = hashlib.sha256(INSTRUCTION_PATH.read_bytes()).hexdigest()
 
-    # TASK-005e1: the pin in force is the runner's (ADR-0007's is superseded before any run).
-    assert digest == runner_module.INSTRUCTION_SHA256
+    # TASK-005e1: the pin in force is ADR-0008's (ADR-0007's is superseded before any run).
+    assert digest == pin_in_force(INSTRUCTION_PIN)
+    assert pin_in_force(INSTRUCTION_PIN) == runner_module.INSTRUCTION_SHA256
 
 
 def test_render_is_deterministic() -> None:

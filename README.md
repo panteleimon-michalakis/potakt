@@ -38,8 +38,8 @@ one that calls them (free, read-only); the owner runs both by following
   interrupted, 2 usage error, also for an unregistered model id);
 - `potakt eval run --model ID [--runs DIR] [--corpus DIR] [--poll-seconds N] [--yes]
   [--release BATCH_ID]` first checks the prompt file and the schema section against the SHA256
-  values that ADR-0007 §7 pins (and stops if one differs); without `--yes` it prints the plan
-  (pending and recorded scenarios, an open or held batch or an unconfirmed create request, a
+  values pinned in ADR-0008 Appendix A, which revises ADR-0007 §7 (and stops if one differs);
+  without `--yes` it prints the plan (pending and recorded scenarios, an open or held batch or an unconfirmed create request, a
   lock, the cost upper bound; for Gemini $0 only if the key's project is on the free tier) and
   sends nothing; with `--yes` it reads the key from
   `POTAKT_ANTHROPIC_API_KEY` (Claude models, Message Batches API) or `POTAKT_GEMINI_API_KEY`

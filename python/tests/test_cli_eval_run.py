@@ -36,6 +36,7 @@ from test_evaluation_runner_anthropic import (
     succeeded,
 )
 from test_evaluation_runner_gemini import FakeGemini
+from test_evaluation_test_a import INSTRUCTION_PIN, SCHEMA_PIN, pin_in_force
 from typer.testing import CliRunner, Result
 
 import potakt.cli as cli
@@ -1099,14 +1100,9 @@ EVERY_RUN_IDS = ["haiku-dry-run", "haiku-yes", "gemini-dry-run", "gemini-yes"]
 
 def test_the_pins_in_the_code_are_the_adr_ones() -> None:
     # TASK-005e1: the prompt file and the schema section changed before any LLM run; ADR-0007
-    # keeps its old pins (superseded) and ADR-0008 Appendix A records the new ones (checked
-    # there once it exists).
-    assert runner_module.INSTRUCTION_SHA256 == (
-        "2dcb497384a35ae227ccc8df46349d6179162687093ac16e0cd48be9f406263c"
-    )
-    assert runner_module.SCHEMA_SHA256 == (
-        "7a2a1a6860df80e494bba95d7389ed22978c4d6bb5236e0fd5cae1b2d24501d4"
-    )
+    # keeps its old pins (superseded) and ADR-0008 Appendix A pins the ones in force.
+    assert pin_in_force(INSTRUCTION_PIN) == runner_module.INSTRUCTION_SHA256
+    assert pin_in_force(SCHEMA_PIN) == runner_module.SCHEMA_SHA256
 
 
 def changed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, what: str) -> None:
@@ -2072,7 +2068,11 @@ def test_the_runbook_steps_are_in_order_and_hold_no_personal_path() -> None:
         "## 8. If something goes wrong",
     ]
     assert "potakt-phase0" in text
-    assert "$10" in text
+    # TASK-005e1 (ADR-0008 D13): the spend limit is raised in stages up to the US$60 cap.
+    assert "spend limit to $15 for the development runs" in " ".join(text.split())
+    assert "raise it to $45 before the corpus Test A runs and to $60 before Test B" in " ".join(
+        text.split()
+    )
     assert 'git commit -m "docs(validation): record Test A runs (<model>)"' in text
     assert "C:\\Users" not in text
     assert KEY not in text

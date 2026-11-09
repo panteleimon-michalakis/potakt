@@ -108,8 +108,11 @@ one `coverage`), `assumptions` (`[{id, text, status}]`, unique ids, status `prop
 - Every error is reported as a `ValidationIssue` with a JSON-pointer `path` into the DM (RFC 6901,
   `/` for the root) and a human-readable `message`; CSV row errors name the file and line.
 - The JSON Schema is generated from the Pydantic models and committed at
-  `spec/decision-model.schema.json`; a test fails when it drifts. Cross-field rules (uniqueness,
-  weight iff soft, data-level checks) are not expressible in the schema and are enforced in code.
+  `spec/decision-model.schema.json`; a test fails when it drifts. Rules that JSON Schema draft
+  2020-12 expresses exactly (for example exactly one `coverage`, weight iff soft, attribute names)
+  are also schema keywords; the others (unique ids, data-level checks) are stated in descriptions.
+  The code stays the reference, and a differential test checks that the schema accepts every model
+  the code accepts (ADR-0008 D2).
 
 ## Consequences
 - The checker and both compilers share one precise, typed input; templates are validated before any

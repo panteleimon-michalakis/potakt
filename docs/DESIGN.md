@@ -298,7 +298,8 @@ Tests that call real LLMs are opt-in (`pytest -m llm`); default CI uses recorded
 ---
 
 ## 11. Interfaces
-- **CLI** (`potakt`): `chat`, `validate`, `solve`, `explain`, `whatif`, `eval`.
+- **CLI** (`potakt`): `validate`, `check`, `schema` and `eval` today; `chat`, `solve`, `explain` and
+  `whatif` planned.
 - **MCP server** (official Python SDK): tools `create_model`, `update_model`, `validate_model`, `solve`,
   `explain`, `what_if`, `get_plan`; resources for DM JSON, schema and catalog docs.
 - **REST API** (FastAPI) with OpenAPI; used by the web UI.
@@ -387,7 +388,8 @@ The Java solver service (Phase 2) and the web UI (Phase 4) are valuable but opti
 their order or whether a second domain pack comes first.
 
 ### 16.1 Validation experiment (Phase 0, before any product code)
-Goal: try to **disprove** the idea as cheaply as possible (budget ≈ €5 of API usage).
+Goal: try to **disprove** the idea as cheaply as possible, with a protocol that holds up to outside
+review (API budget: a hard cap of US$60, ADR-0008 D13).
 
 1. Write **10 realistic shift-scheduling descriptions** (clinic, hotel, retail, call center…), at least
    half in Greek, each with a small CSV dataset and a hand-written **ground-truth Decision Model**.
@@ -402,7 +404,7 @@ Goal: try to **disprove** the idea as cheaply as possible (budget ≈ €5 of AP
 ### 16.2 Decision gates
 | Gate | When | Go if… | Otherwise |
 |---|---|---|---|
-| **1 · Idea** | end of week 2 | Test A recovers **≥ 70%** of constraints without manual fixes **and** Test B shows a measurable gap (violations, no explanations or unstable re-planning) | If Test A < 70%: iterate on catalog/prompts for one more week, then re-decide. If Test B shows **no** gap: stop or pivot (e.g. reposition as an evaluation/benchmark project). |
+| **1 · Idea** | after the frozen Phase 0 runs (ADR-0008 D15) | Test A recovers **≥ 70%** of constraints without manual fixes **and** Test B shows a measurable gap (violations, no explanations or unstable re-planning) | If Test A < 70%: iterate on catalog/prompts for one more week, then re-decide. If Test B shows **no** gap: stop or pivot (e.g. reposition as an evaluation/benchmark project). |
 | **2 · MVP** | week 8 | Demo shown to 2–3 people (incl. one person who builds rosters in real life); they find the explanation/what-if useful | Re-scope Phase 2–4 based on feedback. |
 | **3 · Evidence** | week 18 | Benchmark shows Potakt beats the baseline on validity/stability at acceptable cost | Publish the benchmark as the main contribution; consider a paper either way. |
 
@@ -447,6 +449,7 @@ the README. This builds a public track record independent of Potakt's own succes
 - **ADR-0005** Scoring semantics v0 (Accepted)
 - **ADR-0006** Decision Model 0.2 and scoring amendments (Accepted)
 - **ADR-0007** Phase 0 validation protocol, pre-registered (Accepted)
+- **ADR-0008** Phase 0 protocol revision before the first LLM run (Accepted)
 
 ---
 

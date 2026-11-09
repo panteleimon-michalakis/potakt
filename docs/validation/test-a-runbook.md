@@ -27,10 +27,11 @@ Rules for the whole runbook:
 
 **Anthropic**
 1. In the Claude Console, create a workspace `potakt-phase0`.
-2. Set its monthly spend limit to $10 (a non-default workspace: "Spend limits"). If the limit is
-   already reached when a batch is created, the API answers with a 400 error and the run stops
-   with no record. If it is reached while a batch runs, the documentation does not say how the
-   remaining requests end: send the run's output to the reviewer. The dry runs' cost upper
+2. Set its monthly spend limit to $15 for the development runs; raise it to $45 before the corpus
+   Test A runs and to $60 before Test B (ADR-0008 D13; a non-default workspace: "Spend limits"). If
+   the limit is already reached when a batch is created, the API answers with a 400 error and the
+   run stops with no record. If it is reached while a batch runs, the documentation does not say
+   how the remaining requests end: send the run's output to the reviewer. The dry runs' cost upper
    bounds fit under the limit.
 3. Create a **personal** API key (Claude Console, API keys, Create key):
    - Linked account: yourself;

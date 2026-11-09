@@ -25,7 +25,8 @@ list of batches before anything is sent, so no batch is paid for twice. A batch 
 need the reviewer is held (also for a result error that a repeat cannot fix): every run stops
 before sending anything until the owner runs `--yes --release <id>` after the reviewer's
 decision, which first records what the batch's kept results file holds. Every run checks the
-prompt file and the schema section against the SHA256 values that ADR-0007 §7 pins, and each
+prompt file and the schema section against the SHA256 values pinned in ADR-0008 Appendix A
+(which revises ADR-0007 §7), and each
 request, when it is built and before anything is sent, against the SHA256 that the harness pins
 for that scenario and model (the dry run too); no run sends a scenario whose earlier answer
 could not be saved (`response.json.tmp`, never committed). Before the first batch of a Claude

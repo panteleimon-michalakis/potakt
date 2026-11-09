@@ -2,6 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-11-01
+- **Revised by:** ADR-0008 (before any LLM run)
 
 ## Context
 
@@ -254,7 +255,8 @@ because DESIGN §16.2 names "violations, no explanations **or** unstable re-plan
   for it; no sampling parameters; thinking left to the API default. Gemini `generateContent`:
   `maxOutputTokens` 32000, every other setting left to the API default.
 - **Prompt.** The instruction text is `docs/validation/prompts/test-a.md` (SHA256
-  `65c4ce708a56ae1c44a804aa78e7666d00a36e76422f60756dfb98aef39bf990`), sent as the system
+  `65c4ce708a56ae1c44a804aa78e7666d00a36e76422f60756dfb98aef39bf990`) (superseded: ADR-0008,
+  Appendix A), sent as the system
   instruction. The user message is the bundle of §3, rendered by
   `potakt.evaluation.render_test_a` in this order:
   1. a heading `## Request` and the text of `request.md`;
@@ -262,7 +264,8 @@ because DESIGN §16.2 names "violations, no explanations **or** unstable re-plan
      `### <file name> (encoding: <encoding>)` and its decoded text in a fenced block (a leading byte
      order mark removed, line endings LF);
   3. a heading `## Decision Model JSON Schema` and the output of `potakt schema` (SHA256
-     `dc4479f854866d2ce783c37cc8d698ce3a5b2096cafba15e6164446fb9f7120d`).
+     `dc4479f854866d2ce783c37cc8d698ce3a5b2096cafba15e6164446fb9f7120d`) (superseded: ADR-0008,
+     Appendix A).
 - **Answer.** The candidate is the text of the answer's text blocks, joined. If the whole text is
   one Markdown code fence (` ```json ` or ` ``` `), the fence lines are removed; nothing else is
   changed. A refusal, a truncated answer (output limit reached) or any stop other than a normal end
@@ -281,6 +284,8 @@ because DESIGN §16.2 names "violations, no explanations **or** unstable re-plan
   diagnostic counts; usage; and cost at the prices pinned in the harness on 2026-11-02.
 - **Who runs it.** The owner runs every paid command. Credentials come only from the environment
   variables `POTAKT_ANTHROPIC_API_KEY` and `POTAKT_GEMINI_API_KEY` and are never written anywhere.
+
+(Every later amendment of this section, and ADR-0008, replaces the bullets it contradicts.)
 
 **Amendment (2026-11-02, TASK-005c2, before any LLM run).** These rules complete §7; where they
 differ from the bullets above, they apply.
