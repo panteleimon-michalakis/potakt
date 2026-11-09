@@ -41,6 +41,7 @@ from potakt.model.data import (
     local_time_exists,
 )
 from potakt.model.decision_model import DecisionModel
+from potakt.model.lookalike import lookalike_hint
 from potakt.model.scope import in_scope
 from potakt.model.solution import Solution
 
@@ -370,10 +371,14 @@ class _References:
     def _resource(self, loc: Loc, resource_id: str, where: str = "") -> list[ValidationIssue]:
         if resource_id in self.resource_ids:
             return []
-        return [issue_at(loc, f"unknown resource id {resource_id!r}{where}")]
+        hint = lookalike_hint(resource_id, self.resource_ids)  # ADR-0008 D9
+        return [issue_at(loc, f"unknown resource id {resource_id!r}{where}{hint}")]
 
     def _task(self, loc: Loc, task_id: str) -> list[ValidationIssue]:
-        return [] if task_id in self.task_ids else [issue_at(loc, f"unknown task id {task_id!r}")]
+        if task_id in self.task_ids:
+            return []
+        hint = lookalike_hint(task_id, self.task_ids)
+        return [issue_at(loc, f"unknown task id {task_id!r}{hint}")]
 
     def _windows(
         self, params: Loc, rule: Unavailable, instance: ProblemInstance
@@ -426,8 +431,10 @@ def validate_solution(
     for index, assignment in enumerate(solution.assignments):
         if assignment.task_id not in task_ids:
             loc: Loc = ("assignments", index, "task_id")
-            issues.append(issue_at(loc, f"unknown task id {assignment.task_id!r}"))
+            hint = lookalike_hint(assignment.task_id, task_ids)  # ADR-0008 D9
+            issues.append(issue_at(loc, f"unknown task id {assignment.task_id!r}{hint}"))
         if assignment.resource_id not in resource_ids:
             loc = ("assignments", index, "resource_id")
-            issues.append(issue_at(loc, f"unknown resource id {assignment.resource_id!r}"))
+            hint = lookalike_hint(assignment.resource_id, resource_ids)
+            issues.append(issue_at(loc, f"unknown resource id {assignment.resource_id!r}{hint}"))
     return issues

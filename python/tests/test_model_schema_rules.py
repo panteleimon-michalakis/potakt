@@ -977,6 +977,11 @@ RULES: tuple[Rule, ...] = (
         "maximum checks (8784 hours)",
     ),
     Rule("solution", "X", reason="solution input, not part of a Decision Model"),
+    Rule(
+        "lookalike-hint",
+        "X",
+        reason="a hint appended to an unknown-id message (ADR-0008 D9), not a rule of its own",
+    ),
     Rule("wrapper", "X", reason="wrapper: passes another rule's message on"),
 )
 RULE_BY_ID = {rule.id: rule for rule in RULES}
@@ -1036,9 +1041,10 @@ MESSAGE_TO_RULE: dict[str, str] = {
     "template {} allows only {} rules": "hardness-per-template",
     "the two resource ids must be different": "pair-ids",
     "unknown IANA timezone {}": "timezone",
-    "unknown resource id {}": "solution",
-    "unknown resource id {}{}": "pair-ids",
-    "unknown task id {}": "baseline",
+    "unknown resource id {}{}": "solution",
+    "unknown resource id {}{}{}": "pair-ids",
+    "unknown task id {}{}": "baseline",
+    "; did you mean {}? ({})": "lookalike-hint",
     "unknown {} attribute {}; known: {}": "condition-attribute",
     "value must be {} for op {}": "condition-value-shape",
     "weight is only allowed on soft rules": "weight-iff-soft",
