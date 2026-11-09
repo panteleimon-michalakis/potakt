@@ -47,6 +47,7 @@ show_missing = true
 [dependency-groups]
 dev = [
     "hypothesis>=6.170.13",
+    "jsonschema>=4.26.0",
     "pyright>=1.1.414",
     "pytest>=9.2.0",
     "pytest-cov>=7.1.0",
