@@ -113,6 +113,10 @@ uv run potakt check ../examples/clinic-el/model.json ../examples/clinic-el/solut
 
 See [`docs/DESIGN.md`](docs/DESIGN.md) and the architecture decision records in [`docs/adr/`](docs/adr/).
 
+## Security
+
+See [SECURITY.md](SECURITY.md) to report a vulnerability privately.
+
 ## License
 
 Apache-2.0 — Copyright 2026 Panteleimon Michalakis. See [`LICENSE`](LICENSE).
