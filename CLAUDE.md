@@ -47,6 +47,12 @@ truth; if a task seems to contradict it, **stop and ask** instead of improvising
    The one accepted per-line exception is `# noqa: RUF001` or `# noqa: RUF003` on a line that
    quotes Greek text verbatim, because ruff confuses some Greek letters with Latin ones; a comment
    on the same line or directly above the quoted block says so.
+   When a task changes `.github/` or `uv.lock`, also run the CI security checks: from the
+   repository root `uvx zizmor@1.32.0 --offline --min-severity medium .github` ("No findings to
+   report"), and from `python/` `uv export --locked --format requirements-txt --no-hashes
+   --no-emit-project -o <scratchpad>/requirements-audit.txt` followed by `uvx pip-audit@2.10.1 -r
+   <scratchpad>/requirements-audit.txt --no-deps --disable-pip --strict` ("No known vulnerabilities
+   found").
 4. Commit in logical steps (see rule 4).
 5. **Stop and report** using this template:
    ```

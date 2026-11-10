@@ -4,3 +4,11 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    cooldown:
+      default-days: 7
+  - package-ecosystem: uv
+    directory: /python
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
