@@ -493,12 +493,11 @@ def eval_run(
 ) -> None:
     """Run Test A for one model; without --yes, print the plan and send nothing.
 
-    Send every corpus scenario without a recorded answer and record the answers (ADR-0007 §7
-    and its amendments). Every run first checks the prompt file and the schema section against
-    the SHA256 values pinned in ADR-0008 Appendix A, which revises ADR-0007 §7, and stops,
-    sending nothing, if one differs. Each
-    request is checked too, when it is built and before anything is sent, against the SHA256
-    that the harness pins for its scenario and model (the dry run too).
+    Send every corpus scenario without a recorded answer and record the answers (ADR-0007 §7 and its
+    amendments). Every run first checks the prompt file and the schema section against the SHA256
+    values pinned in ADR-0008 Appendix A, which revises ADR-0007 §7, and stops, sending nothing, if
+    one differs. Each request is checked too, when it is built and before anything is sent, against
+    the SHA256 that the harness pins for its scenario and model (the dry run too).
 
     Without --yes, print the plan and the cost upper bound; nothing is sent and no key is read.
     With --yes, read the key from POTAKT_ANTHROPIC_API_KEY (Claude models, Message Batches API)

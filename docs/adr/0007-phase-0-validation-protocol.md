@@ -256,8 +256,7 @@ because DESIGN §16.2 names "violations, no explanations **or** unstable re-plan
   `maxOutputTokens` 32000, every other setting left to the API default.
 - **Prompt.** The instruction text is `docs/validation/prompts/test-a.md` (SHA256
   `65c4ce708a56ae1c44a804aa78e7666d00a36e76422f60756dfb98aef39bf990`) (superseded: ADR-0008,
-  Appendix A), sent as the system
-  instruction. The user message is the bundle of §3, rendered by
+  Appendix A), sent as the system instruction. The user message is the bundle of §3, rendered by
   `potakt.evaluation.render_test_a` in this order:
   1. a heading `## Request` and the text of `request.md`;
   2. a heading `## Data files`, then for each CSV file, in byte order of file name, a heading
