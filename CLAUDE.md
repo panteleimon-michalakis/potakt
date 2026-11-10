@@ -39,8 +39,8 @@ truth; if a task seems to contradict it, **stop and ask** instead of improvising
    uv run ruff format --check .
    uv run ruff check .
    uv run pyright
-   uv run pytest -q --cov=potakt
-   uv run --locked --isolated --python 3.12 pytest -q --cov=potakt   # as in CI; leaves .venv on 3.14
+   uv run pytest -q -n auto --cov=potakt
+   uv run --locked --isolated --python 3.12 pytest -q -n auto --cov=potakt   # as in CI; leaves .venv on 3.14
    ```
    All must pass. Never weaken a gate (no blanket `# type: ignore`, no disabling rules, no skipping
    tests) to make it pass — if you think a rule is wrong, say so in the report.
@@ -90,7 +90,7 @@ Every task; the evidence goes in the report.
    CI Windows and Linux). Our code decides; tests never rely on what an OS does with special names,
    encodings, line endings or locale. Tests never depend on environment variables (colour, terminal
    width, CI); tests/conftest.py resets them. Before reporting, run the suite once with
-   `GITHUB_ACTIONS=true FORCE_COLOR=1 COLUMNS=40 uv run pytest -q` (Git Bash). Tests never depend
+   `GITHUB_ACTIONS=true FORCE_COLOR=1 COLUMNS=40 uv run pytest -q -n auto` (Git Bash). Tests never depend
    on interpreter limits (recursion depth, C stack size, hash seed) or on the Python patch version:
    CI uses the latest 3.12.x and 3.14.x. Explicit limits are enforced by our code before calling a
    library, and a test that needs another machine's behaviour reproduces it (for example with a

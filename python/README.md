@@ -12,8 +12,8 @@ uv lock --check
 uv run ruff format --check .
 uv run ruff check .
 uv run pyright
-uv run pytest -q --cov=potakt
-uv run --locked --isolated --python 3.12 pytest -q --cov=potakt   # as in CI; leaves .venv on 3.14
+uv run pytest -q -n auto --cov=potakt
+uv run --locked --isolated --python 3.12 pytest -q -n auto --cov=potakt   # as in CI; leaves .venv on 3.14
 ```
 
 Both test runs fail below 95% line coverage.
