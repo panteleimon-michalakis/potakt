@@ -6,9 +6,21 @@ updates:
       interval: monthly
     cooldown:
       default-days: 7
+    groups:
+      github-actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
+      include: scope
   - package-ecosystem: uv
     directory: /python
     schedule:
       interval: monthly
     cooldown:
       default-days: 7
+    groups:
+      python-dependencies:
+        patterns: ["*"]
+    commit-message:
+      prefix: build
+      include: scope
