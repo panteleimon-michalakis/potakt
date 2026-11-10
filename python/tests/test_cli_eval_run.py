@@ -2068,11 +2068,13 @@ def test_the_runbook_steps_are_in_order_and_hold_no_personal_path() -> None:
         "## 8. If something goes wrong",
     ]
     assert "potakt-phase0" in text
-    # TASK-005e1 (ADR-0008 D13): the spend limit is raised in stages up to the US$60 cap.
-    assert "spend limit to $15 for the development runs" in " ".join(text.split())
-    assert "raise it to $45 before the corpus Test A runs and to $60 before Test B" in " ".join(
-        text.split()
-    )
+    # ADR-0008 D13 (TASK-005e1 follow-up): the spend limit is raised in stages up to the US$70
+    # cap, each stage covering the worst case of every run before it.
+    assert (
+        "2. Set its monthly spend limit to $15 for the development runs; raise it to $50 before "
+        "the corpus Test A runs and to $70 before Test B (ADR-0008 D13; a non-default workspace: "
+        '"Spend limits").'
+    ) in " ".join(text.split())
     assert 'git commit -m "docs(validation): record Test A runs (<model>)"' in text
     assert "C:\\Users" not in text
     assert KEY not in text

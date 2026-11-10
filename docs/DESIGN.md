@@ -389,7 +389,7 @@ their order or whether a second domain pack comes first.
 
 ### 16.1 Validation experiment (Phase 0, before any product code)
 Goal: try to **disprove** the idea as cheaply as possible, with a protocol that holds up to outside
-review (API budget: a hard cap of US$60, ADR-0008 D13).
+review (API budget: a hard cap of US$70, ADR-0008 D13).
 
 1. Write **10 realistic shift-scheduling descriptions** (clinic, hotel, retail, call center…), at least
    half in Greek, each with a small CSV dataset and a hand-written **ground-truth Decision Model**.

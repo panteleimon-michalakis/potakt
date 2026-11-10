@@ -119,10 +119,11 @@ request's subject: the people, the attribute and the time it names. The owner ra
 checks, and the count is reported per model.
 
 ### D13. Budget
-The Phase 0 API budget is a hard cap of US$60, enforced by the Anthropic workspace spend limit and
-raised in stages: development runs, then Test A, then Test B. The upper bounds are about $15 for the
-development runs, about $30 for Test A (first attempt $7.34, two repeats $14.67, plus repairs and
-Haiku) and about $13 for Test B with its judge. This replaces DESIGN §16.1's "≈ €5", and the actual
+The Phase 0 API budget is a hard cap of US$70, enforced by the Anthropic workspace spend limit and
+raised in stages so that each stage covers the worst case of every run before it: $15 for the
+development runs, $50 before the corpus Test A runs and $70 before Test B. The upper bounds are about
+$15 for the development runs, about $31 for Test A (first attempt $7.63, two repeats $15.26, plus repairs
+and Haiku) and about $13 for Test B with its judge. This replaces DESIGN §16.1's "≈ €5", and the actual
 costs are reported. DESIGN's development budget target for later phases (≤ €20/month) is unchanged.
 
 ### D14. Test B
@@ -148,7 +149,7 @@ the dates.
 - Every analysis rule exists before any corpus result. The development runs absorb harness and
   wording problems that would otherwise surface first on the test set.
 - More engineering before Gate 1: development scenarios and runs, the reporting code, the repair and
-  repeat runs, and the Test B harness. The cost cap rises from about €5 to US$60.
+  repeat runs, and the Test B harness. The cost cap rises from about €5 to US$70.
 - The metric stays strict on meaning and lenient only on encodings whose effect is provably equal
   (D10). Other equal-effect encodings are reported (D11). A plan-level check, solving each candidate
   and scoring the plan under the truth, is left to Phase 1.
