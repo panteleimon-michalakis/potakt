@@ -114,6 +114,8 @@ Every task; the evidence goes in the report.
 - Evidence that a report cites (probe scripts and their outputs, verifier scripts) is copied at the
   end of the task into `.tasks/evidence/TASK-XXX/` (gitignored, outside `%TEMP%`) with a scratchpad
   helper run by `uv run python -I`; the report gives that path. It is never committed.
+- Evidence files are never overwritten: a rerun writes a new file (`-2`, `-3`, …), so a red result
+  stays next to the green one.
 - A PreToolUse hook on the owner's machine blocks in-place `sed`/`perl`/`awk`, shell redirection into
   repository source files, Python reading a script from stdin and any command that could print a
   secret (environment dumps, secret-like variable names, `.env` files); reading `.env` files is
