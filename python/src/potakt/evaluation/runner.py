@@ -1873,8 +1873,8 @@ def take_lock(runs_dir: Path, model: str, now: datetime) -> RunLock:
 
 # --- before a run: the pins, the order rule and the plan (F5) ---------------------------------
 
-# TASK-005c3g G8: the SHA256 values that ADR-0007 §7 «Prompt» pins (a test compares them with the
-# ADR), checked by every eval run before anything is rendered.
+# TASK-005c3g G8: the SHA256 values that ADR-0008 Appendix A pins (it revises ADR-0007 §7; a test
+# compares them with the ADR), checked by every eval run before anything is rendered.
 INSTRUCTION_SHA256 = "2dcb497384a35ae227ccc8df46349d6179162687093ac16e0cd48be9f406263c"
 SCHEMA_SHA256 = "afd54559d52d492c8ce49914a886be49b2f377187d11098f8fff7395dec9c02c"
 PIN_DIFFERS = (

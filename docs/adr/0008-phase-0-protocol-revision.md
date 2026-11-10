@@ -8,9 +8,9 @@
 TASK-005r1 reviewed the whole project before the first paid run; no model had seen any prompt. It
 found that the experiment of ADR-0007 could still decide Gate 1 for reasons other than the one it
 measures: the schema section did not show many rules that make a Decision Model invalid, Test B's
-baseline was not fixed, one invalid answer can move the gate number by up to 15 points, and two truth
-rules miss encodings with the same effect. ADR-0007 already carries six amendments; this ADR records
-the revision in one place. Where it changes ADR-0007, it says so, and ADR-0007 points here.
+baseline was not fixed, one invalid answer can move the gate number by up to 15 points, and two
+truth rules miss encodings with the same effect. ADR-0007 already carries six amendments; this ADR
+records the revision in one place. Where it changes ADR-0007, it says so, and ADR-0007 points here.
 
 ## Decision
 
@@ -21,13 +21,13 @@ the revision in one place. Where it changes ADR-0007, it says so, and ADR-0007 p
   `docs/validation/runs/dev/`, and the report lists every revision they caused.
 - No corpus scenario is sent to any model before the freeze. "Before the first LLM run" and "before
   any LLM run" in ADR-0007 mean before the first run on a corpus scenario.
-- The freeze is the commit tagged `phase0-freeze`, an annotated tag pushed to GitHub before the first
-  corpus run. It fixes the corpus, the instruction texts, the schema section, the payload pins, the
-  Test B and judge prompts, and every rule of ADR-0007, this ADR and ADR-0009. After it no request
-  byte changes; between the `claude-haiku-5-5` and the `claude-opus-5-5` corpus runs only changes that
-  leave every request byte unchanged are allowed (a fix found by `eval rescore`, a runbook fix). Any
-  other later change needs a new ADR, and the results are reported under both the old and the new
-  rule (ADR-0007 §1).
+- The freeze is the commit tagged `phase0-freeze`, an annotated tag pushed to GitHub before the
+  first corpus run. It fixes the corpus, the instruction texts, the schema section, the payload
+  pins, the Test B and judge prompts, and every rule of ADR-0007, this ADR and ADR-0009. After it no
+  request byte changes; between the `claude-haiku-5-5` and the `claude-opus-5-5` corpus runs only
+  changes that leave every request byte unchanged are allowed (a fix found by `eval rescore`, a
+  runbook fix). Any other later change needs a new ADR, and the results are reported under both the
+  old and the new rule (ADR-0007 §1).
 
 ### D2. The schema section shows every validation rule
 - The schema section (ADR-0007 §3 and §7 «Prompt») states every rule that `potakt validate`
@@ -45,9 +45,9 @@ the revision in one place. Where it changes ADR-0007, it says so, and ADR-0007 p
 ### D3. The gate number and its uncertainty (Test A)
 The summary of ADR-0007 §5.4 also shows, without changing the gate:
 - (a) one row per scenario: language, difficulty, truth count, validity, stop reason, output and
-  thinking tokens, estimated cost, matched count, recall and precision and, for an invalid candidate,
-  the class of its first issue (JSON or fence, schema, cross-field rule, data file, data-level id or
-  attribute, stop reason);
+  thinking tokens, estimated cost, matched count, recall and precision and, for an invalid
+  candidate, the class of its first issue (JSON or fence, schema, cross-field rule, data file,
+  data-level id or attribute, stop reason);
 - (b) the micro recall over the valid candidates only, labelled "not the gate";
 - (c) a 95 % percentile bootstrap interval of the micro recall: the scenarios are resampled with
   replacement 10 000 times with the seed 20261109, and Σ matched / Σ truth is computed in each
@@ -102,9 +102,9 @@ truth and the candidate:
 - an `apart` rule's in-scope tasks lose the tasks that F forbids to at least one of its resources.
 
 On every plan that keeps the truth's hard pair rules, these differences change no `together` penalty
-and no `apart` violation. They shift every plan's `stability` penalty by the same amount, so they rank
-those plans identically. The rule applies to the primary and to the merged recall (ADR-0007 §5.3 and
-§5.7).
+and no `apart` violation. They shift every plan's `stability` penalty by the same amount, so they
+rank those plans identically. The rule applies to the primary and to the merged recall (ADR-0007
+§5.3 and §5.7).
 
 ### D11. Diagnostics (ADR-0007 §5.5)
 A new informational category, `other_template_same_effect`, covers an unmatched truth constraint
@@ -121,10 +121,11 @@ checks, and the count is reported per model.
 ### D13. Budget
 The Phase 0 API budget is a hard cap of US$70, enforced by the Anthropic workspace spend limit and
 raised in stages so that each stage covers the worst case of every run before it: $15 for the
-development runs, $50 before the corpus Test A runs and $70 before Test B. The upper bounds are about
-$15 for the development runs, about $31 for Test A (first attempt $7.63, two repeats $15.26, plus repairs
-and Haiku) and about $13 for Test B with its judge. This replaces DESIGN §16.1's "≈ €5", and the actual
-costs are reported. DESIGN's development budget target for later phases (≤ €20/month) is unchanged.
+development runs, $50 before the corpus Test A runs and $70 before Test B. The upper bounds are
+about $15 for the development runs, about $31 for Test A (first attempt $7.63, two repeats $15.26,
+plus repairs and Haiku) and about $13 for Test B with its judge. This replaces DESIGN §16.1's
+"≈ €5", and the actual costs are reported. DESIGN's development budget target for later phases
+(≤ €20/month) is unchanged.
 
 ### D14. Test B
 ADR-0009 fixes the full protocol before the freeze. This ADR fixes:
@@ -142,8 +143,8 @@ ADR-0009 fixes the full protocol before the freeze. This ADR fixes:
   scenario; a value not proven optimal is flagged.
 
 ### D15. Schedule
-Gate 1 is decided after the frozen runs, not at the "end of week 2" of DESIGN §16.2. The report gives
-the dates.
+Gate 1 is decided after the frozen runs, not at the "end of week 2" of DESIGN §16.2. The report
+gives the dates.
 
 ## Consequences
 - Every analysis rule exists before any corpus result. The development runs absorb harness and
