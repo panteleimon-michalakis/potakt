@@ -107,6 +107,8 @@ Every task; the evidence goes in the report.
    shows no `i/crlf` except `*.ps1`, `*.cmd`, `*.bat`; `git log --format=%(trailers) <base>..HEAD |
    grep -c .` prints 0 (the git command alone prints one empty line per commit; grep exits 1 when
    nothing matches, which is the expected result).
+   `bash .github/scripts/hygiene.sh <base>` (Git Bash, repository root) runs the tracked-file, CRLF
+   and attribution checks exactly as the CI security job does; paste its last line.
 9. **Postflight:** `git status` clean and "ahead of 'origin/main' by N commits", N = the commits in the
    report; nothing pushed.
 
