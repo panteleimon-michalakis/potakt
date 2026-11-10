@@ -48,11 +48,12 @@ truth; if a task seems to contradict it, **stop and ask** instead of improvising
    quotes Greek text verbatim, because ruff confuses some Greek letters with Latin ones; a comment
    on the same line or directly above the quoted block says so.
    When a task changes `.github/` or `uv.lock`, also run the CI security checks: from the
-   repository root `uvx zizmor@1.32.0 --offline --min-severity medium .github` ("No findings to
-   report"), and from `python/` `uv export --locked --format requirements-txt --no-hashes
-   --no-emit-project -o <scratchpad>/requirements-audit.txt` followed by `uvx pip-audit@2.10.1 -r
-   <scratchpad>/requirements-audit.txt --no-deps --disable-pip --strict` ("No known vulnerabilities
-   found").
+   repository root `uvx --exclude-newer 2026-11-10T00:00:00Z zizmor@1.32.0 --offline .github`
+   ("No findings to report"), and from `python/` `uv export --quiet --locked --format
+   requirements-txt --no-emit-project -o <scratchpad>/requirements-audit.txt` followed by `uvx
+   --exclude-newer 2026-11-10T00:00:00Z pip-audit@2.10.1 -r <scratchpad>/requirements-audit.txt
+   --require-hashes --disable-pip --strict` ("No known vulnerabilities found"). The date fixes what
+   the tools resolve to; move it when their versions change.
 4. Commit in logical steps (see rule 4).
 5. **Stop and report** using this template:
    ```
