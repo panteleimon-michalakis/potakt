@@ -3,18 +3,21 @@
 Two constraints match iff their denotations are equal: the same template, hardness, scope
 extension on the scenario data and normalized parameters (the table in ADR-0007 §5.2); for the
 templates in ``FOLDED_SCOPE_TEMPLATES`` the scope is folded into the parameters, which describe the
-rule's effect. Matching is one-to-one; recall and precision leave ``coverage`` out; the
-informational recall with absences merged (§5.7) is reported next to them. This module is the
-reference implementation of the metric; it needs no LLM, no network and no solver.
+rule's effect. Before matching, ``stability``, ``together`` and ``apart`` denotations of both models
+are normalized modulo the pairs the truth's hard pair rules forbid (ADR-0008 D10), so encodings
+whose effect is provably equal match. Matching is one-to-one; recall and precision leave
+``coverage`` out; the informational recall with absences merged (§5.7) is reported next to them.
+This module is the reference implementation of the metric; it needs no LLM, no network and no
+solver.
 """
 
 import json
 from collections import Counter, defaultdict, deque
 from collections.abc import Hashable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from potakt.checker import evaluators
 from potakt.checker.context import Facts, period_spans, to_minutes
@@ -208,6 +211,48 @@ def forbidden_pairs(
     )
 
 
+def hard_forbidden_pairs(truth: LoadedModel) -> frozenset[tuple[str, str]]:
+    """F of ADR-0008 D10: the ``(resource, task)`` pairs that the truth's hard
+    ``requires_attribute`` and ``unavailable`` rules forbid on the truth's data."""
+    forbidden: set[tuple[str, str]] = set()
+    for rule in truth.dm.constraints:
+        if isinstance(rule, RequiresAttribute | Unavailable) and rule.hardness == "hard":
+            pairs = forbidden_pairs(rule, truth.dm, truth.instance)
+            forbidden.update((resource, task) for resource, task in pairs if resource is not None)
+    return frozenset(forbidden)
+
+
+def normalize(denotation: Denotation, forbidden: frozenset[tuple[str, str]]) -> Denotation:
+    """The denotation modulo the ``(resource, task)`` pairs ``forbidden`` (ADR-0008 D10).
+
+    A ``stability`` baseline loses its pairs in ``forbidden``; an active ``together`` loses the
+    tasks forbidden to both of its resources, an active ``apart`` those forbidden to at least one.
+    On every plan that keeps the forbidding rules this changes no ``together`` penalty and no
+    ``apart`` violation, and shifts every ``stability`` penalty by the same amount. Every other
+    denotation, an inert pair rule included, is returned unchanged.
+    """
+    params = dict(denotation.params)
+    match denotation.template:
+        case "stability":
+            baseline = cast("frozenset[tuple[str, str]]", params["baseline"])
+            kept = frozenset(
+                (task, resource) for task, resource in baseline if (resource, task) not in forbidden
+            )
+            return replace(denotation, params=(("baseline", kept),))
+        case "together" | "apart" if params["tasks"] is not None:
+            pair = cast("frozenset[str]", params["resource_ids"])
+            tasks = cast("frozenset[str]", params["tasks"])
+            irrelevant = all if denotation.template == "together" else any
+            kept_tasks = frozenset(
+                task
+                for task in tasks
+                if not irrelevant((resource, task) in forbidden for resource in pair)
+            )
+            return replace(denotation, params=(("resource_ids", pair), ("tasks", kept_tasks)))
+        case _:
+            return denotation
+
+
 def effective_limit(
     rule: MaxPerPeriod | MinPerPeriod, attributes: dict[str, AttributeValue]
 ) -> int:
@@ -366,17 +411,23 @@ class _Scored:
     denotation: Denotation
 
 
-def _scored(model: LoadedModel) -> list[_Scored]:
+def _scored(model: LoadedModel, forbidden: frozenset[tuple[str, str]]) -> list[_Scored]:
     return [
-        _Scored(rule, denote(rule, model.dm, model.instance))
+        _Scored(rule, normalize(denote(rule, model.dm, model.instance), forbidden))
         for rule in model.dm.constraints
         if rule.template not in UNSCORED_TEMPLATES
     ]
 
 
 def compare_models(truth: LoadedModel, candidate: LoadedModel | InvalidModel) -> Comparison:
-    """Compare a candidate with the truth of the same scenario (ADR-0007 §5)."""
-    expected = _scored(truth)
+    """Compare a candidate with the truth of the same scenario (ADR-0007 §5).
+
+    The denotations of both the truth and a valid candidate are normalized modulo the truth's
+    hard pair rules (``hard_forbidden_pairs``, ADR-0008 D10) before matching, diagnosing and
+    merging absences, so the primary and the merged recall both use them.
+    """
+    forbidden = hard_forbidden_pairs(truth)
+    expected = _scored(truth, forbidden)
     merged_truth = _absences_merged(expected)
     if isinstance(candidate, InvalidModel):
         missed = [_unmatched(item, "missing", None) for item in expected]
@@ -391,7 +442,7 @@ def compare_models(truth: LoadedModel, candidate: LoadedModel | InvalidModel) ->
             merged_truth_count=merged_truth.total(),
             merged_matched_count=0,
         )
-    found = _scored(candidate)
+    found = _scored(candidate, forbidden)
     pairs = _match(expected, found)
     used_truth = {i for i, _ in pairs}
     used_candidate = {j for _, j in pairs}

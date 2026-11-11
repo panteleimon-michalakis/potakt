@@ -1,0 +1,61 @@
+{
+  "schema_version": "0.2",
+  "id": "pair-rules",
+  "version": 1,
+  "status": "draft",
+  "title": "Pair rules under a hard skills rule (ADR-0008 D10)",
+  "language": "en",
+  "archetype": "assignment",
+  "timezone": "Europe/London",
+  "horizon": {"start": "2026-11-02", "end": "2026-11-08"},
+  "data": {
+    "resources": {
+      "source": "staff.csv",
+      "id": "id",
+      "attributes": {"skills": {"column": "skills", "type": "list", "separator": ";"}}
+    },
+    "tasks": {
+      "source": "shifts.csv",
+      "id": "id",
+      "start": "start",
+      "end": "end",
+      "demand": "demand",
+      "attributes": {"needs": {"column": "needs", "type": "str"}}
+    }
+  },
+  "constraints": [
+    {
+      "id": "coverage",
+      "template": "coverage",
+      "hardness": "hard",
+      "rationale": "Every shift is staffed.",
+      "provenance": {"kind": "default"}
+    },
+    {
+      "id": "skills",
+      "template": "requires_attribute",
+      "hardness": "hard",
+      "rationale": "t1 is forbidden to c, t2 to a, t3 to everyone; t4 to no one.",
+      "provenance": {"kind": "default"},
+      "params": {"task_attribute": "needs", "resource_attribute": "skills", "match": "contains"}
+    },
+    {
+      "id": "a-apart-from-b",
+      "template": "apart",
+      "hardness": "soft",
+      "weight": 1,
+      "rationale": "Normalized tasks: t1 and t4 (t2 is forbidden to a, t3 to both).",
+      "provenance": {"kind": "default"},
+      "params": {"resource_ids": ["a", "b"]}
+    },
+    {
+      "id": "a-with-c",
+      "template": "together",
+      "hardness": "soft",
+      "weight": 1,
+      "rationale": "Normalized tasks: t1, t2 and t4 (only t3 is forbidden to both).",
+      "provenance": {"kind": "default"},
+      "params": {"resource_ids": ["a", "c"]}
+    }
+  ]
+}
