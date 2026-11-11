@@ -143,7 +143,7 @@ their `period` becomes the periods they check on the DM's horizon; the assignmen
 `requires_attribute` and `unavailable` become the set of `(resource id, task id)` pairs they forbid on
 the scenario data, with the checker's semantics; `together`/`apart` become their unordered pair and
 the tasks they apply to; preference kind is part of the parameters; a `stability` baseline is a set;
-weights are ignored.
+weights are ignored. Revised by ADR-0008 D10.
 
 | Template | Normalized parameters | So these match |
 |---|---|---|
@@ -194,7 +194,8 @@ significant difference: `wrong_scope` if the scopes differ, else `wrong_paramete
 differ, else `wrong_hardness`. A truth constraint without such a candidate is `missing`. (A changed
 scope also changes the scope-restricted parameters of limits and baselines; ranking scope first keeps
 it `wrong_scope`. For `requires_attribute`, `unavailable`, `together` and `apart` the scope is part of
-the parameters, so a different set is `wrong_parameters`, never `wrong_scope`.)
+the parameters, so a different set is `wrong_parameters`, never `wrong_scope`.) ADR-0008 D11 adds
+`other_template_same_effect`.
 
 #### 5.6 Unsupported requests
 They are not part of recall. A candidate constraint that encodes one is a false positive by
