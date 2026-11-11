@@ -19,15 +19,16 @@ def check(dm: DecisionModel, instance: ProblemInstance, solution: Solution) -> C
     return CheckResult(Score(hard=hard, soft=soft), results)
 
 
+def rewards(rule: Constraint) -> bool:
+    """Whether scoring turns the rule's amount into a reward: a ``prefer`` preference."""
+    return isinstance(rule, Preference) and rule.params.kind == "prefer"
+
+
 def _score_rule(rule: Constraint, context: RuleContext) -> RuleResult:
     violations = sorted(EVALUATORS[rule.template](rule, context), key=Violation.sort_key)
     amount = sum(violation.amount for violation in violations)
     weight = None if isinstance(rule, Coverage) else rule.weight
-    if weight is None:
-        contribution = amount
-    else:
-        reward = isinstance(rule, Preference) and rule.params.kind == "prefer"
-        contribution = (-1 if reward else 1) * weight * amount
+    contribution = amount if weight is None else (-1 if rewards(rule) else 1) * weight * amount
     return RuleResult(
         rule_id=rule.id,
         template=rule.template,

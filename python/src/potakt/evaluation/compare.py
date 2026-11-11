@@ -21,6 +21,7 @@ from typing import Any, Literal, cast
 
 from potakt.checker import evaluators
 from potakt.checker.context import Facts, period_spans, to_minutes
+from potakt.checker.scoring import rewards
 from potakt.model import (
     Apart,
     Assignment,
@@ -251,8 +252,11 @@ def effect_pairs(
     or forbids on the plan "every resource works every task", computed with the checker.
 
     Violations without a resource (``apart``, ``balance``, ``coverage``) add nothing, and rules
-    the plan cannot violate (``together``, ``stability``) have an empty effect.
+    the plan cannot violate (``together``, ``stability``) have an empty effect. A rule that
+    rewards its pairs (``scoring.rewards``) penalizes none, so its effect is empty too.
     """
+    if rewards(rule):
+        return frozenset()
     return _pairs_violated_by_everything(rule, dm, instance)
 
 

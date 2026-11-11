@@ -21,6 +21,7 @@ from hypothesis import strategies as st
 
 from potakt.checker import EVALUATORS
 from potakt.checker.context import Facts
+from potakt.checker.scoring import rewards
 from potakt.evaluation import (
     CORPUS_PATH,
     Comparison,
@@ -44,6 +45,7 @@ from potakt.model import (
     Assignment,
     Constraint,
     DecisionModel,
+    Preference,
     ProblemInstance,
     Solution,
     Stability,
@@ -580,6 +582,88 @@ def test_the_pairing_never_takes_a_candidate_of_the_same_template() -> None:
     )
 
     assert paired == {}
+
+
+# --- D11: a reward is not a penalty --------------------------------------------------------------
+
+
+def stelios_rewarding(document: dict[str, Any]) -> dict[str, Any]:
+    """``document`` with Stelios's preference turned from ``avoid`` into ``prefer``."""
+    changed = copy.deepcopy(document)
+    constraint_of(changed, STELIOS)["params"]["kind"] = "prefer"
+    return changed
+
+
+@pytest.mark.parametrize(
+    ("truth_doc", "candidate_doc", "unmatched_id"),
+    [
+        pytest.param(
+            stelios_rewarding(truth_document(S01)),
+            replacing_stelios(soft_off()),
+            STELIOS,
+            id="truth prefers",
+        ),
+        pytest.param(
+            replacing_stelios(soft_off()),
+            stelios_rewarding(truth_document(S01)),
+            SOFT_OFF,
+            id="candidate prefers",
+        ),
+    ],
+)
+def test_a_rewarded_pair_set_is_not_the_effect_of_a_soft_unavailable_either_way(
+    truth_doc: dict[str, Any], candidate_doc: dict[str, Any], unmatched_id: str
+) -> None:
+    # Same pairs, opposite direction: scoring turns the `prefer` amount into a reward, so the two
+    # rules do not even agree on the sign of their effect (ADR-0008 D11: "penalized or forbidden").
+    truth = load_model(json.dumps(truth_doc, ensure_ascii=False), CORPUS_PATH / S01)
+    candidate = load_model(json.dumps(candidate_doc, ensure_ascii=False), CORPUS_PATH / S01)
+    assert isinstance(truth, LoadedModel) and isinstance(candidate, LoadedModel)
+
+    result = compare_models(truth, candidate)
+
+    assert result.valid
+    assert (result.matched_count, result.truth_count, result.recall) == (4, 5, 0.8)
+    assert [(m.truth_id, m.category, m.closest_candidate_id) for m in result.unmatched_truth] == [
+        (unmatched_id, "missing", None)
+    ]
+    assert result.categories()["other_template_same_effect"] == 0
+
+
+def corpus_preferences() -> list[tuple[str, Preference, LoadedModel]]:
+    truths = [(name, truth_of(name)) for name in SCENARIOS]
+    return [
+        (name, rule, truth)
+        for name, truth in truths
+        for rule in truth.dm.constraints
+        if isinstance(rule, Preference)
+    ]
+
+
+def test_in_the_corpus_a_prefer_preference_has_an_empty_effect_and_an_avoid_one_does_not() -> None:
+    found = {"prefer": 0, "avoid": 0}
+    for name, rule, truth in corpus_preferences():
+        effect = effect_pairs(rule, truth.dm, truth.instance)
+        found[rule.params.kind] += 1
+        assert (effect != frozenset()) is (rule.params.kind == "avoid"), f"{name} {rule.id}"
+
+    assert found == {"prefer": 4, "avoid": 6}
+
+
+def test_rewards_is_true_only_for_a_prefer_preference() -> None:
+    other_templates: dict[str, Constraint] = {}
+    for name in SCENARIOS:
+        for rule in truth_of(name).dm.constraints:
+            if not isinstance(rule, Preference):
+                other_templates.setdefault(rule.template, rule)
+    avoids = [rule for _, rule, _ in corpus_preferences() if rule.params.kind == "avoid"]
+    prefers = [rule for _, rule, _ in corpus_preferences() if rule.params.kind == "prefer"]
+
+    assert prefers and avoids
+    assert all(rewards(rule) for rule in prefers)
+    assert not any(rewards(rule) for rule in avoids)
+    assert len(other_templates) >= 5  # coverage, unavailable, requires_attribute, ... all present
+    assert not any(rewards(rule) for rule in other_templates.values())
 
 
 def test_the_effect_of_a_rule_is_its_violated_pairs_on_the_everything_plan() -> None:
