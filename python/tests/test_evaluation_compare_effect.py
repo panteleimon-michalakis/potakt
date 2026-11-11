@@ -666,6 +666,92 @@ def test_rewards_is_true_only_for_a_prefer_preference() -> None:
     assert not any(rewards(rule) for rule in other_templates.values())
 
 
+# --- conditions of D10 and D11 that a reviewer's mutants found unpinned -------------------------
+
+
+def compare_documents(
+    name: str, truth_doc: dict[str, Any], candidate_doc: dict[str, Any]
+) -> Comparison:
+    directory = CORPUS_PATH / name
+    truth = load_model(json.dumps(truth_doc, ensure_ascii=False), directory)
+    candidate = load_model(json.dumps(candidate_doc, ensure_ascii=False), directory)
+    assert isinstance(truth, LoadedModel) and isinstance(candidate, LoadedModel)
+    return compare_models(truth, candidate)
+
+
+def diagnosed(result: Comparison) -> list[tuple[str, str, str | None]]:
+    return [(m.truth_id, m.category, m.closest_candidate_id) for m in result.unmatched_truth]
+
+
+SICK_LEAVE = "karampetsos-sick-leave"
+# The two draft pairs only the sick leave forbids (the other absences forbid the third, see above).
+SICK_PAIRS = {("Ε04", "13-Α-Δ"), ("Ε04", "14-Α-Ο")}  # noqa: RUF001
+
+
+def test_only_the_hard_absences_make_a_draft_pair_irrelevant() -> None:
+    # The truth's sick leave is soft here, so F (ADR-0008 D10) loses the 20 pairs it forbade, among
+    # them the two draft pairs the candidate omits; no hard rule forbids them any more.
+    truth_doc = truth_document(S06)
+    constraint_of(truth_doc, SICK_LEAVE).update(hardness="soft", weight=5)
+    candidate_doc = without_pairs(truth_doc, DRAFT, lambda r, t: (r, t) not in SICK_PAIRS)
+    softened = load_model(json.dumps(truth_doc, ensure_ascii=False), CORPUS_PATH / S06)
+    assert isinstance(softened, LoadedModel)
+    assert len(forbidden_of(S06)) == 127
+    assert len(hard_forbidden_pairs(softened)) == 107
+    assert draft_pairs(truth_doc) & (forbidden_of(S06) - hard_forbidden_pairs(softened)) == (
+        SICK_PAIRS
+    )
+
+    result = compare_documents(S06, truth_doc, candidate_doc)
+
+    assert result.valid
+    assert diagnosed(result) == [(DRAFT, "wrong_parameters", DRAFT)]
+
+
+def test_a_candidate_diagnosed_for_one_truth_rule_is_not_free_for_another() -> None:
+    # Both soft absences are `unavailable`: the three-window candidate is the closest of the
+    # two-window truth rule, so it cannot also be Stelios's same-effect encoding.
+    truth_doc = truth_document(S01)
+    truth_doc["constraints"].append(
+        soft_off(id="t1-two-windows", params={"windows": afternoon_windows()[:2]})
+    )
+    candidate_doc = replacing_stelios(soft_off(id="c-three-windows"))
+
+    result = compare_documents(S01, truth_doc, candidate_doc)
+
+    assert diagnosed(result) == [
+        (STELIOS, "missing", None),
+        ("t1-two-windows", "wrong_parameters", "c-three-windows"),
+    ]
+
+
+MORNING = "πρωί"  # the `shift` value of the morning tasks, quoted verbatim
+
+
+def test_a_truth_rule_diagnosed_by_template_is_not_reconsidered_for_d11() -> None:
+    # Stelios's rule is matched with a preference for the wrong shift (wrong_scope); the soft
+    # absence with exactly his effect must not take it over.
+    candidate_doc = truth_document(S01)
+    stelios = constraint_of(candidate_doc, STELIOS)
+    stelios["id"] = "stelios-avoids-mornings"
+    stelios["scope"]["tasks"][0]["value"] = MORNING
+    candidate_doc["constraints"].append(soft_off(id="c-three-windows"))
+
+    result = compare_documents(S01, truth_document(S01), candidate_doc)
+
+    assert diagnosed(result) == [(STELIOS, "wrong_scope", "stelios-avoids-mornings")]
+
+
+def test_d11_takes_the_first_equal_effect_candidate_in_candidate_order() -> None:
+    candidate_doc = replacing_stelios(soft_off(id="c-first"))
+    candidate_doc["constraints"].append(soft_off(id="c-second"))
+
+    result = compare_documents(S01, truth_document(S01), candidate_doc)
+
+    assert diagnosed(result) == [(STELIOS, "other_template_same_effect", "c-first")]
+    assert [extra.candidate_id for extra in result.unmatched_candidate] == ["c-first", "c-second"]
+
+
 def test_the_effect_of_a_rule_is_its_violated_pairs_on_the_everything_plan() -> None:
     truth = load_model((PAIR_RULES / "truth.json").read_text(encoding="utf-8"), PAIR_RULES)
     assert isinstance(truth, LoadedModel)

@@ -200,6 +200,32 @@ def test_a_soft_only_rule_without_a_weight_is_a_rule() -> None:
     assert [issue.message for issue in result.issues] == [SOFT_RULE_NEEDS_WEIGHT]
 
 
+@pytest.mark.parametrize(
+    ("weight_at", "extra_key_at", "stage"),
+    [(1, 5, "rule"), (4, 0, "schema")],
+    ids=["the rule slip comes first", "the schema slip comes first"],
+)
+def test_the_stage_follows_the_first_error_not_the_last(
+    weight_at: int, extra_key_at: int, stage: str
+) -> None:
+    # 01's constraints: 0 coverage, 1 pharmacist-slot ... 4 ioanna-leave (the last hard rule),
+    # 5 the soft preference. A weight on a hard rule is our validator's error (`rule`), an
+    # unknown key is Pydantic's `extra_forbidden` (`schema`); Pydantic lists them in document order.
+    document = json.loads((CORPUS_PATH / "01-pharmacy" / "truth.json").read_text(encoding="utf-8"))
+    rules = document["constraints"]
+    assert rules[weight_at]["hardness"] == "hard" and rules[weight_at]["template"] != "coverage"
+    rules[weight_at]["weight"] = 2
+    rules[extra_key_at]["surprise"] = 1
+
+    result = evaluate_candidate(
+        corpus_scenario("01-pharmacy"), json.dumps(document, ensure_ascii=False)
+    )
+
+    assert not result.valid
+    assert result.invalid_stage == stage
+    assert len(result.issues) == 2
+
+
 def test_a_data_file_the_loader_cannot_read_is_a_data_file_stage() -> None:
     document = truth_document()
     document["data"]["tasks"]["source"] = "missing.csv"
