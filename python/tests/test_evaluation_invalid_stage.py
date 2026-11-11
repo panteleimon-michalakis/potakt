@@ -23,7 +23,7 @@ from potakt.evaluation import (
 from potakt.evaluation.compare import InvalidModel
 from potakt.evaluation.records import Answer, score_answer
 from potakt.model import DecisionModelError
-from potakt.model.common import StrictModel
+from potakt.model.common import SOFT_RULE_NEEDS_WEIGHT, StrictModel
 from potakt.model.loader import _parse_json  # pyright: ignore[reportPrivateUsage]
 
 S06 = "06-ambulance-crews"
@@ -125,6 +125,12 @@ def with_constraint_change(change: Any) -> dict[str, Any]:
     return document
 
 
+def with_data_resources_weight() -> dict[str, Any]:
+    document = truth_document()
+    document["data"]["resources"]["weight"] = 1
+    return document
+
+
 MORE = {
     "not JSON": ("{", "json"),
     "a JSON array": ("[]", "json"),
@@ -136,8 +142,11 @@ MORE = {
         with_constraint_change(lambda c: c[1].update(template="requires_skill")),
         "schema",
     ),
-    # Its message is our own wording, yet the error is Pydantic's `extra_forbidden`: by type.
-    "weight on coverage": (with_constraint_change(lambda c: c[0].update(weight=1)), "schema"),
+    # The error is Pydantic's `extra_forbidden`, but the message is our rule's wording for a
+    # constraint's own `weight`, so it is a `rule` like the same slip on a template with both
+    # hardnesses; a `weight` that is not a constraint's own keeps Pydantic's message: `schema`.
+    "weight on coverage": (with_constraint_change(lambda c: c[0].update(weight=1)), "rule"),
+    "a weight outside the constraints": (with_data_resources_weight(), "schema"),
     "a duplicate constraint id": (
         with_constraint_change(lambda c: c[1].update(id=c[2]["id"])),
         "rule",
@@ -147,12 +156,12 @@ MORE = {
 
 TITLE = '"title": "'
 # Texts that `json.loads` accepts but Pydantic's own JSON parser does not, or parses differently.
-# By the task's definitions `json` covers the raw checks, `json.loads` and a top level that is
-# not an object; any other Pydantic error type is `schema`, so these are `schema` (pinned here).
+# `json` covers the raw checks, `json.loads`, a top level that is not an object and Pydantic's own
+# `json_invalid`; Pydantic parses `NaN`, whose error is `int_type`, so that one stays `schema`.
 MORE |= {
     "a lone surrogate (Pydantic: json_invalid)": (
         truth_text().replace(TITLE, TITLE + "\\ud800", 1),
-        "schema",
+        "json",
     ),
     "NaN as the version (Pydantic: int_type)": (
         truth_text().replace('"version": 1,', '"version": NaN,', 1),
@@ -169,6 +178,22 @@ def test_more_slips_land_in_their_stage(candidate: object, stage: str) -> None:
 
     assert not result.valid
     assert result.invalid_stage == stage
+
+
+def test_a_soft_only_rule_without_a_weight_is_a_rule() -> None:
+    # `preference` is soft-only, so Pydantic reports `missing` for the absent weight before any
+    # validator runs; the message is our rule's wording (as on a template with both hardnesses).
+    s01 = load_scenario(CORPUS_PATH / "01-pharmacy")
+    document = json.loads((CORPUS_PATH / "01-pharmacy" / "truth.json").read_text(encoding="utf-8"))
+    rule = next(c for c in document["constraints"] if c["id"] == "stelios-avoids-afternoons")
+    assert rule["template"] == "preference"
+    del rule["weight"]
+
+    result = evaluate_candidate(s01, json.dumps(document, ensure_ascii=False))
+
+    assert not result.valid
+    assert result.invalid_stage == "rule"
+    assert [issue.message for issue in result.issues] == [SOFT_RULE_NEEDS_WEIGHT]
 
 
 def test_a_data_file_the_loader_cannot_read_is_a_data_file_stage() -> None:

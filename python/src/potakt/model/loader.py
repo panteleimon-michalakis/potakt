@@ -36,6 +36,7 @@ from potakt.model.validation import (
     ValidationIssue,
     issue_at,
     issues_from_pydantic,
+    rule_weight_message,
 )
 
 ROOT = "/"
@@ -137,13 +138,16 @@ _RULE_ERROR_TYPES = frozenset({CUSTOM_ERROR_TYPE, "value_error"})
 
 
 def _structural_stage(error: ValidationError, document: object) -> str:
-    """The stage of a structural failure (``DecisionModelError.stage``), by error type only:
-    ``json`` if the document is not an object, ``rule`` if the first error comes from one of our
-    validators, else ``schema``."""
-    if not isinstance(document, dict):
+    """The stage of a structural failure (``DecisionModelError.stage``), by the first error only
+    and never by message text: ``json`` if the document is not an object or Pydantic's own JSON
+    parser rejects the text (``json_invalid``); ``rule`` if the error comes from one of our
+    validators or carries our rule's wording for a constraint's own ``weight``; else ``schema``."""
+    first = error.errors(include_url=False)[0]
+    if not isinstance(document, dict) or first["type"] == "json_invalid":
         return "json"
-    first = error.errors(include_url=False)[0]["type"]
-    return "rule" if first in _RULE_ERROR_TYPES else "schema"
+    if first["type"] in _RULE_ERROR_TYPES or rule_weight_message(first) is not None:
+        return "rule"
+    return "schema"
 
 
 def _parse_json[M: StrictModel](text: str, model: type[M]) -> M:

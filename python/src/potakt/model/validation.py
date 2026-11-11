@@ -65,8 +65,9 @@ class DecisionModelError(Exception):
     """Raised when a DM, its data or a solution cannot be loaded; carries every issue found.
 
     ``stage`` names the parsing step that failed when the JSON parser raised it: ``"json"`` (not
-    a JSON object), ``"schema"`` (a Pydantic error type) or ``"rule"`` (one of our validators);
-    ``None`` otherwise.
+    a JSON object, including Pydantic's own ``json_invalid``), ``"schema"`` (any other Pydantic
+    error type) or ``"rule"`` (one of our validators, or our rule's wording for a constraint's own
+    ``weight``, ``rule_weight_message``); ``None`` otherwise.
     """
 
     def __init__(self, issues: Iterable[ValidationIssue], *, stage: str | None = None) -> None:
@@ -134,13 +135,21 @@ _BOUND_WORDS = {
 }
 
 
+def rule_weight_message(detail: ErrorDetails) -> str | None:
+    """Our rule's wording for a Pydantic error on a constraint's own ``weight`` (a soft-only
+    template without it, a hard-only template with it); ``None`` for any other error."""
+    loc = detail["loc"]
+    own_weight = len(loc) == 4 and loc[0] == "constraints" and loc[3] == "weight"
+    return _WEIGHT_MESSAGES.get(detail["type"]) if own_weight else None
+
+
 def _message(detail: ErrorDetails, path: str) -> str:
     """The issue message: Pydantic's, except the domain wording for a rule's ``weight`` and for
     broken bounds."""
-    loc, error_type = detail["loc"], detail["type"]
-    own_weight = len(loc) == 4 and loc[0] == "constraints" and loc[3] == "weight"
-    if own_weight and error_type in _WEIGHT_MESSAGES:
-        return _WEIGHT_MESSAGES[error_type]
+    weight_message = rule_weight_message(detail)
+    if weight_message is not None:
+        return weight_message
+    error_type = detail["type"]
     words = _BOUND_WORDS.get(error_type)
     field = path.rsplit("/", 1)[-1]
     if words is not None and field and not field.isdigit():
