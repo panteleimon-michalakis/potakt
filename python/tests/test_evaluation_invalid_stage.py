@@ -4,11 +4,15 @@ One corpus slip per stage, decided by the step that failed and, for a structural
 type of the Pydantic error behind the first issue; never by message text.
 """
 
+import copy
 import json
 from functools import cache
-from typing import Any, get_args
+from random import Random
+from typing import Any, cast, get_args
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 from pydantic import field_validator
 
 from potakt.evaluation import (
@@ -232,3 +236,134 @@ def test_a_validator_s_value_error_is_a_rule_and_a_type_error_is_schema(
 
 def test_an_error_raised_outside_the_json_parser_has_no_stage() -> None:
     assert DecisionModelError([]).stage is None
+
+
+# --- the invariant, over random slips ---------------------------------------------------------
+
+CORPUS_NAMES = sorted(
+    path.name for path in CORPUS_PATH.iterdir() if (path / "truth.json").is_file()
+)
+# Values a careless model could put where a number, a string or an object belongs. The surrogate
+# is a lone one: `json.dumps` writes it as `\ud800`, which `json.loads` accepts and Pydantic's own
+# JSON parser rejects (`json_invalid`).
+ODD_VALUES: list[Any] = [None, True, False, -1, 0, 10**12, 1.5, "", " ", "x", [], {}, "\ud800"]
+BAD_SOURCES = ["", "missing.csv", "../escape.csv", "data/nul.csv", "NUL", "a/b/c.csv"]
+SEEDS = st.integers(min_value=0, max_value=2**32 - 1).map(Random)
+
+
+def node_paths(node: Any, prefix: tuple[str | int, ...] = ()) -> list[tuple[str | int, ...]]:
+    """The path of every node of a JSON document, the root (the empty path) first."""
+    found = [prefix]
+    if isinstance(node, dict):
+        for key, value in cast("dict[str, Any]", node).items():
+            found += node_paths(value, (*prefix, key))
+    elif isinstance(node, list):
+        for index, value in enumerate(cast("list[Any]", node)):
+            found += node_paths(value, (*prefix, index))
+    return found
+
+
+def node_at(document: Any, path: tuple[str | int, ...]) -> Any:
+    for step in path:
+        document = document[step]
+    return document
+
+
+def put(document: Any, path: tuple[str | int, ...], value: Any) -> Any:
+    """``document`` with the node at ``path`` replaced (the root: ``value`` itself)."""
+    if not path:
+        return value
+    node_at(document, path[:-1])[path[-1]] = value
+    return document
+
+
+def replace_a_leaf(document: Any, rng: Random) -> str:
+    leaves = [p for p in node_paths(document) if not isinstance(node_at(document, p), dict | list)]
+    return dumps(put(document, rng.choice(leaves), rng.choice(ODD_VALUES)))
+
+
+def delete_a_key(document: Any, rng: Random) -> str:
+    path = rng.choice(node_paths(document)[1:])
+    del node_at(document, path[:-1])[path[-1]]
+    return dumps(document)
+
+
+def add_an_extra_key(document: Any, rng: Random) -> str:
+    objects = [p for p in node_paths(document) if isinstance(node_at(document, p), dict)]
+    node_at(document, rng.choice(objects))["surprise"] = 1
+    return dumps(document)
+
+
+def wrap_in_an_array(document: Any, rng: Random) -> str:
+    path = rng.choice(node_paths(document))
+    return dumps(put(document, path, [node_at(document, path)]))
+
+
+def cut_the_text(document: Any, rng: Random) -> str:
+    text = dumps(document)
+    return text[: rng.randrange(len(text))]
+
+
+def duplicate_a_constraint(document: Any, rng: Random) -> str:
+    document["constraints"].append(copy.deepcopy(rng.choice(document["constraints"])))
+    return dumps(document)
+
+
+def put_an_unknown_resource_id(document: Any, rng: Random) -> str:
+    ids = [
+        p
+        for p in node_paths(document)
+        if p and (p[-1] == "resource_id" or (len(p) > 1 and p[-2] == "resource_ids"))
+    ]
+    if ids:
+        document = put(document, rng.choice(ids), "ZZ99")
+    return dumps(document)
+
+
+def change_a_source(document: Any, rng: Random) -> str:
+    sources = [p for p in node_paths(document) if p and p[-1] == "source"]
+    return dumps(put(document, rng.choice(sources), rng.choice(BAD_SOURCES)))
+
+
+def dumps(document: Any) -> str:
+    return json.dumps(document)  # ASCII only: a lone surrogate is written as an escape
+
+
+SLIPS_AT_RANDOM = {
+    function.__name__: function
+    for function in (
+        replace_a_leaf,
+        delete_a_key,
+        add_an_extra_key,
+        wrap_in_an_array,
+        cut_the_text,
+        duplicate_a_constraint,
+        put_an_unknown_resource_id,
+        change_a_source,
+    )
+}
+
+
+@cache
+def corpus_scenario(name: str) -> LoadedScenario:
+    return load_scenario(CORPUS_PATH / name)
+
+
+@settings(max_examples=300, deadline=None)
+@given(name=st.sampled_from(CORPUS_NAMES), slip=st.sampled_from(sorted(SLIPS_AT_RANDOM)), rng=SEEDS)
+def test_every_invalid_candidate_has_a_stage_and_a_valid_one_has_none(
+    name: str, slip: str, rng: Random
+) -> None:
+    truth = json.loads((CORPUS_PATH / name / "truth.json").read_text(encoding="utf-8"))
+    text = SLIPS_AT_RANDOM[slip](truth, rng)
+
+    result = evaluate_candidate(corpus_scenario(name), text)
+
+    assert result.valid == (result.invalid_stage is None)
+    assert result.invalid_stage is None or result.invalid_stage in get_args(InvalidStage)
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        parsed = None
+    if not isinstance(parsed, dict):
+        assert result.invalid_stage == "json"
