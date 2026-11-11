@@ -48,8 +48,16 @@ from potakt.model import (
 from potakt.model.common import AttributeValue, Hardness
 from potakt.model.scope import in_scope
 
-Category = Literal["missing", "wrong_hardness", "wrong_parameters", "wrong_scope"]
-CATEGORIES: tuple[Category, ...] = ("missing", "wrong_hardness", "wrong_parameters", "wrong_scope")
+Category = Literal[
+    "missing", "wrong_hardness", "wrong_parameters", "wrong_scope", "other_template_same_effect"
+]
+CATEGORIES: tuple[Category, ...] = (
+    "missing",
+    "wrong_hardness",
+    "wrong_parameters",
+    "wrong_scope",
+    "other_template_same_effect",  # ADR-0008 D11, informational
+)
 UNSCORED_TEMPLATES = frozenset({"coverage"})  # mandatory and structural (ADR-0007 §5.1)
 # Templates denoted by their effect, with the scope folded into the parameters (ADR-0007 §5.2):
 # what assignments they forbid, or which pair they bind on which tasks.
@@ -182,13 +190,13 @@ def _params(
             return ()
 
 
-def forbidden_pairs(
-    rule: RequiresAttribute | Unavailable, dm: DecisionModel, instance: ProblemInstance
-) -> frozenset[tuple[str | None, str]]:
-    """The ``(resource, task)`` pairs the rule forbids among its in-scope resources and tasks.
+def _pairs_violated_by_everything(
+    rule: Constraint, dm: DecisionModel, instance: ProblemInstance
+) -> frozenset[tuple[str, str]]:
+    """The ``(resource, task)`` pairs of the violations the checker's evaluator of ``rule``
+    reports on the plan in which every resource works every task.
 
-    The checker itself decides, on a plan in which every resource works every task: each such
-    rule has one violation per forbidden assignment, so the semantics cannot drift.
+    Only violations with a resource count; each is paired with every one of its tasks.
     """
     everything = Solution(
         schema_version="0.1",
@@ -201,25 +209,48 @@ def forbidden_pairs(
         ),
     )
     context = Facts(dm, instance, everything).view(rule.scope)
-    found = (
-        evaluators.requires_attribute(rule, context)
-        if isinstance(rule, RequiresAttribute)
-        else evaluators.unavailable(rule, context)
-    )
     return frozenset(
-        (violation.resource_id, task_id) for violation in found for task_id in violation.task_ids
+        (violation.resource_id, task_id)
+        for violation in evaluators.EVALUATORS[rule.template](rule, context)
+        if violation.resource_id is not None
+        for task_id in violation.task_ids
     )
+
+
+def forbidden_pairs(
+    rule: RequiresAttribute | Unavailable, dm: DecisionModel, instance: ProblemInstance
+) -> frozenset[tuple[str, str]]:
+    """The ``(resource, task)`` pairs the rule forbids among its in-scope resources and tasks.
+
+    The checker itself decides, on a plan in which every resource works every task: each such
+    rule has one violation per forbidden assignment, so the semantics cannot drift.
+    """
+    return _pairs_violated_by_everything(rule, dm, instance)
+
+
+def effect_pairs(
+    rule: Constraint, dm: DecisionModel, instance: ProblemInstance
+) -> frozenset[tuple[str, str]]:
+    """The effect signature of ADR-0008 D11: the ``(resource, task)`` pairs the rule penalizes
+    or forbids on the plan "every resource works every task", computed with the checker.
+
+    Violations without a resource (``apart``, ``balance``, ``coverage``) add nothing, and rules
+    the plan cannot violate (``together``, ``stability``) have an empty effect.
+    """
+    return _pairs_violated_by_everything(rule, dm, instance)
 
 
 def hard_forbidden_pairs(truth: LoadedModel) -> frozenset[tuple[str, str]]:
     """F of ADR-0008 D10: the ``(resource, task)`` pairs that the truth's hard
     ``requires_attribute`` and ``unavailable`` rules forbid on the truth's data."""
-    forbidden: set[tuple[str, str]] = set()
-    for rule in truth.dm.constraints:
-        if isinstance(rule, RequiresAttribute | Unavailable) and rule.hardness == "hard":
-            pairs = forbidden_pairs(rule, truth.dm, truth.instance)
-            forbidden.update((resource, task) for resource, task in pairs if resource is not None)
-    return frozenset(forbidden)
+    none: frozenset[tuple[str, str]] = frozenset()
+    return none.union(
+        *(
+            forbidden_pairs(rule, truth.dm, truth.instance)
+            for rule in truth.dm.constraints
+            if isinstance(rule, RequiresAttribute | Unavailable) and rule.hardness == "hard"
+        )
+    )
 
 
 def normalize(denotation: Denotation, forbidden: frozenset[tuple[str, str]]) -> Denotation:
@@ -449,6 +480,11 @@ def compare_models(truth: LoadedModel, candidate: LoadedModel | InvalidModel) ->
     left_truth = [i for i in range(len(expected)) if i not in used_truth]
     left_candidate = [j for j in range(len(found)) if j not in used_candidate]
     closest = _diagnose(expected, found, left_truth, left_candidate)
+    closest_ids = {candidate_id for _, candidate_id in closest.values()}
+    missing = [i for i in left_truth if i not in closest]
+    free = [j for j in left_candidate if found[j].rule.id not in closest_ids]
+    for i, candidate_id in _same_effect(expected, found, missing, free, truth, candidate).items():
+        closest[i] = ("other_template_same_effect", candidate_id)
     matched = [
         MatchedPair(
             expected[i].rule.id,
@@ -479,6 +515,45 @@ def compare_models(truth: LoadedModel, candidate: LoadedModel | InvalidModel) ->
         merged_truth_count=merged_truth.total(),
         merged_matched_count=(merged_truth & _absences_merged(found)).total(),
     )
+
+
+def _same_effect(
+    expected: list[_Scored],
+    found: list[_Scored],
+    missing: list[int],
+    free: list[int],
+    truth: LoadedModel,
+    candidate: LoadedModel,
+) -> dict[int, str]:
+    """ADR-0008 D11: pair each ``missing`` truth constraint, in truth order, with the first
+    ``free`` candidate, in candidate order, of another template, the same hardness and the same
+    non-empty ``effect_pairs``; one-to-one. Returns truth index → candidate id."""
+    effects: dict[int, frozenset[tuple[str, str]]] = {}
+
+    def effect(j: int) -> frozenset[tuple[str, str]]:
+        if j not in effects:
+            effects[j] = effect_pairs(found[j].rule, candidate.dm, candidate.instance)
+        return effects[j]
+
+    paired: dict[int, str] = {}
+    taken: set[int] = set()
+    for i in missing:
+        rule = expected[i].rule
+        signature = effect_pairs(rule, truth.dm, truth.instance)
+        if not signature:
+            continue
+        for j in free:
+            other = found[j].rule
+            if (
+                j not in taken
+                and other.template != rule.template
+                and other.hardness == rule.hardness
+                and effect(j) == signature
+            ):
+                paired[i] = other.id
+                taken.add(j)
+                break
+    return paired
 
 
 def _absences_merged(items: list[_Scored]) -> Counter[Denotation]:

@@ -2,6 +2,7 @@
   "candidate_count": 0,
   "categories": {
     "missing": 12,
+    "other_template_same_effect": 0,
     "wrong_hardness": 0,
     "wrong_parameters": 0,
     "wrong_scope": 0

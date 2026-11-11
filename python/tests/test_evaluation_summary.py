@@ -114,6 +114,7 @@ def test_summary_numbers_match_the_hand_computation() -> None:
         "wrong_hardness": 1,
         "wrong_parameters": 1,
         "wrong_scope": 0,
+        "other_template_same_effect": 0,
     }
     assert document["usage"] == {"input_tokens": 36000, "output_tokens": 18000}
     assert document["cost_usd"] == 0.252  # (36000 * 2 + 18000 * 10) / 1e6, batch prices

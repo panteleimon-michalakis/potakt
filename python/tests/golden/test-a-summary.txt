@@ -18,7 +18,7 @@ Recall by template:
   requires_attribute 0.667 (2/3)
   together 0.000 (0/2)
   unavailable 0.500 (1/2)
-Diagnostics: missing 13, wrong_hardness 1, wrong_parameters 1, wrong_scope 0
+Diagnostics: missing 13, wrong_hardness 1, wrong_parameters 1, wrong_scope 0, other_template_same_effect 0
 Stops: end_turn 2, refusal 1
 Usage: 36000 input tokens, 18000 output tokens
 Cost: $0.2520 (batch prices pinned on 2026-11-02)

@@ -4,6 +4,7 @@
   "cost_usd": 0.252,
   "diagnostics": {
     "missing": 13,
+    "other_template_same_effect": 0,
     "wrong_hardness": 1,
     "wrong_parameters": 1,
     "wrong_scope": 0

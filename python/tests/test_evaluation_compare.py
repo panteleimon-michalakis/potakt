@@ -1036,6 +1036,7 @@ def test_comparison_json_is_sorted_and_independent_of_constraint_order(data: Pat
         "wrong_hardness": 1,
         "wrong_parameters": 0,
         "wrong_scope": 0,
+        "other_template_same_effect": 0,
     }
     assert (document["recall"], document["precision"]) == (0.5, 0.5)
     assert document["matched_count"] == 2

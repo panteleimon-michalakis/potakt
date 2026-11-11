@@ -1,9 +1,10 @@
-"""Equal effect under the truth's hard pair rules (ADR-0008 D10).
+"""Equal effect under the truth's hard pair rules (ADR-0008 D10) and the other-template
+diagnostic (ADR-0008 D11).
 
 The reviewer's probes B5-1 (06) and B5-2 (04) are permanent tests here, with their reverse cases,
 a small synthetic scenario for ``apart`` and ``together``, and a property that proves, with the
 checker's own evaluators, that normalized-equal rules have equal effect on every plan that keeps
-the truth's hard pair rules.
+the truth's hard pair rules. The probe C2-1 (01) is the D11 case.
 """
 
 import copy
@@ -31,7 +32,13 @@ from potakt.evaluation import (
     load_model,
     load_scenario,
 )
-from potakt.evaluation.compare import hard_forbidden_pairs, normalize
+from potakt.evaluation.compare import (
+    _same_effect,  # pyright: ignore[reportPrivateUsage]
+    _scored,  # pyright: ignore[reportPrivateUsage]
+    effect_pairs,
+    hard_forbidden_pairs,
+    normalize,
+)
 from potakt.model import (
     Apart,
     Assignment,
@@ -421,3 +428,166 @@ def test_normalized_equal_rules_have_equal_effect_on_every_plan_that_keeps_the_h
             assert total(rule, truth.dm, truth.instance, drawn) == total(
                 other, dm, truth.instance, drawn
             )
+
+
+# --- D11: another template with the same effect (C2-1) -----------------------------------------
+
+S01 = "01-pharmacy"
+STELIOS = "stelios-avoids-afternoons"
+SOFT_OFF = "stelios-afternoons-soft-off"
+AFTERNOON = "απόγευμα"  # the `shift` value of the afternoon tasks, quoted verbatim
+
+
+def afternoon_windows() -> list[dict[str, str]]:
+    """One window for b2 per afternoon shift of 01 (its two tasks share their times)."""
+    times = sorted(
+        {
+            (t.start.isoformat(timespec="minutes"), t.end.isoformat(timespec="minutes"))
+            for t in scenario(S01).instance.tasks
+            if t.attributes.get("shift") == AFTERNOON
+        }
+    )
+    return [{"resource_id": "b2", "start": start, "end": end} for start, end in times]
+
+
+def soft_off(**fields: Any) -> dict[str, Any]:
+    """C2-1's candidate rule: a soft ``unavailable`` for b2 on exactly the afternoon shifts."""
+    return {
+        "id": SOFT_OFF,
+        "template": "unavailable",
+        "hardness": "soft",
+        "weight": 3,
+        "rationale": "x",
+        # The request's Greek words, quoted verbatim; ruff confuses Greek letters with Latin ones.
+        "provenance": {"kind": "utterance", "quote": "να μην πιάνει απογεύματα"},  # noqa: RUF001
+        "params": {"windows": afternoon_windows()},
+        **fields,
+    }
+
+
+def replacing_stelios(rule: dict[str, Any]) -> dict[str, Any]:
+    document = truth_document(S01)
+    document["constraints"] = [rule if c["id"] == STELIOS else c for c in document["constraints"]]
+    return document
+
+
+def test_c2_1_a_soft_unavailable_with_the_same_effect_is_reported_as_another_template() -> None:
+    candidate = replacing_stelios(soft_off())
+    loaded = load_model(json.dumps(candidate, ensure_ascii=False), CORPUS_PATH / S01)
+    assert isinstance(loaded, LoadedModel)
+    rule = next(r for r in loaded.dm.constraints if r.id == SOFT_OFF)
+    stelios = next(r for r in scenario(S01).truth.constraints if r.id == STELIOS)
+
+    result = evaluate(S01, candidate)
+
+    assert len(afternoon_windows()) == 3
+    assert (
+        effect_pairs(rule, loaded.dm, loaded.instance)
+        == effect_pairs(stelios, scenario(S01).truth, scenario(S01).instance)
+        != frozenset()
+    )
+    assert result.valid
+    assert (result.matched_count, result.truth_count, result.recall) == (4, 5, 0.8)
+    assert result.precision == 0.8
+    assert [(m.truth_id, m.category, m.closest_candidate_id) for m in result.unmatched_truth] == [
+        (STELIOS, "other_template_same_effect", SOFT_OFF)
+    ]
+    assert result.categories()["other_template_same_effect"] == 1
+    assert [extra.candidate_id for extra in result.unmatched_candidate] == [SOFT_OFF]
+
+
+@pytest.mark.parametrize(
+    "rule",
+    [
+        pytest.param(soft_off(hardness="hard", weight=None), id="another hardness"),
+        pytest.param(
+            soft_off(scope={"tasks": [{"attribute": "id", "op": "ne", "value": "17-apog-farm"}]}),
+            id="one pair fewer",
+        ),
+    ],
+)
+def test_c2_1_another_hardness_or_effect_stays_missing(rule: dict[str, Any]) -> None:
+    rule = {key: value for key, value in rule.items() if value is not None}
+
+    result = evaluate(S01, replacing_stelios(rule))
+
+    assert result.valid
+    assert result.recall == 0.8
+    assert [(m.truth_id, m.category, m.closest_candidate_id) for m in result.unmatched_truth] == [
+        (STELIOS, "missing", None)
+    ]
+
+
+def test_one_candidate_gets_only_the_first_of_two_equal_truth_constraints() -> None:
+    # A copy of Stelios's preference after it in DM order, with an id that sorts before it.
+    document = truth_document(S01)
+    copy_of_stelios = {**constraint_of(document, STELIOS), "id": "a-stelios-copy"}
+    document["constraints"].append(copy_of_stelios)
+    truth = load_model(json.dumps(document, ensure_ascii=False), CORPUS_PATH / S01)
+    assert isinstance(truth, LoadedModel)
+    candidate = load_model(
+        json.dumps(replacing_stelios(soft_off()), ensure_ascii=False), CORPUS_PATH / S01
+    )
+
+    result = compare_models(truth, candidate)
+
+    assert result.recall == 4 / 6
+    assert [(m.truth_id, m.category, m.closest_candidate_id) for m in result.unmatched_truth] == [
+        ("a-stelios-copy", "missing", None),
+        (STELIOS, "other_template_same_effect", SOFT_OFF),
+    ]
+
+
+def test_an_empty_effect_never_qualifies() -> None:
+    # On the plan "every resource works every task" a together has no violation, nor has a
+    # stability (every baseline pair is worked): equal, but empty, effects.
+    document = pair_rules_truth()
+    stability = {
+        "id": "keep-a-on-t4",
+        "template": "stability",
+        "hardness": "soft",
+        "weight": 1,
+        "rationale": "x",
+        "provenance": {"kind": "default"},
+        "params": {"baseline": [{"task_id": "t4", "resource_id": "a"}]},
+    }
+    document["constraints"] = [
+        stability if c["id"] == TOGETHER else c for c in document["constraints"]
+    ]
+    truth = load_model((PAIR_RULES / "truth.json").read_text(encoding="utf-8"), PAIR_RULES)
+    candidate = load_model(json.dumps(document), PAIR_RULES)
+    assert isinstance(truth, LoadedModel) and isinstance(candidate, LoadedModel)
+    rules = {rule.id: rule for rule in [*truth.dm.constraints, *candidate.dm.constraints]}
+
+    result = compare_models(truth, candidate)
+
+    assert effect_pairs(rules[TOGETHER], truth.dm, truth.instance) == frozenset()
+    assert effect_pairs(rules["keep-a-on-t4"], candidate.dm, candidate.instance) == frozenset()
+    assert [(m.truth_id, m.category, m.closest_candidate_id) for m in result.unmatched_truth] == [
+        (TOGETHER, "missing", None)
+    ]
+
+
+def test_the_pairing_never_takes_a_candidate_of_the_same_template() -> None:
+    # Through compare_models a free candidate of the same template cannot exist: diagnostics
+    # pair it with the missing truth constraint first. The condition is tested on the helper.
+    truth = truth_of(S01)
+    scored = _scored(truth, frozenset())  # pyright: ignore[reportPrivateUsage]
+    index = next(i for i, item in enumerate(scored) if item.rule.id == STELIOS)
+
+    paired = _same_effect(  # pyright: ignore[reportPrivateUsage]
+        scored, scored, [index], [index], truth, truth
+    )
+
+    assert paired == {}
+
+
+def test_the_effect_of_a_rule_is_its_violated_pairs_on_the_everything_plan() -> None:
+    truth = load_model((PAIR_RULES / "truth.json").read_text(encoding="utf-8"), PAIR_RULES)
+    assert isinstance(truth, LoadedModel)
+    rules = {rule.id: rule for rule in truth.dm.constraints}
+
+    skills = effect_pairs(rules["skills"], truth.dm, truth.instance)
+
+    assert skills == hard_forbidden_pairs(truth)
+    assert effect_pairs(rules[APART], truth.dm, truth.instance) == frozenset()  # no resource id
