@@ -14,7 +14,7 @@ from typing import cast
 from pydantic import ValidationError
 
 from potakt.model.catalog import Unavailable
-from potakt.model.common import MAX_DEMAND, AttributeValue, Loc, StrictModel
+from potakt.model.common import CUSTOM_ERROR_TYPE, MAX_DEMAND, AttributeValue, Loc, StrictModel
 from potakt.model.data import (
     AttributeBinding,
     CsvDecimal,
@@ -131,25 +131,42 @@ def _nesting_depth(document: object) -> int:
     return deepest
 
 
+# Error types of our own validators (``custom_error``) and of a validator's ``ValueError``; every
+# other Pydantic error type is a built-in check of the schema.
+_RULE_ERROR_TYPES = frozenset({CUSTOM_ERROR_TYPE, "value_error"})
+
+
+def _structural_stage(error: ValidationError, document: object) -> str:
+    """The stage of a structural failure (``DecisionModelError.stage``), by error type only:
+    ``json`` if the document is not an object, ``rule`` if the first error comes from one of our
+    validators, else ``schema``."""
+    if not isinstance(document, dict):
+        return "json"
+    first = error.errors(include_url=False)[0]["type"]
+    return "rule" if first in _RULE_ERROR_TYPES else "schema"
+
+
 def _parse_json[M: StrictModel](text: str, model: type[M]) -> M:
     if json_nesting_exceeds(text):
-        raise DecisionModelError([ValidationIssue(ROOT, JSON_TOO_DEEP)])
+        raise DecisionModelError([ValidationIssue(ROOT, JSON_TOO_DEEP)], stage="json")
     try:
         document: object = json.loads(text)
     except json.JSONDecodeError as error:
         message = f"invalid JSON at line {error.lineno}, column {error.colno}: {error.msg}"
-        raise DecisionModelError([ValidationIssue(ROOT, message)]) from None
+        raise DecisionModelError([ValidationIssue(ROOT, message)], stage="json") from None
     except RecursionError:  # defence in depth: the raw-text check above already caught it
-        raise DecisionModelError([ValidationIssue(ROOT, JSON_TOO_DEEP)]) from None
+        raise DecisionModelError([ValidationIssue(ROOT, JSON_TOO_DEEP)], stage="json") from None
     except ValueError:
         # The decoder's only other ValueError: an integer longer than int() accepts.
-        raise DecisionModelError([ValidationIssue(ROOT, JSON_NUMBER_TOO_LARGE)]) from None
+        issue = ValidationIssue(ROOT, JSON_NUMBER_TOO_LARGE)
+        raise DecisionModelError([issue], stage="json") from None
     if _nesting_depth(document) > MAX_NESTING:  # defence in depth, on the decoded document
-        raise DecisionModelError([ValidationIssue(ROOT, JSON_TOO_DEEP)])
+        raise DecisionModelError([ValidationIssue(ROOT, JSON_TOO_DEEP)], stage="json")
     try:
         return model.model_validate_json(text)
     except ValidationError as error:
-        raise DecisionModelError(issues_from_pydantic(error, document)) from None
+        issues = issues_from_pydantic(error, document)
+        raise DecisionModelError(issues, stage=_structural_stage(error, document)) from None
 
 
 def _read_text(path: Path) -> str:

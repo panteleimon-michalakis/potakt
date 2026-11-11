@@ -151,7 +151,7 @@ def evaluate_candidate(scenario: LoadedScenario, text: str) -> Comparison:
     if parsed is not None:
         rejected = source_issues(parsed, scenario.scenario.csv_files)
         if rejected:
-            return compare_models(truth, InvalidModel(rejected))
+            return compare_models(truth, InvalidModel(rejected, "data_file"))
     with tempfile.TemporaryDirectory(prefix="potakt-candidate-") as folder:
         directory = Path(folder)
         for name in scenario.scenario.csv_files:

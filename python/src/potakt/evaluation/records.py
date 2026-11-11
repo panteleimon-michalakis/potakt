@@ -178,7 +178,8 @@ def score_answer(scenario: LoadedScenario, answer: Answer) -> tuple[str, Compari
         return candidate, evaluate_candidate(scenario, candidate)
     truth = LoadedModel(scenario.truth, scenario.instance)
     message = f"the answer did not end normally (stop: {answer.stop})"
-    return candidate, compare_models(truth, InvalidModel((issue_at((), message),)))
+    # No validation step ran, so there is no stage: the stop reason classifies it.
+    return candidate, compare_models(truth, InvalidModel((issue_at((), message),), None))
 
 
 def present(path: Path) -> bool:

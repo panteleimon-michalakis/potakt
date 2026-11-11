@@ -287,9 +287,11 @@ NAMES_02 = "ypodoxi_prosopiko.csv, ypodoxi_vardies.csv"  # csv_files in UTF-8 by
 
 
 def expected_name_issue_json(scenario: LoadedScenario, issues: list[tuple[str, str]]) -> str:
-    """The comparison JSON of an invalid candidate with exactly these (path, message) issues."""
+    """The comparison JSON of a candidate rejected by its data file names (stage ``data_file``)
+    with exactly these (path, message) issues."""
     truth = LoadedModel(scenario.truth, scenario.instance)
-    invalid = InvalidModel(tuple(ValidationIssue(path, message) for path, message in issues))
+    issues_found = tuple(ValidationIssue(path, message) for path, message in issues)
+    invalid = InvalidModel(issues_found, "data_file")
     return compare_models(truth, invalid).to_json()
 
 

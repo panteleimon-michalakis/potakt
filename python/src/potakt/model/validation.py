@@ -62,10 +62,16 @@ class ValidationIssue:
 
 
 class DecisionModelError(Exception):
-    """Raised when a DM, its data or a solution cannot be loaded; carries every issue found."""
+    """Raised when a DM, its data or a solution cannot be loaded; carries every issue found.
 
-    def __init__(self, issues: Iterable[ValidationIssue]) -> None:
+    ``stage`` names the parsing step that failed when the JSON parser raised it: ``"json"`` (not
+    a JSON object), ``"schema"`` (a Pydantic error type) or ``"rule"`` (one of our validators);
+    ``None`` otherwise.
+    """
+
+    def __init__(self, issues: Iterable[ValidationIssue], *, stage: str | None = None) -> None:
         self.issues: tuple[ValidationIssue, ...] = tuple(issues)
+        self.stage = stage
         super().__init__("\n".join(str(issue) for issue in self.issues))
 
 

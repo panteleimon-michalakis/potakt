@@ -58,6 +58,8 @@ CATEGORIES: tuple[Category, ...] = (
     "wrong_scope",
     "other_template_same_effect",  # ADR-0008 D11, informational
 )
+# The step at which an invalid candidate failed (for ADR-0008 D3 (a)), in the order they run.
+InvalidStage = Literal["json", "schema", "rule", "data_file", "data"]
 UNSCORED_TEMPLATES = frozenset({"coverage"})  # mandatory and structural (ADR-0007 §5.1)
 # Templates denoted by their effect, with the scope folded into the parameters (ADR-0007 §5.2):
 # what assignments they forbid, or which pair they bind on which tasks.
@@ -91,25 +93,39 @@ class LoadedModel:
 
 @dataclass(frozen=True, slots=True)
 class InvalidModel:
-    """A candidate that failed validation: every issue found."""
+    """A candidate that failed validation: every issue found, and the step that failed.
+
+    ``stage`` is ``None`` only for an answer that never reached validation (it did not end
+    normally, ADR-0007 §7 «Answer»): its stop reason classifies it.
+    """
 
     issues: tuple[ValidationIssue, ...]
+    stage: InvalidStage | None
 
 
 def load_model(text: str, directory: Path) -> LoadedModel | InvalidModel:
     """Parse DM JSON text and validate it against the CSV files of ``directory``.
 
-    Structural, CSV and data-level problems give an ``InvalidModel``; nothing raises.
+    Structural, CSV and data-level problems give an ``InvalidModel``; nothing raises. Its stage
+    is the parser's (``json``, ``schema`` or ``rule``), ``data_file`` if the CSV files cannot be
+    loaded, or ``data`` if data-level validation fails.
     """
     try:
         dm = parse_decision_model(text)
+    except DecisionModelError as error:
+        return InvalidModel(error.issues, _PARSE_STAGES[error.stage or ""])
+    try:
         instance = load_instance(dm, directory)
     except DecisionModelError as error:
-        return InvalidModel(error.issues)
+        return InvalidModel(error.issues, "data_file")
     issues = validate_data(dm, instance)
     if issues:
-        return InvalidModel(tuple(issues))
+        return InvalidModel(tuple(issues), "data")
     return LoadedModel(dm, instance)
+
+
+# ``parse_decision_model`` sets one of these on every error it raises.
+_PARSE_STAGES: dict[str, InvalidStage] = {"json": "json", "schema": "schema", "rule": "rule"}
 
 
 # --- denotations -----------------------------------------------------------------------------
@@ -386,6 +402,7 @@ class Comparison:
     unmatched_candidate: tuple[UnmatchedCandidate, ...]
     merged_truth_count: int
     merged_matched_count: int
+    invalid_stage: InvalidStage | None  # see ``InvalidModel.stage``; ``None`` when valid
 
     @property
     def matched_count(self) -> int:
@@ -416,6 +433,7 @@ class Comparison:
     def to_dict(self) -> dict[str, Any]:
         return {
             "valid": self.valid,
+            "invalid_stage": self.invalid_stage,
             "issues": [{"path": issue.path, "message": issue.message} for issue in self.issues],
             "truth_count": self.truth_count,
             "candidate_count": self.candidate_count,
@@ -472,6 +490,7 @@ def compare_models(truth: LoadedModel, candidate: LoadedModel | InvalidModel) ->
             unmatched_candidate=(),
             merged_truth_count=merged_truth.total(),
             merged_matched_count=0,
+            invalid_stage=candidate.stage,
         )
     found = _scored(candidate, forbidden)
     pairs = _match(expected, found)
@@ -514,6 +533,7 @@ def compare_models(truth: LoadedModel, candidate: LoadedModel | InvalidModel) ->
         unmatched_candidate=tuple(sorted(extra, key=lambda e: e.candidate_id)),
         merged_truth_count=merged_truth.total(),
         merged_matched_count=(merged_truth & _absences_merged(found)).total(),
+        invalid_stage=None,
     )
 
 
