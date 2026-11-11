@@ -145,6 +145,22 @@ MORE = {
 }
 
 
+TITLE = '"title": "'
+# Texts that `json.loads` accepts but Pydantic's own JSON parser does not, or parses differently.
+# By the task's definitions `json` covers the raw checks, `json.loads` and a top level that is
+# not an object; any other Pydantic error type is `schema`, so these are `schema` (pinned here).
+MORE |= {
+    "a lone surrogate (Pydantic: json_invalid)": (
+        truth_text().replace(TITLE, TITLE + "\\ud800", 1),
+        "schema",
+    ),
+    "NaN as the version (Pydantic: int_type)": (
+        truth_text().replace('"version": 1,', '"version": NaN,', 1),
+        "schema",
+    ),
+}
+
+
 @pytest.mark.parametrize(("candidate", "stage"), MORE.values(), ids=MORE)
 def test_more_slips_land_in_their_stage(candidate: object, stage: str) -> None:
     text = candidate if isinstance(candidate, str) else json.dumps(candidate, ensure_ascii=False)

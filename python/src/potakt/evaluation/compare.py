@@ -402,7 +402,8 @@ class Comparison:
     unmatched_candidate: tuple[UnmatchedCandidate, ...]
     merged_truth_count: int
     merged_matched_count: int
-    invalid_stage: InvalidStage | None  # see ``InvalidModel.stage``; ``None`` when valid
+    # ``None`` when valid, or for an answer that never reached validation (``InvalidModel.stage``)
+    invalid_stage: InvalidStage | None
 
     @property
     def matched_count(self) -> int:
