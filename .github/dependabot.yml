@@ -18,6 +18,11 @@ updates:
       interval: monthly
     cooldown:
       default-days: 7
+    # Phase 0: Typer 0.29 moved parameter validation to Pydantic and changes the help output.
+    # Stay below it until the Phase 0 corpus runs end; lifting this is a task of its own.
+    ignore:
+      - dependency-name: typer
+        versions: [">=0.29"]
     groups:
       python-dependencies:
         patterns: ["*"]
