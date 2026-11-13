@@ -46,14 +46,18 @@ truth; if a task seems to contradict it, **stop and ask** instead of improvising
    tests) to make it pass — if you think a rule is wrong, say so in the report.
    The one accepted per-line exception is `# noqa: RUF001` or `# noqa: RUF003` on a line that
    quotes Greek text verbatim, because ruff confuses some Greek letters with Latin ones; a comment
-   on the same line or directly above the quoted block says so.
+   on the same line or directly above the quoted block says so. A narrow type-checker ignore with
+   its code, on one test line, is accepted when the test needs it on purpose
+   (`# pyright: ignore[reportPrivateUsage]` to call a private helper, `# type: ignore[misc]` to
+   prove that a frozen model rejects an assignment); files under `src/` never carry one.
    When a task changes `.github/` or `uv.lock`, also run the CI security checks: from the
    repository root `uvx --exclude-newer 2026-11-10T00:00:00Z zizmor@1.32.0 --offline .github`
    ("No findings to report"), and from `python/` `uv export --quiet --locked --format
    requirements-txt --no-emit-project -o <scratchpad>/requirements-audit.txt` followed by `uvx
-   --exclude-newer 2026-11-10T00:00:00Z pip-audit@2.10.1 -r <scratchpad>/requirements-audit.txt
-   --require-hashes --disable-pip --strict` ("No known vulnerabilities found"). The date fixes what
-   the tools resolve to; move it when their versions change.
+   --python 3.14 --exclude-newer 2026-11-10T00:00:00Z pip-audit@2.10.1 -r
+   <scratchpad>/requirements-audit.txt --require-hashes --disable-pip --strict` ("No known
+   vulnerabilities found"; `--python 3.14` as in CI, where pip-audit installs 28 packages, 29 on
+   3.12). The date fixes what the tools resolve to; move it when their versions change.
 4. Commit in logical steps (see rule 4).
 5. **Stop and report** using this template:
    ```
@@ -131,6 +135,10 @@ Every task; the evidence goes in the report.
   secret (environment dumps, secret-like variable names, `.env` files); reading `.env` files is
   denied. If a command is blocked, use the Edit/Write tools, a scratchpad file or the Grep tool
   instead; never work around the hook.
+- A second PreToolUse hook blocks a new `## YYYY-MM-DD HH:MM` heading in `.tasks/logs/*.md` whose
+  time is later than the clock or more than 15 minutes old, so copy the time from `Get-Date` in the
+  same step (see Work log). A time corrected later is written together with a note that starts with
+  `Time correction:`, which the hook lets through.
 
 ## Environment
 - Windows 10, PowerShell. Python via **uv** only (`uv add`, `uv run`, `uv sync`); never `pip install`
