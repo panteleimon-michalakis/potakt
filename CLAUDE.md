@@ -99,7 +99,8 @@ Every task; the evidence goes in the report.
    width, CI); tests/conftest.py resets them. Before reporting, run the suite once with
    `GITHUB_ACTIONS=true FORCE_COLOR=1 COLUMNS=40 uv run pytest -q -n auto` (Git Bash). Tests never depend
    on interpreter limits (recursion depth, C stack size, hash seed) or on the Python patch version:
-   CI uses the latest 3.12.x and 3.14.x. Explicit limits are enforced by our code before calling a
+   CI uses the latest 3.12.x and 3.14.x that uv provides (`UV_MANAGED_PYTHON` in ci.yml), never a
+   runner image's own Python. Explicit limits are enforced by our code before calling a
    library, and a test that needs another machine's behaviour reproduces it (for example with a
    large-stack thread).
 7. **Docs consistency:** help text, README, ADRs and examples match the behaviour (exit codes,
