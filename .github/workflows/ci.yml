@@ -11,6 +11,12 @@ on:
 permissions:
   contents: read
 
+env:
+  # Every job runs on a CPython that uv itself provides (the latest 3.12.x and 3.14.x it knows),
+  # never on a Python that ships with the runner image: Linux and Windows test the same patch
+  # releases, and a runner image change cannot swap the interpreter.
+  UV_MANAGED_PYTHON: "1"
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
