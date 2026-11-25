@@ -85,12 +85,14 @@ def _count(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
 
-def _usage(response: object) -> tuple[int, int] | None:
-    """(input, output) tokens of an Anthropic or a Gemini response; ``None`` if unknown.
+def _usage(response: object) -> tuple[int, int, int | None] | None:
+    """(input, output, thinking) tokens of an Anthropic or a Gemini response; ``None`` if the
+    input or the output is unknown, and thinking ``None`` if only the thinking is.
 
-    Anthropic: ``usage.input_tokens`` and ``usage.output_tokens`` (thinking included). Gemini:
-    ``usageMetadata.promptTokenCount``, and ``candidatesTokenCount`` plus ``thoughtsTokenCount``
-    (if present) as output.
+    Anthropic: ``usage.input_tokens`` and ``usage.output_tokens`` (thinking included), and
+    ``usage.output_tokens_details.thinking_tokens`` as thinking when it is a count not larger
+    than the output. Gemini: ``usageMetadata.promptTokenCount``, and ``candidatesTokenCount``
+    plus ``thoughtsTokenCount`` (0 if absent) as output, the latter also as thinking.
     """
     if not isinstance(response, dict):
         return None
@@ -100,15 +102,25 @@ def _usage(response: object) -> tuple[int, int] | None:
         anthropic = cast(dict[str, object], usage)
         tokens = _count(anthropic.get("input_tokens")), _count(anthropic.get("output_tokens"))
         if tokens[0] is not None and tokens[1] is not None:
-            return tokens[0], tokens[1]
+            return tokens[0], tokens[1], _anthropic_thinking(anthropic, tokens[1])
     if isinstance(metadata, dict):
         gemini = cast(dict[str, object], metadata)
         prompt = _count(gemini.get("promptTokenCount"))
         output = _count(gemini.get("candidatesTokenCount"))
         thoughts = _count(gemini.get("thoughtsTokenCount", 0))
         if prompt is not None and output is not None and thoughts is not None:
-            return prompt, output + thoughts
+            return prompt, output + thoughts, thoughts
     return None
+
+
+def _anthropic_thinking(usage: dict[str, object], output: int) -> int | None:
+    """``output_tokens_details.thinking_tokens`` if it is a count not larger than ``output``
+    (the inclusive total), else ``None``."""
+    details = usage.get("output_tokens_details")
+    if not isinstance(details, dict):
+        return None
+    thinking = _count(cast(dict[str, object], details).get("thinking_tokens"))
+    return thinking if thinking is not None and thinking <= output else None
 
 
 # --- the summary -----------------------------------------------------------------------------
@@ -127,7 +139,8 @@ class Summary:
     """One model's Test A results; ``to_json`` and ``to_text`` are deterministic.
 
     Scores count the scored scenarios (those with a usable ``comparison.json`` of a corpus
-    scenario); usage and stops count every run directory. Groups map a name to (matched, truth).
+    scenario); usage, thinking and stops count every run directory; ``thinking_unknown`` names
+    the runs whose usage is known but whose thinking is not. Groups map a name to (matched, truth).
     ``missing`` names the corpus scenarios without a scored run.
     """
 
@@ -145,6 +158,8 @@ class Summary:
     diagnostics: dict[Category, int]
     input_tokens: int
     output_tokens: int
+    thinking_tokens: int
+    thinking_unknown: tuple[str, ...]
     cost_usd: float | None
     not_scored: tuple[str, ...]
     notes: tuple[str, ...]
@@ -192,6 +207,8 @@ class Summary:
             "recall_by_hardness": groups(self.by_hardness),
             "diagnostics": dict(self.diagnostics),
             "usage": {"input_tokens": self.input_tokens, "output_tokens": self.output_tokens},
+            "thinking_tokens": self.thinking_tokens,
+            "thinking_unknown": list(self.thinking_unknown),
             "cost_usd": self.cost_usd,
             "not_scored": list(self.not_scored),
             "notes": list(self.notes),
@@ -229,6 +246,9 @@ class Summary:
         stops = ", ".join(
             f"{server_text(name)} {count}" for name, count in sorted(self.stops.items())
         )
+        unknown_thinking = (
+            f" (unknown for {', '.join(self.thinking_unknown)})" if self.thinking_unknown else ""
+        )
         lines = [
             f"Test A summary: {self.model}",
             f"Scenarios: {self.scenarios_run} scored, {self.valid} valid",
@@ -244,6 +264,7 @@ class Summary:
             + ", ".join(f"{category} {self.diagnostics[category]}" for category in CATEGORIES),
             f"Stops: {stops or 'none'}",
             f"Usage: {self.input_tokens} input tokens, {self.output_tokens} output tokens",
+            f"Thinking: {self.thinking_tokens} of the output tokens{unknown_thinking}",
             f"Cost: {cost}",
         ]
         if self.not_scored:
@@ -274,6 +295,7 @@ def summarize(runs_dir: Path, corpus_dir: Path) -> Summary:
     scored: set[str] = set()
     not_scored: list[str] = []
     notes: list[str] = []
+    thinking_unknown: list[str] = []
     cost_micro: float | None = 0.0 if _prices(model) else None
     for run in _directories(runs_dir):
         name = run.name
@@ -306,10 +328,15 @@ def summarize(runs_dir: Path, corpus_dir: Path) -> Summary:
         elif tokens is None:
             notes.append(f"{name}: usage unknown in {RESPONSE_FILE}; usage counted as 0")
         if tokens is not None:
-            totals["input"] += tokens[0]
-            totals["output"] += tokens[1]
+            input_tokens, output_tokens, thinking_tokens = tokens
+            totals["input"] += input_tokens
+            totals["output"] += output_tokens
+            if thinking_tokens is None:
+                thinking_unknown.append(name)
+            else:
+                totals["thinking"] += thinking_tokens
             if cost_micro is not None:
-                cost_micro += _run_cost_micro(model, *tokens)
+                cost_micro += _run_cost_micro(model, input_tokens, output_tokens)
         if registered and not response_problem:
             stops[answer_of(model, response).stop] += 1
     if not registered:
@@ -332,6 +359,8 @@ def summarize(runs_dir: Path, corpus_dir: Path) -> Summary:
         diagnostics=diagnostics,
         input_tokens=totals["input"],
         output_tokens=totals["output"],
+        thinking_tokens=totals["thinking"],
+        thinking_unknown=tuple(thinking_unknown),
         cost_usd=None if cost_micro is None else round(cost_micro / _MILLION, 6),
         not_scored=tuple(not_scored),
         notes=tuple(notes),

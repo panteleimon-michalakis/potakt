@@ -113,6 +113,10 @@
     "end_turn": 2,
     "refusal": 1
   },
+  "thinking_tokens": 13000,
+  "thinking_unknown": [
+    "04-restaurant"
+  ],
   "truth_count": 25,
   "usage": {
     "input_tokens": 36000,

@@ -358,6 +358,116 @@ def test_a_missing_or_unreadable_response_counts_zero_with_a_note(tmp_path: Path
     )
 
 
+# --- thinking tokens (TASK-005e3 decision 1, ADR-0008 D3(a)) ---------------------------------
+
+
+def thinking(runs: Path) -> tuple[int, list[str]]:
+    document = json.loads(summarize(runs, CORPUS).to_json())
+    return document["thinking_tokens"], document["thinking_unknown"]
+
+
+def test_the_fixture_thinking_is_summed_and_the_unknown_run_named() -> None:
+    # 01 and 03 report 6000 and 7000 in usage.output_tokens_details; 04 reports nothing.
+    summary = summarize(OPUS_RUNS, CORPUS)
+
+    assert thinking(OPUS_RUNS) == (13000, ["04-restaurant"])
+    lines = summary.to_text().splitlines()
+    usage = lines.index("Usage: 36000 input tokens, 18000 output tokens")
+    assert lines[usage + 1] == "Thinking: 13000 of the output tokens (unknown for 04-restaurant)"
+
+
+def test_the_thinking_line_has_no_unknown_part_when_every_run_reports_it(tmp_path: Path) -> None:
+    usage = {
+        "input_tokens": 10,
+        "output_tokens": 100,
+        "output_tokens_details": {"thinking_tokens": 40},
+    }
+    runs = one_run(tmp_path, "claude-opus-5-5", {"usage": usage})
+
+    assert thinking(runs) == (40, [])
+    assert "Thinking: 40 of the output tokens" in summarize(runs, CORPUS).to_text().splitlines()
+
+
+def test_thinking_equal_to_the_output_is_a_count(tmp_path: Path) -> None:
+    usage = {
+        "input_tokens": 10,
+        "output_tokens": 100,
+        "output_tokens_details": {"thinking_tokens": 100},
+    }
+    runs = one_run(tmp_path, "claude-opus-5-5", {"usage": usage})
+
+    assert thinking(runs) == (100, [])
+
+
+@pytest.mark.parametrize(
+    "details",
+    [
+        {},
+        {"output_tokens_details": None},
+        {"output_tokens_details": "many"},
+        {"output_tokens_details": {}},
+        {"output_tokens_details": {"thinking_tokens": None}},
+        {"output_tokens_details": {"thinking_tokens": "6000"}},
+        {"output_tokens_details": {"thinking_tokens": -1}},
+        {"output_tokens_details": {"thinking_tokens": True}},
+        {"output_tokens_details": {"thinking_tokens": 101}},
+    ],
+    ids=[
+        "details-missing",
+        "details-null",
+        "details-string",
+        "count-missing",
+        "count-null",
+        "count-string",
+        "negative",
+        "boolean",
+        "larger-than-output",
+    ],
+)
+def test_anthropic_thinking_that_is_not_a_count_is_unknown_and_named(
+    tmp_path: Path, details: dict[str, object]
+) -> None:
+    usage = {"input_tokens": 10, "output_tokens": 100, **details}
+    runs = one_run(tmp_path, "claude-opus-5-5", {"usage": usage})
+
+    assert thinking(runs) == (0, ["01-pharmacy"])
+    assert usage_and_notes(runs) == ({"input_tokens": 10, "output_tokens": 100}, [])
+    assert (
+        "Thinking: 0 of the output tokens (unknown for 01-pharmacy)"
+        in summarize(runs, CORPUS).to_text().splitlines()
+    )
+
+
+def test_anthropic_thinking_is_read_from_the_details_only(tmp_path: Path) -> None:
+    usage = {"input_tokens": 10, "output_tokens": 100, "thinking_tokens": 40}
+    runs = one_run(tmp_path, "claude-opus-5-5", {"usage": usage})
+
+    assert thinking(runs) == (0, ["01-pharmacy"])
+
+
+def test_gemini_thinking_is_the_thoughts_count(tmp_path: Path) -> None:
+    metadata = {"promptTokenCount": 900, "candidatesTokenCount": 70, "thoughtsTokenCount": 30}
+    runs = one_run(tmp_path, "gemini-3.8-flash", {"usageMetadata": metadata})
+
+    assert thinking(runs) == (30, [])
+
+
+def test_gemini_without_thoughts_has_zero_thinking_and_is_not_named(tmp_path: Path) -> None:
+    metadata = {"promptTokenCount": 900, "candidatesTokenCount": 70}
+    runs = one_run(tmp_path, "gemini-3.8-flash", {"usageMetadata": metadata})
+
+    assert thinking(runs) == (0, [])
+
+
+def test_a_run_with_unknown_usage_is_not_named_again_for_thinking(tmp_path: Path) -> None:
+    unknown = one_run(tmp_path / "a", "claude-opus-5-5", {"usage": {"input_tokens": "many"}})
+    missing = one_run(tmp_path / "b", "claude-opus-5-5", None)
+
+    assert thinking(unknown) == (0, [])
+    assert thinking(missing) == (0, [])
+    assert "Thinking: 0 of the output tokens" in summarize(unknown, CORPUS).to_text().splitlines()
+
+
 def test_prices_are_the_batch_prices_per_million_tokens() -> None:
     # https://platform.claude.com/docs/en/about-claude/pricing «Batch processing», 2026-11-02.
     assert PRICES_USD_PER_MILLION == {

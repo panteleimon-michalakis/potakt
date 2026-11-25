@@ -21,4 +21,5 @@ Recall by template:
 Diagnostics: missing 13, wrong_hardness 1, wrong_parameters 1, wrong_scope 0, other_template_same_effect 0
 Stops: end_turn 2, refusal 1
 Usage: 36000 input tokens, 18000 output tokens
+Thinking: 13000 of the output tokens (unknown for 04-restaurant)
 Cost: $0.2520 (batch prices pinned on 2026-11-02)
