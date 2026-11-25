@@ -5,7 +5,8 @@ A model's runs live in ``<runs>/<model dir>/<scenario id>/`` with ``comparison.j
 ``Comparison`` of the candidate) and ``response.json`` (the raw API response). The summary
 micro-averages the scores over the scored scenarios, breaks recall down by language, template and
 hardness (of the truth constraint), counts the diagnostic categories and how the answers stopped,
-sums the token usage of every run and prices each run. It names every corpus scenario without a
+sums the token usage of every run and prices each run, and gives one row per scored scenario
+(ADR-0008 D3(a)). It names every corpus scenario without a
 scored run and is complete only when there is none. Nothing is silently skipped: every record
 that cannot be used is in ``notes``.
 """
@@ -19,7 +20,7 @@ from typing import Any, Literal, Self, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from potakt.evaluation.compare import CATEGORIES, Category
+from potakt.evaluation.compare import CATEGORIES, Category, InvalidStage
 from potakt.evaluation.records import COMPARISON_FILE, REGISTERED_MODELS, RESPONSE_FILE, answer_of
 from potakt.evaluation.scenario import METADATA_FILE, Scenario
 from potakt.evaluation.transport import server_text
@@ -37,6 +38,16 @@ PRICES_USD_PER_MILLION: dict[str, tuple[float, float]] = {
 }
 LONG_PROMPT_PRICES_USD_PER_MILLION: dict[str, tuple[int, tuple[float, float]]] = {
     "claude-haiku-5-5": (100_000, (0.25, 1.25)),
+}
+# The class of an invalid candidate's first issue, in ADR-0008 D3(a)'s words. ``None``: the answer
+# did not end normally, so it never reached validation.
+ISSUE_CLASSES: dict[InvalidStage | None, str] = {
+    "json": "JSON or fence",
+    "schema": "schema",
+    "rule": "cross-field rule",
+    "data_file": "data file",
+    "data": "data-level id or attribute",
+    None: "stop reason",
 }
 _OUTSIDE_DIRECTORY_ALPHABET = re.compile(r"[^A-Za-z0-9._-]")
 _MILLION = 1_000_000
@@ -73,11 +84,14 @@ class _Record(BaseModel):
     merged_matched_count: int = Field(ge=0)
     matched: list[_Pair]
     unmatched_truth: list[_Missed]
+    invalid_stage: InvalidStage | None  # no default: the key must be present
 
     @model_validator(mode="after")
     def _check_counts(self) -> Self:
         if len(self.matched) + len(self.unmatched_truth) != self.truth_count:
             raise ValueError("matched + unmatched_truth must equal truth_count")
+        if self.valid and self.invalid_stage is not None:
+            raise ValueError("a valid candidate has no invalid_stage")
         return self
 
 
@@ -135,6 +149,72 @@ def _shown(ratio: float | None) -> str:
 
 
 @dataclass(frozen=True, slots=True)
+class ScenarioRow:
+    """One scored scenario (ADR-0008 D3(a)).
+
+    ``issue_class`` is ``None`` for a valid candidate. ``stop`` is the answer's stop exactly as
+    the server sent it, ``None`` when the model is not registered or ``response.json`` cannot be
+    used. Tokens are ``None`` when the run's usage (or only its thinking) is unknown; ``cost_usd``
+    is ``None`` when the usage is unknown or the model has no price, and is rounded on its own.
+    """
+
+    scenario: str
+    language: str
+    difficulty: str
+    truth_count: int
+    valid: bool
+    issue_class: str | None
+    stop: str | None
+    output_tokens: int | None
+    thinking_tokens: int | None
+    cost_usd: float | None
+    matched_count: int
+    candidate_count: int
+
+    @property
+    def recall(self) -> float | None:
+        return _ratio(self.matched_count, self.truth_count)
+
+    @property
+    def precision(self) -> float | None:
+        return _ratio(self.matched_count, self.candidate_count)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "scenario": self.scenario,
+            "language": self.language,
+            "difficulty": self.difficulty,
+            "truth_count": self.truth_count,
+            "valid": self.valid,
+            "issue_class": self.issue_class,
+            "stop": self.stop,
+            "output_tokens": self.output_tokens,
+            "thinking_tokens": self.thinking_tokens,
+            "cost_usd": self.cost_usd,
+            "matched_count": self.matched_count,
+            "candidate_count": self.candidate_count,
+            "recall": self.recall,
+            "precision": self.precision,
+        }
+
+    def to_text(self) -> str:
+        """The row's line in the summary text (without its indent)."""
+        validity = "valid" if self.valid else f"invalid ({self.issue_class})"
+        stop = "n/a" if self.stop is None else server_text(self.stop)
+        cost = "cost n/a" if self.cost_usd is None else f"${self.cost_usd:.4f}"
+        return (
+            f"{self.scenario}: {self.language} {self.difficulty}, truth {self.truth_count}, "
+            f"{validity}, stop {stop}, output {_number(self.output_tokens)} "
+            f"(thinking {_number(self.thinking_tokens)}), {cost}, matched {self.matched_count}, "
+            f"recall {_shown(self.recall)}, precision {_shown(self.precision)}"
+        )
+
+
+def _number(value: int | None) -> str:
+    return "n/a" if value is None else str(value)
+
+
+@dataclass(frozen=True, slots=True)
 class Summary:
     """One model's Test A results; ``to_json`` and ``to_text`` are deterministic.
 
@@ -165,6 +245,7 @@ class Summary:
     notes: tuple[str, ...]
     missing: tuple[str, ...]
     stops: dict[str, int]
+    rows: tuple[ScenarioRow, ...]
 
     @property
     def complete(self) -> bool:
@@ -215,6 +296,7 @@ class Summary:
             "missing": list(self.missing),
             "complete": self.complete,
             "stops": dict(sorted(self.stops.items())),
+            "scenarios": [row.to_dict() for row in self.rows],
         }
 
     def to_json(self) -> str:
@@ -266,6 +348,8 @@ class Summary:
             f"Usage: {self.input_tokens} input tokens, {self.output_tokens} output tokens",
             f"Thinking: {self.thinking_tokens} of the output tokens{unknown_thinking}",
             f"Cost: {cost}",
+            "Per scenario:",
+            *(f"  {row.to_text()}" for row in self.rows),
         ]
         if self.not_scored:
             lines.append(f"Not scored: {', '.join(self.not_scored)}")
@@ -296,6 +380,7 @@ def summarize(runs_dir: Path, corpus_dir: Path) -> Summary:
     not_scored: list[str] = []
     notes: list[str] = []
     thinking_unknown: list[str] = []
+    rows: list[ScenarioRow] = []
     cost_micro: float | None = 0.0 if _prices(model) else None
     for run in _directories(runs_dir):
         name = run.name
@@ -304,7 +389,7 @@ def summarize(runs_dir: Path, corpus_dir: Path) -> Summary:
             not_scored.append(name)
             notes.append(f"{name}: {problem}; not scored")
         else:
-            record_scored, language = record
+            record_scored, scenario = record
             scored.add(name)
             totals["scored"] += 1
             totals["valid"] += record_scored.valid
@@ -313,7 +398,12 @@ def summarize(runs_dir: Path, corpus_dir: Path) -> Summary:
             totals["matched"] += len(record_scored.matched)
             totals["merged_truth"] += record_scored.merged_truth_count
             totals["merged_matched"] += record_scored.merged_matched_count
-            _tally(languages, language, len(record_scored.matched), record_scored.truth_count)
+            _tally(
+                languages,
+                scenario.language,
+                len(record_scored.matched),
+                record_scored.truth_count,
+            )
             for pair in record_scored.matched:
                 _tally(templates, pair.template, 1, 1)
                 _tally(hardness, pair.hardness, 1, 1)
@@ -327,6 +417,7 @@ def summarize(runs_dir: Path, corpus_dir: Path) -> Summary:
             notes.append(f"{name}: {response_problem}; usage counted as 0")
         elif tokens is None:
             notes.append(f"{name}: usage unknown in {RESPONSE_FILE}; usage counted as 0")
+        run_cost: float | None = None
         if tokens is not None:
             input_tokens, output_tokens, thinking_tokens = tokens
             totals["input"] += input_tokens
@@ -336,9 +427,14 @@ def summarize(runs_dir: Path, corpus_dir: Path) -> Summary:
             else:
                 totals["thinking"] += thinking_tokens
             if cost_micro is not None:
-                cost_micro += _run_cost_micro(model, input_tokens, output_tokens)
-        if registered and not response_problem:
-            stops[answer_of(model, response).stop] += 1
+                run_cost = _run_cost_micro(model, input_tokens, output_tokens)
+                cost_micro += run_cost
+        # One answer_of call gives both the counted stop and the row's stop.
+        stop = answer_of(model, response).stop if registered and not response_problem else None
+        if stop is not None:
+            stops[stop] += 1
+        if record is not None:
+            rows.append(_row(name, *record, stop, tokens, run_cost))
     if not registered:
         notes.append(f"{model}: not a registered model; stops not counted")
     missing = tuple(
@@ -366,6 +462,32 @@ def summarize(runs_dir: Path, corpus_dir: Path) -> Summary:
         notes=tuple(notes),
         missing=tuple(name for name in missing if name not in scored),
         stops=dict(stops),
+        rows=tuple(rows),
+    )
+
+
+def _row(
+    name: str,
+    record: _Record,
+    scenario: Scenario,
+    stop: str | None,
+    tokens: tuple[int, int, int | None] | None,
+    run_cost_micro: float | None,
+) -> ScenarioRow:
+    """The row of one scored run; ``run_cost_micro`` is ``None`` without usage or a price."""
+    return ScenarioRow(
+        scenario=name,
+        language=scenario.language,
+        difficulty=scenario.difficulty,
+        truth_count=record.truth_count,
+        valid=record.valid,
+        issue_class=None if record.valid else ISSUE_CLASSES[record.invalid_stage],
+        stop=stop,
+        output_tokens=None if tokens is None else tokens[1],
+        thinking_tokens=None if tokens is None else tokens[2],
+        cost_usd=None if run_cost_micro is None else round(run_cost_micro / _MILLION, 6),
+        matched_count=len(record.matched),
+        candidate_count=record.candidate_count,
     )
 
 
@@ -377,11 +499,11 @@ def _directories(parent: Path) -> list[Path]:
     )
 
 
-def _read_record(run: Path, corpus_dir: Path) -> tuple[tuple[_Record, str] | None, str]:
-    """The comparison of one run and its scenario language, or ``None`` and the problem."""
+def _read_record(run: Path, corpus_dir: Path) -> tuple[tuple[_Record, Scenario] | None, str]:
+    """The comparison of one run and its corpus scenario, or ``None`` and the problem."""
     try:
         metadata = (corpus_dir / run.name / METADATA_FILE).read_text(encoding="utf-8-sig")
-        language = Scenario.model_validate_json(metadata).language
+        scenario = Scenario.model_validate_json(metadata)
     except (OSError, ValidationError):
         return None, "not a scenario of the corpus"
     path = run / COMPARISON_FILE
@@ -391,7 +513,7 @@ def _read_record(run: Path, corpus_dir: Path) -> tuple[tuple[_Record, str] | Non
         record = _Record.model_validate_json(path.read_bytes())
     except ValidationError:
         return None, f"{COMPARISON_FILE} is not a valid comparison"
-    return (record, language), ""
+    return (record, scenario), ""
 
 
 def _read_response(run: Path) -> tuple[object, str]:

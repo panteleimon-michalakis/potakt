@@ -8,6 +8,7 @@ candidate of the compare tests as bare text (``end_turn``), and 04 with a refusa
 so they cannot drift from the rules or from ``compare.py``.
 """
 
+import dataclasses
 import json
 import shutil
 from pathlib import Path
@@ -17,11 +18,13 @@ import pytest
 from potakt.evaluation import (
     LONG_PROMPT_PRICES_USD_PER_MILLION,
     PRICES_USD_PER_MILLION,
+    InvalidStage,
     load_scenario,
     model_directory_name,
     rescore_run,
     summarize,
 )
+from potakt.evaluation.summary import ISSUE_CLASSES, ScenarioRow
 
 REPO = Path(__file__).resolve().parents[2]
 CORPUS = REPO / "docs" / "validation" / "scenarios"
@@ -589,3 +592,211 @@ def test_an_unregistered_model_has_a_note_and_no_stops(tmp_path: Path) -> None:
 )
 def test_model_directory_name_replaces_every_other_character(model: str, directory: str) -> None:
     assert model_directory_name(model) == directory
+
+
+# --- one row per scored scenario (TASK-005e3 decision 2, ADR-0008 D3(a)) --------------------
+
+ROW_01 = (
+    "  01-pharmacy: el easy, truth 5, valid, stop end_turn, output 8000 (thinking 6000), $0.1040,"
+    " matched 5, recall 1.000, precision 1.000"
+)
+ROW_03 = (
+    "  03-call-centre: en medium, truth 8, valid, stop end_turn, output 9500 (thinking 7000),"
+    " $0.1180, matched 5, recall 0.625, precision 0.625"
+)
+ROW_04 = (
+    "  04-restaurant: en hard, truth 12, invalid (stop reason), stop refusal, output 500"
+    " (thinking n/a), $0.0300, matched 0, recall 0.000, precision n/a"
+)
+
+
+def rows_of(runs: Path) -> list[dict[str, object]]:
+    return json.loads(summarize(runs, CORPUS).to_json())["scenarios"]
+
+
+def row_lines(runs: Path) -> list[str]:
+    """The lines of the ``Per scenario:`` block (the indented lines right after it)."""
+    lines = summarize(runs, CORPUS).to_text().splitlines()
+    start = lines.index("Per scenario:") + 1
+    end = start
+    while end < len(lines) and lines[end].startswith("  ") and ":" in lines[end]:
+        end += 1
+    return lines[start:end]
+
+
+def test_issue_classes_are_the_words_of_adr_0008_d3a() -> None:
+    assert ISSUE_CLASSES == {
+        "json": "JSON or fence",
+        "schema": "schema",
+        "rule": "cross-field rule",
+        "data_file": "data file",
+        "data": "data-level id or attribute",
+        None: "stop reason",
+    }
+
+
+def test_a_scenario_row_has_exactly_these_fields_in_this_order() -> None:
+    names = [field.name for field in dataclasses.fields(ScenarioRow)]
+
+    assert names[:12] == [
+        "scenario",
+        "language",
+        "difficulty",
+        "truth_count",
+        "valid",
+        "issue_class",
+        "stop",
+        "output_tokens",
+        "thinking_tokens",
+        "cost_usd",
+        "matched_count",
+        "candidate_count",
+    ]
+    row = summarize(OPUS_RUNS, CORPUS).rows[0]
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        row.scenario = "other"  # type: ignore[misc]
+    assert not hasattr(row, "__dict__")  # slotted
+
+
+def test_the_fixture_rows_follow_the_per_scenario_line() -> None:
+    lines = summarize(OPUS_RUNS, CORPUS).to_text().splitlines()
+
+    cost = lines.index("Cost: $0.2520 (batch prices pinned on 2026-11-02)")
+    assert lines[cost + 1 : cost + 5] == ["Per scenario:", ROW_01, ROW_03, ROW_04]
+
+
+def test_the_fixture_rows_in_json() -> None:
+    rows = rows_of(OPUS_RUNS)
+
+    assert [row["scenario"] for row in rows] == FIXTURE_SCENARIOS
+    assert rows[0] == {
+        "scenario": "01-pharmacy",
+        "language": "el",
+        "difficulty": "easy",
+        "truth_count": 5,
+        "valid": True,
+        "issue_class": None,
+        "stop": "end_turn",
+        "output_tokens": 8000,
+        "thinking_tokens": 6000,
+        "cost_usd": 0.104,  # (12000 * 2 + 8000 * 10) / 1e6
+        "matched_count": 5,
+        "candidate_count": 5,
+        "recall": 1.0,
+        "precision": 1.0,
+    }
+    assert (rows[1]["cost_usd"], rows[1]["recall"], rows[1]["precision"]) == (0.118, 5 / 8, 5 / 8)
+    assert {key: rows[2][key] for key in ("valid", "issue_class", "stop", "thinking_tokens")} == {
+        "valid": False,
+        "issue_class": "stop reason",
+        "stop": "refusal",
+        "thinking_tokens": None,
+    }
+    assert (rows[2]["cost_usd"], rows[2]["recall"], rows[2]["precision"]) == (0.03, 0.0, None)
+
+
+@pytest.mark.parametrize("stage", ["json", "schema", "rule", "data_file", "data", None])
+def test_every_issue_class_reaches_the_row(tmp_path: Path, stage: InvalidStage | None) -> None:
+    runs = copy_runs(tmp_path)
+    path = runs / "04-restaurant" / "comparison.json"
+    document = json.loads(path.read_bytes())
+    document["invalid_stage"] = stage
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    issue_class = ISSUE_CLASSES[stage]
+    assert rows_of(runs)[2]["issue_class"] == issue_class
+    assert row_lines(runs)[2].startswith(
+        f"  04-restaurant: en hard, truth 12, invalid ({issue_class}), stop refusal,"
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "change"),
+    [("01-pharmacy", {"invalid_stage": "schema"}), ("04-restaurant", None)],
+    ids=["valid-with-a-stage", "no-stage-key"],
+)
+def test_a_comparison_with_a_wrong_or_missing_stage_is_not_scored(
+    tmp_path: Path, name: str, change: dict[str, object] | None
+) -> None:
+    runs = copy_runs(tmp_path)
+    path = runs / name / "comparison.json"
+    document = json.loads(path.read_bytes())
+    if change is None:
+        del document["invalid_stage"]
+    else:
+        document.update(change)
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    summary = json.loads(summarize(runs, CORPUS).to_json())
+
+    assert summary["not_scored"] == [name]
+    assert summary["notes"] == [f"{name}: comparison.json is not a valid comparison; not scored"]
+    assert name not in [row["scenario"] for row in summary["scenarios"]]
+
+
+def test_a_run_that_is_not_scored_has_no_row(tmp_path: Path) -> None:
+    runs = copy_runs(tmp_path)
+    (runs / "03-call-centre" / "comparison.json").unlink()
+
+    assert [row["scenario"] for row in rows_of(runs)] == ["01-pharmacy", "04-restaurant"]
+    assert row_lines(runs) == [ROW_01, ROW_04]
+
+
+def test_an_unregistered_model_without_a_price_has_stop_and_cost_n_a(tmp_path: Path) -> None:
+    usage = {
+        "input_tokens": 10,
+        "output_tokens": 100,
+        "output_tokens_details": {"thinking_tokens": 40},
+    }
+    runs = one_run(tmp_path, "some-other-model", {"usage": usage})
+
+    row = rows_of(runs)[0]
+    assert (row["stop"], row["output_tokens"], row["thinking_tokens"], row["cost_usd"]) == (
+        None,
+        100,
+        40,
+        None,
+    )
+    assert row_lines(runs) == [
+        "  01-pharmacy: el easy, truth 5, valid, stop n/a, output 100 (thinking 40), cost n/a,"
+        " matched 5, recall 1.000, precision 1.000"
+    ]
+
+
+def test_unknown_usage_gives_output_and_cost_n_a(tmp_path: Path) -> None:
+    runs = one_run(tmp_path, "claude-opus-5-5", {"stop_reason": "end_turn", "content": []})
+
+    row = rows_of(runs)[0]
+    assert (row["stop"], row["output_tokens"], row["thinking_tokens"], row["cost_usd"]) == (
+        "end_turn",
+        None,
+        None,
+        None,
+    )
+    assert "stop end_turn, output n/a (thinking n/a), cost n/a," in row_lines(runs)[0]
+
+
+def test_a_missing_response_gives_stop_output_and_cost_n_a(tmp_path: Path) -> None:
+    runs = one_run(tmp_path, "claude-opus-5-5", None)
+
+    assert ", stop n/a, output n/a (thinking n/a), cost n/a," in row_lines(runs)[0]
+
+
+def test_a_row_cost_is_rounded_on_its_own(tmp_path: Path) -> None:
+    runs = one_run(
+        tmp_path, "claude-haiku-5-5", {"usage": {"input_tokens": 100_001, "output_tokens": 10_000}}
+    )
+
+    assert rows_of(runs)[0]["cost_usd"] == 0.0375  # 0.03750025 rounded to micro-dollars
+    assert ", $0.0375, " in row_lines(runs)[0]
+
+
+def test_the_row_keeps_a_server_stop_raw_in_json_and_safe_in_text(tmp_path: Path) -> None:
+    stop = "MAX\x1b[2J\nTOKENS"
+    candidate = {"content": {"parts": [{"text": "{}"}]}, "finishReason": stop}
+    runs = one_run(tmp_path, "gemini-3.8-flash", {"candidates": [candidate]})
+
+    assert rows_of(runs)[0]["stop"] == stop
+    text = summarize(runs, CORPUS).to_text()
+    assert ", stop MAX?[2J?TOKENS, " in row_lines(runs)[0]
+    assert "\x1b" not in text
