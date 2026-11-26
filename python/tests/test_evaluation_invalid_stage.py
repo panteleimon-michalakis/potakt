@@ -26,7 +26,7 @@ from potakt.evaluation import (
 )
 from potakt.evaluation.compare import InvalidModel
 from potakt.evaluation.records import Answer, score_answer
-from potakt.model import DecisionModelError
+from potakt.model import DecisionModelError, ParseStage, parse_decision_model
 from potakt.model.common import SOFT_RULE_NEEDS_WEIGHT, StrictModel
 from potakt.model.loader import _parse_json  # pyright: ignore[reportPrivateUsage]
 
@@ -393,3 +393,59 @@ def test_every_invalid_candidate_has_a_stage_and_a_valid_one_has_none(
         parsed = None
     if not isinstance(parsed, dict):
         assert result.invalid_stage == "json"
+
+
+# --- TASK-005e4 decision 6: the parser names one of three stages on every error --------------
+
+
+def test_the_parse_stages_are_three_of_the_invalid_stages() -> None:
+    assert get_args(ParseStage) == ("json", "schema", "rule")
+    assert all(stage in get_args(InvalidStage) for stage in get_args(ParseStage))
+
+
+@cache
+def truth_06() -> dict[str, Any]:
+    return truth_document()
+
+
+JSON_VALUES = st.recursive(
+    st.none() | st.booleans() | st.integers() | st.floats(allow_nan=False) | st.text(max_size=8),
+    lambda children: (
+        st.lists(children, max_size=3) | st.dictionaries(st.text(max_size=4), children, max_size=3)
+    ),
+    max_leaves=6,
+)
+
+
+@st.composite
+def damaged_truth(draw: st.DrawFn) -> str:
+    """06's truth with one leaf replaced by a JSON value, one object key dropped, or 1-40
+    characters of its text removed."""
+    document = copy.deepcopy(truth_06())
+    damage = draw(st.sampled_from(["leaf", "key", "cut"]))
+    if damage == "leaf":
+        leaves = [
+            p for p in node_paths(document) if not isinstance(node_at(document, p), dict | list)
+        ]
+        return dumps(put(document, draw(st.sampled_from(leaves)), draw(JSON_VALUES)))
+    if damage == "key":
+        keys = [p for p in node_paths(document)[1:] if isinstance(node_at(document, p[:-1]), dict)]
+        path = draw(st.sampled_from(keys))
+        del node_at(document, path[:-1])[path[-1]]
+        return dumps(document)
+    text = dumps(document)
+    length = draw(st.integers(min_value=1, max_value=40))
+    start = draw(st.integers(min_value=0, max_value=len(text) - length))
+    return text[:start] + text[start + length :]
+
+
+PARSE_INPUTS = st.text(max_size=60) | damaged_truth()
+
+
+@settings(deadline=None, max_examples=300)
+@given(PARSE_INPUTS)
+def test_every_parse_error_names_one_of_the_three_stages(text: str) -> None:
+    try:
+        parse_decision_model(text)
+    except DecisionModelError as error:
+        assert error.stage in get_args(ParseStage)

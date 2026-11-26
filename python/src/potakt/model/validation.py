@@ -3,7 +3,7 @@
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, cast
+from typing import Any, Literal, cast
 from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
@@ -61,6 +61,10 @@ class ValidationIssue:
         return f"{self.path}: {self.message}"
 
 
+# The parsing step that failed, which the JSON parser names on every error it raises.
+ParseStage = Literal["json", "schema", "rule"]
+
+
 class DecisionModelError(Exception):
     """Raised when a DM, its data or a solution cannot be loaded; carries every issue found.
 
@@ -70,9 +74,11 @@ class DecisionModelError(Exception):
     ``weight``, ``rule_weight_message``); ``None`` otherwise.
     """
 
-    def __init__(self, issues: Iterable[ValidationIssue], *, stage: str | None = None) -> None:
+    def __init__(
+        self, issues: Iterable[ValidationIssue], *, stage: ParseStage | None = None
+    ) -> None:
         self.issues: tuple[ValidationIssue, ...] = tuple(issues)
-        self.stage = stage
+        self.stage: ParseStage | None = stage
         super().__init__("\n".join(str(issue) for issue in self.issues))
 
 

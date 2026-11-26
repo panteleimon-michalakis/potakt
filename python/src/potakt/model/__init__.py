@@ -53,6 +53,7 @@ from potakt.model.schema import (
 from potakt.model.solution import Assignment, Solution, SolutionMetadata
 from potakt.model.validation import (
     DecisionModelError,
+    ParseStage,
     ValidationIssue,
     validate_data,
     validate_solution,
@@ -81,6 +82,7 @@ __all__ = [
     "MinPerPeriod",
     "MinRest",
     "NoOverlap",
+    "ParseStage",
     "Preference",
     "ProblemInstance",
     "Provenance",

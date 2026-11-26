@@ -114,7 +114,9 @@ def load_model(text: str, directory: Path) -> LoadedModel | InvalidModel:
     try:
         dm = parse_decision_model(text)
     except DecisionModelError as error:
-        return InvalidModel(error.issues, _PARSE_STAGES[error.stage or ""])
+        # The parser names its stage on every error it raises (``ParseStage``); "schema" for a
+        # missing one only keeps load_model from raising.
+        return InvalidModel(error.issues, error.stage or "schema")
     try:
         instance = load_instance(dm, directory)
     except DecisionModelError as error:
@@ -123,10 +125,6 @@ def load_model(text: str, directory: Path) -> LoadedModel | InvalidModel:
     if issues:
         return InvalidModel(tuple(issues), "data")
     return LoadedModel(dm, instance)
-
-
-# ``parse_decision_model`` sets one of these on every error it raises.
-_PARSE_STAGES: dict[str, InvalidStage] = {"json": "json", "schema": "schema", "rule": "rule"}
 
 
 # --- denotations -----------------------------------------------------------------------------

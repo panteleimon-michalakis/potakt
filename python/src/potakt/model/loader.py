@@ -33,6 +33,7 @@ from potakt.model.decision_model import DecisionModel
 from potakt.model.solution import Solution
 from potakt.model.validation import (
     DecisionModelError,
+    ParseStage,
     ValidationIssue,
     issue_at,
     issues_from_pydantic,
@@ -137,7 +138,7 @@ def _nesting_depth(document: object) -> int:
 _RULE_ERROR_TYPES = frozenset({CUSTOM_ERROR_TYPE, "value_error"})
 
 
-def _structural_stage(error: ValidationError, document: object) -> str:
+def _structural_stage(error: ValidationError, document: object) -> ParseStage:
     """The stage of a structural failure (``DecisionModelError.stage``), by the first error only
     and never by message text: ``json`` if the document is not an object or Pydantic's own JSON
     parser rejects the text (``json_invalid``); ``rule`` if the error comes from one of our
