@@ -75,7 +75,10 @@ The other commands are offline: none of them calls a model or needs credentials:
   invalid candidates alike, 1 invalid scenario or unreadable file);
 - `potakt eval summary <model runs dir> [--corpus DIR] [--json]` summarizes one model's recorded
   runs at the batch prices, with how the answers stopped and the scenarios still missing; it is
-  complete only when all ten are scored (exit code 0 printed, 1 missing directory);
+  complete only when all ten are scored (exit code 0 printed, 1 missing directory). Without
+  changing the gate it also shows one row per scenario, the recall over valid candidates, a 95 %
+  bootstrap interval of the recall, and each candidate's assumptions next to the scenario's
+  unsupported requests (ADR-0008 D3, D12);
 - `potakt eval rescore <model runs dir> [--corpus DIR]` recomputes each run's `candidate.txt` and
   `comparison.json` from its `response.json` alone, sending no request, and prints one line per
   scenario: `unchanged`, `updated (<files>)` or `skipped (no response.json)` (exit code 0 all

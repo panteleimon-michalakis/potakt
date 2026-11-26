@@ -62,7 +62,9 @@ a harness fix, without a new request; it prints `unchanged`, `updated (<files>)`
 named after a registered model or a scenario not in the corpus. `potakt eval summary` reports a
 model's results; the Test A gate is read only from a complete summary of `claude-opus-5-5`.
 The summary's cost counts every answer's tokens at the pinned prices. A refusal outside the
-billed categories is not billed, so the summary may overstate the cost.
+billed categories is not billed, so the summary may overstate the cost. Its per-scenario rows,
+the recall over valid candidates and the bootstrap interval never change the gate (ADR-0008 D3);
+the owner rates the lines under «Unsupported requests and assumptions» (ADR-0008 D12).
 
 Each scenario is one directory, `scenarios/<NN>-<slug>/`:
 - `request.md`: the manager's message, the only free text the LLM sees;

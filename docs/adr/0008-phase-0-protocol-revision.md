@@ -56,6 +56,16 @@ The summary of ADR-0007 §5.4 also shows, without changing the gate:
 A result whose interval contains 0.70 is decided by its point value like any other, and the report
 says that it lies within the uncertainty of a ten-scenario corpus. No decision band is added.
 
+**Amendment (2026-11-13, TASK-005e3, before any LLM run).** How the summary computes (a) and (c).
+The thinking tokens of (a) are Anthropic's `usage.output_tokens_details.thinking_tokens` and
+Gemini's `usageMetadata.thoughtsTokenCount` (0 when absent); they are part of the output tokens,
+and the summary names every run whose response does not report them. A row's estimated cost is
+that run's tokens at the pinned prices. In (c) the scenarios are the scored ones, in the order of
+the rows; a draw is `int(r.random() * n)` with `r = random.Random(20261109)`, the one part of
+Python's `random` whose sequence its documentation keeps the same across versions; the interval
+is the nearest-rank 2.5th and 97.5th percentiles, the 250th and the 9 750th of the 10 000 sorted
+values; no interval is computed if a scored scenario has no truth constraint.
+
 ### D4. Output budget
 `max_tokens` stays 64000 (ADR-0007 §7, amendment of 2026-11-07), unless a development run of
 `claude-opus-5-5` stops with `max_tokens` or uses more than 48 000 output tokens. In that case the

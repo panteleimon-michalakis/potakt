@@ -184,7 +184,9 @@ uv run potakt eval summary ../docs/validation/runs/test-a/claude-haiku-5-5
 
 - `eval rescore` must print only `unchanged` lines.
 - `eval summary` must show `Complete: yes`.
-- Send the summary to the reviewer.
+- Send the summary to the reviewer. The owner rates each block under `Unsupported requests and
+  assumptions:` (does an assumption name the request's people, attribute and time? ADR-0008 D12);
+  the reviewer checks the ratings.
 
 ## 5. Gemini
 

@@ -318,7 +318,9 @@ def eval_summary(
 
     Summarize one model's recorded Test A runs: recall, merged recall, precision, validity,
     completeness (the corpus scenarios still missing), breakdowns, diagnostics, how the answers
-    stopped, usage and cost at the batch prices (ADR-0007 §7 «Records» and its amendment).
+    stopped, usage and cost at the batch prices (ADR-0007 §7 «Records» and its amendment), and,
+    without changing the gate, one row per scenario, the recall over valid candidates, a bootstrap
+    interval of the recall and the assumptions next to unsupported requests (ADR-0008 D3, D12).
 
     Exit code 0: summary printed; 1: missing directory; 2: usage error.
     """
