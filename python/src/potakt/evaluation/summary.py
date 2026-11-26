@@ -6,7 +6,8 @@ A model's runs live in ``<runs>/<model dir>/<scenario id>/`` with ``comparison.j
 micro-averages the scores over the scored scenarios, breaks recall down by language, template and
 hardness (of the truth constraint), counts the diagnostic categories and how the answers stopped,
 sums the token usage of every run and prices each run, and gives one row per scored scenario
-(ADR-0008 D3(a)). It names every corpus scenario without a
+(ADR-0008 D3(a)) with the candidate's assumptions next to the scenario's unsupported requests
+(D12, read from ``candidate.txt``). It names every corpus scenario without a
 scored run and is complete only when there is none. Nothing is silently skipped: every record
 that cannot be used is in ``notes``.
 """
@@ -23,7 +24,13 @@ from typing import Any, Literal, Self, cast
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from potakt.evaluation.compare import CATEGORIES, Category, InvalidStage
-from potakt.evaluation.records import COMPARISON_FILE, REGISTERED_MODELS, RESPONSE_FILE, answer_of
+from potakt.evaluation.records import (
+    CANDIDATE_FILE,
+    COMPARISON_FILE,
+    REGISTERED_MODELS,
+    RESPONSE_FILE,
+    answer_of,
+)
 from potakt.evaluation.scenario import METADATA_FILE, Scenario
 from potakt.evaluation.transport import server_text
 
@@ -55,6 +62,8 @@ ISSUE_CLASSES: dict[InvalidStage | None, str] = {
 GATE_RECALL = 0.70
 BOOTSTRAP_RESAMPLES = 10_000
 BOOTSTRAP_SEED = 20261109
+# ADR-0008 D12: an assumption is model output, shown printable and cut to this many characters.
+ASSUMPTION_TEXT_LIMIT = 1000
 _OUTSIDE_DIRECTORY_ALPHABET = re.compile(r"[^A-Za-z0-9._-]")
 _MILLION = 1_000_000
 
@@ -156,12 +165,15 @@ def _shown(ratio: float | None) -> str:
 
 @dataclass(frozen=True, slots=True)
 class ScenarioRow:
-    """One scored scenario (ADR-0008 D3(a)).
+    """One scored scenario (ADR-0008 D3(a)), with its unsupported requests and the candidate's
+    assumptions (D12).
 
     ``issue_class`` is ``None`` for a valid candidate. ``stop`` is the answer's stop exactly as
     the server sent it, ``None`` when the model is not registered or ``response.json`` cannot be
     used. Tokens are ``None`` when the run's usage (or only its thinking) is unknown; ``cost_usd``
     is ``None`` when the usage is unknown or the model has no price, and is rounded on its own.
+    ``unsupported`` holds the scenario's ``unsupported[].quote`` in order; ``assumptions`` the
+    candidate's assumption texts, printable and cut (``_read_assumptions``).
     """
 
     scenario: str
@@ -176,6 +188,8 @@ class ScenarioRow:
     cost_usd: float | None
     matched_count: int
     candidate_count: int
+    unsupported: tuple[str, ...]
+    assumptions: tuple[str, ...]
 
     @property
     def recall(self) -> float | None:
@@ -201,6 +215,8 @@ class ScenarioRow:
             "candidate_count": self.candidate_count,
             "recall": self.recall,
             "precision": self.precision,
+            "unsupported": list(self.unsupported),
+            "assumptions": list(self.assumptions),
         }
 
     def to_text(self) -> str:
@@ -391,6 +407,21 @@ class Summary:
             )
         return lines
 
+    def _assumption_lines(self) -> list[str]:
+        """ADR-0008 D12: each row with an unsupported quote, its quotes and the candidate's
+        assumptions; no line at all without such a row."""
+        shown = [row for row in self.rows if row.unsupported]
+        if not shown:
+            return []
+        lines = ["Unsupported requests and assumptions:"]
+        for row in shown:
+            lines.append(f"  {row.scenario}")
+            lines += [f"    unsupported: {quote}" for quote in row.unsupported]
+            lines += [f"    assumption: {text}" for text in row.assumptions] or [
+                "    assumption: none"
+            ]
+        return lines
+
     def to_text(self) -> str:
         """A short report, one fact per line, ending with ``\\n``."""
 
@@ -440,6 +471,7 @@ class Summary:
             f"Cost: {cost}",
             "Per scenario:",
             *(f"  {row.to_text()}" for row in self.rows),
+            *self._assumption_lines(),
         ]
         if self.not_scored:
             lines.append(f"Not scored: {', '.join(self.not_scored)}")
@@ -524,7 +556,10 @@ def summarize(runs_dir: Path, corpus_dir: Path) -> Summary:
         if stop is not None:
             stops[stop] += 1
         if record is not None:
-            rows.append(_row(name, *record, stop, tokens, run_cost))
+            found, assumptions_problem = _read_assumptions(run)
+            if assumptions_problem:
+                notes.append(f"{name}: {assumptions_problem}; assumptions not shown")
+            rows.append(_row(name, *record, stop, tokens, run_cost, found))
     if not registered:
         notes.append(f"{model}: not a registered model; stops not counted")
     missing = tuple(
@@ -565,6 +600,7 @@ def _row(
     stop: str | None,
     tokens: tuple[int, int, int | None] | None,
     run_cost_micro: float | None,
+    assumptions: tuple[str, ...],
 ) -> ScenarioRow:
     """The row of one scored run; ``run_cost_micro`` is ``None`` without usage or a price."""
     return ScenarioRow(
@@ -580,6 +616,8 @@ def _row(
         cost_usd=None if run_cost_micro is None else round(run_cost_micro / _MILLION, 6),
         matched_count=len(record.matched),
         candidate_count=record.candidate_count,
+        unsupported=tuple(request.quote for request in scenario.unsupported),
+        assumptions=assumptions,
     )
 
 
@@ -617,6 +655,35 @@ def _read_response(run: Path) -> tuple[object, str]:
         return json.loads(path.read_bytes()), ""
     except (ValueError, RecursionError):
         return None, f"{RESPONSE_FILE} is not valid JSON"
+
+
+def _read_assumptions(run: Path) -> tuple[tuple[str, ...], str]:
+    """The assumption texts of one run's ``candidate.txt`` and ``""``, or ``()`` and the problem.
+
+    The candidate is read as JSON whatever its validity: each item of a top-level
+    ``assumptions`` list that is an object with a string ``text`` counts, in order, through
+    ``server_text`` (model output: printable, cut to ``ASSUMPTION_TEXT_LIMIT``, and a lone
+    surrogate becomes ``?``). Anything else gives no assumption and no problem.
+    """
+    path = run / CANDIDATE_FILE
+    if not path.is_file():
+        return (), f"{CANDIDATE_FILE} not found"
+    try:
+        candidate: object = json.loads(path.read_bytes())
+    except (ValueError, RecursionError):
+        return (), ""
+    if not isinstance(candidate, dict):
+        return (), ""
+    items = cast(dict[str, object], candidate).get("assumptions")
+    if not isinstance(items, list):
+        return (), ""
+    texts: list[str] = []
+    for item in cast(list[object], items):
+        if isinstance(item, dict):
+            text = cast(dict[str, object], item).get("text")
+            if isinstance(text, str):
+                texts.append(server_text(text, limit=ASSUMPTION_TEXT_LIMIT))
+    return tuple(texts), ""
 
 
 def _tally(groups: dict[str, Counter[str]], name: str, matched: int, truth: int) -> None:

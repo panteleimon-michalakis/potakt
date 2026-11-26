@@ -29,6 +29,7 @@ from potakt.evaluation import (
     summarize,
 )
 from potakt.evaluation.summary import (
+    ASSUMPTION_TEXT_LIMIT,
     BOOTSTRAP_RESAMPLES,
     BOOTSTRAP_SEED,
     GATE_RECALL,
@@ -618,6 +619,9 @@ ROW_04 = (
     "  04-restaurant: en hard, truth 12, invalid (stop reason), stop refusal, output 500"
     " (thinking n/a), $0.0300, matched 0, recall 0.000, precision n/a"
 )
+# The corpus's unsupported quotes of 03 and 04 (01 has none).
+QUOTE_03 = "We also need at least one Spanish speaker on every weekday shift."
+QUOTE_04 = "every evening we need at least one personal licence holder on the floor for the bar"
 
 
 def rows_of(runs: Path) -> list[dict[str, object]]:
@@ -648,7 +652,7 @@ def test_issue_classes_are_the_words_of_adr_0008_d3a() -> None:
 def test_a_scenario_row_has_exactly_these_fields_in_this_order() -> None:
     names = [field.name for field in dataclasses.fields(ScenarioRow)]
 
-    assert names[:12] == [
+    assert names == [
         "scenario",
         "language",
         "difficulty",
@@ -661,6 +665,8 @@ def test_a_scenario_row_has_exactly_these_fields_in_this_order() -> None:
         "cost_usd",
         "matched_count",
         "candidate_count",
+        "unsupported",
+        "assumptions",
     ]
     row = summarize(OPUS_RUNS, CORPUS).rows[0]
     with pytest.raises(dataclasses.FrozenInstanceError):
@@ -679,6 +685,9 @@ def test_the_fixture_rows_in_json() -> None:
     rows = rows_of(OPUS_RUNS)
 
     assert [row["scenario"] for row in rows] == FIXTURE_SCENARIOS
+    candidate_01 = json.loads((OPUS_RUNS / "01-pharmacy" / "candidate.txt").read_bytes())
+    assumptions_01 = [item["text"] for item in candidate_01["assumptions"]]
+    assert len(assumptions_01) == 2
     assert rows[0] == {
         "scenario": "01-pharmacy",
         "language": "el",
@@ -694,8 +703,15 @@ def test_the_fixture_rows_in_json() -> None:
         "candidate_count": 5,
         "recall": 1.0,
         "precision": 1.0,
+        "unsupported": [],
+        "assumptions": assumptions_01,
     }
     assert (rows[1]["cost_usd"], rows[1]["recall"], rows[1]["precision"]) == (0.118, 5 / 8, 5 / 8)
+    assert (rows[1]["unsupported"], rows[1]["assumptions"]) == (
+        [QUOTE_03],
+        ["The Spanish speaker request cannot be expressed."],
+    )
+    assert (rows[2]["unsupported"], rows[2]["assumptions"]) == ([QUOTE_04], [])
     assert {key: rows[2][key] for key in ("valid", "issue_class", "stop", "thinking_tokens")} == {
         "valid": False,
         "issue_class": "stop reason",
@@ -994,3 +1010,181 @@ def test_the_interval_resamples_the_rows_in_row_order() -> None:
     counts = [(row.matched_count, row.truth_count) for row in summary.rows]
     assert counts == [(5, 5), (5, 8), (0, 12)]
     assert summary.recall_interval == bootstrap_interval(counts)
+
+
+# --- assumptions next to the unsupported requests (TASK-005e3 decision 4, ADR-0008 D12) ------
+
+SECTION = "Unsupported requests and assumptions:"
+SECTION_03 = [
+    "  03-call-centre",
+    f"    unsupported: {QUOTE_03}",
+    "    assumption: The Spanish speaker request cannot be expressed.",
+]
+SECTION_04 = ["  04-restaurant", f"    unsupported: {QUOTE_04}", "    assumption: none"]
+
+
+def section_of(runs: Path) -> list[str]:
+    """The section's lines: its heading and the indented lines right after it."""
+    lines = summarize(runs, CORPUS).to_text().splitlines()
+    start = lines.index(SECTION)
+    end = start + 1
+    while end < len(lines) and lines[end].startswith("  "):
+        end += 1
+    return lines[start:end]
+
+
+def with_candidate(tmp_path: Path, name: str, candidate: str | bytes) -> Path:
+    """The fixture runs with ``name``'s ``candidate.txt`` replaced (its comparison unchanged)."""
+    runs = copy_runs(tmp_path)
+    path = runs / name / "candidate.txt"
+    if isinstance(candidate, bytes):
+        path.write_bytes(candidate)
+    else:
+        path.write_text(candidate, encoding="utf-8")
+    return runs
+
+
+def assumptions(text: str) -> str:
+    return json.dumps({"assumptions": [{"id": "a", "text": text, "status": "proposed"}]})
+
+
+def test_the_assumption_text_limit() -> None:
+    assert ASSUMPTION_TEXT_LIMIT == 1000
+
+
+def test_the_fixture_section_follows_the_rows() -> None:
+    lines = summarize(OPUS_RUNS, CORPUS).to_text().splitlines()
+
+    start = lines.index(SECTION)
+    assert lines[start - 3 : start] == [ROW_01, ROW_03, ROW_04]
+    assert lines[start:] == [SECTION, *SECTION_03, *SECTION_04]
+
+
+def test_a_scenario_without_unsupported_quotes_is_not_in_the_section() -> None:
+    # 01 has assumptions but no unsupported request.
+    assert "  01-pharmacy" not in section_of(OPUS_RUNS)
+    assert summarize(OPUS_RUNS, CORPUS).rows[0].assumptions != ()
+
+
+def test_without_a_row_with_unsupported_quotes_there_is_no_section(tmp_path: Path) -> None:
+    runs = copy_runs(tmp_path)
+    shutil.rmtree(runs / "03-call-centre")
+    shutil.rmtree(runs / "04-restaurant")
+
+    text = summarize(runs, CORPUS).to_text()
+
+    assert "Unsupported requests" not in text
+    assert "assumption:" not in text
+
+
+def test_assumptions_are_read_whatever_the_validity(tmp_path: Path) -> None:
+    runs = with_candidate(tmp_path, "04-restaurant", assumptions("Licence holders are known."))
+
+    assert summarize(runs, CORPUS).rows[2].valid is False
+    assert section_of(runs)[-1] == "    assumption: Licence holders are known."
+
+
+def test_every_assumption_is_shown_in_order(tmp_path: Path) -> None:
+    candidate = {"assumptions": [{"text": "First."}, {"text": "Second."}, {"text": "Third."}]}
+    runs = with_candidate(tmp_path, "03-call-centre", json.dumps(candidate))
+
+    assert section_of(runs)[3:6] == [
+        "    assumption: First.",
+        "    assumption: Second.",
+        "    assumption: Third.",
+    ]
+    assert rows_of(runs)[1]["assumptions"] == ["First.", "Second.", "Third."]
+
+
+def test_an_assumption_with_a_newline_and_a_control_character_is_printable(
+    tmp_path: Path,
+) -> None:
+    runs = with_candidate(tmp_path, "03-call-centre", assumptions("one\ntwo\x1b[2Jthree"))
+
+    assert section_of(runs)[3] == "    assumption: one?two?[2Jthree"
+    assert rows_of(runs)[1]["assumptions"] == ["one?two?[2Jthree"]
+    assert "\x1b" not in summarize(runs, CORPUS).to_text()
+
+
+@pytest.mark.parametrize(("length", "shown"), [(1000, 1000), (1001, 1000)])
+def test_an_assumption_is_cut_to_the_limit(tmp_path: Path, length: int, shown: int) -> None:
+    runs = with_candidate(tmp_path, "03-call-centre", assumptions("x" * length))
+
+    assert rows_of(runs)[1]["assumptions"] == ["x" * shown]
+    assert section_of(runs)[3] == "    assumption: " + "x" * shown
+
+
+def test_a_lone_surrogate_escape_is_shown_as_a_question_mark(tmp_path: Path) -> None:
+    # The JSON escape \ud800 decodes to a lone surrogate, which UTF-8 cannot encode.
+    candidate = '{"assumptions": [{"text": "before\\ud800after"}]}'
+    runs = with_candidate(tmp_path, "03-call-centre", candidate)
+    summary = summarize(runs, CORPUS)
+
+    assert section_of(runs)[3] == "    assumption: before?after"
+    summary.to_json().encode("utf-8")
+    summary.to_text().encode("utf-8")
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        "The Spanish speaker request cannot be expressed.",
+        b"\xff\xfe not UTF-8",
+        "[" * 100_000 + "]" * 100_000,
+        json.dumps([{"text": "a list, not an object"}]),
+        json.dumps("a string, not an object"),
+        json.dumps({"constraints": []}),
+        json.dumps({"assumptions": {"text": "an object, not a list"}}),
+        json.dumps({"assumptions": "a string, not a list"}),
+        json.dumps(
+            {"assumptions": [{"text": 5}, {"text": None}, {"id": "a"}, "text", None, ["text"]]}
+        ),
+    ],
+    ids=[
+        "not-json",
+        "not-utf-8",
+        "nested-deeply",
+        "a-json-list",
+        "a-json-string",
+        "no-assumptions",
+        "assumptions-an-object",
+        "assumptions-a-string",
+        "items-without-a-string-text",
+    ],
+)
+def test_a_candidate_without_usable_assumptions_gives_none_and_no_note(
+    tmp_path: Path, candidate: str | bytes
+) -> None:
+    runs = with_candidate(tmp_path, "03-call-centre", candidate)
+    summary = json.loads(summarize(runs, CORPUS).to_json())
+
+    assert summary["scenarios"][1]["assumptions"] == []
+    assert summary["notes"] == []
+    assert section_of(runs)[1:4] == [
+        "  03-call-centre",
+        f"    unsupported: {QUOTE_03}",
+        "    assumption: none",
+    ]
+
+
+def test_only_the_items_with_a_string_text_count(tmp_path: Path) -> None:
+    items = [{"text": 5}, {"text": "kept"}, "text", {"id": "b"}, {"text": "also kept"}]
+    runs = with_candidate(tmp_path, "03-call-centre", json.dumps({"assumptions": items}))
+
+    assert rows_of(runs)[1]["assumptions"] == ["kept", "also kept"]
+
+
+def test_a_missing_candidate_gives_no_assumption_and_a_note(tmp_path: Path) -> None:
+    runs = copy_runs(tmp_path)
+    (runs / "03-call-centre" / "candidate.txt").unlink()
+
+    summary = json.loads(summarize(runs, CORPUS).to_json())
+
+    assert summary["scenarios"][1]["assumptions"] == []
+    assert summary["notes"] == ["03-call-centre: candidate.txt not found; assumptions not shown"]
+    assert summary["not_scored"] == []
+    assert section_of(runs)[3] == "    assumption: none"
+    assert (
+        "Note: 03-call-centre: candidate.txt not found; assumptions not shown"
+        in summarize(runs, CORPUS).to_text().splitlines()
+    )

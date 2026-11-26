@@ -30,3 +30,10 @@ Per scenario:
   01-pharmacy: el easy, truth 5, valid, stop end_turn, output 8000 (thinking 6000), $0.1040, matched 5, recall 1.000, precision 1.000
   03-call-centre: en medium, truth 8, valid, stop end_turn, output 9500 (thinking 7000), $0.1180, matched 5, recall 0.625, precision 0.625
   04-restaurant: en hard, truth 12, invalid (stop reason), stop refusal, output 500 (thinking n/a), $0.0300, matched 0, recall 0.000, precision n/a
+Unsupported requests and assumptions:
+  03-call-centre
+    unsupported: We also need at least one Spanish speaker on every weekday shift.
+    assumption: The Spanish speaker request cannot be expressed.
+  04-restaurant
+    unsupported: every evening we need at least one personal licence holder on the floor for the bar
+    assumption: none

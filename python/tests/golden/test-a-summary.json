@@ -122,6 +122,10 @@
   },
   "scenarios": [
     {
+      "assumptions": [
+        "Οι ώρες μετρώνται από την έναρξη έως τη λήξη κάθε βάρδιας, χωρίς αφαίρεση διαλειμμάτων.",
+        "Η άδεια της Ιωάννας καλύπτει ολόκληρες τις ημέρες Πέμπτη, Παρασκευή και Σάββατο (19/11 00:00 έως 22/11 00:00)."
+      ],
       "candidate_count": 5,
       "cost_usd": 0.104,
       "difficulty": "easy",
@@ -135,9 +139,13 @@
       "stop": "end_turn",
       "thinking_tokens": 6000,
       "truth_count": 5,
+      "unsupported": [],
       "valid": true
     },
     {
+      "assumptions": [
+        "The Spanish speaker request cannot be expressed."
+      ],
       "candidate_count": 8,
       "cost_usd": 0.118,
       "difficulty": "medium",
@@ -151,9 +159,13 @@
       "stop": "end_turn",
       "thinking_tokens": 7000,
       "truth_count": 8,
+      "unsupported": [
+        "We also need at least one Spanish speaker on every weekday shift."
+      ],
       "valid": true
     },
     {
+      "assumptions": [],
       "candidate_count": 0,
       "cost_usd": 0.03,
       "difficulty": "hard",
@@ -167,6 +179,9 @@
       "stop": "refusal",
       "thinking_tokens": null,
       "truth_count": 12,
+      "unsupported": [
+        "every evening we need at least one personal licence holder on the floor for the bar"
+      ],
       "valid": false
     }
   ],
