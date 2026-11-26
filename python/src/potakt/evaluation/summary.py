@@ -10,6 +10,11 @@ sums the token usage of every run and prices each run, and gives one row per sco
 (D12, read from ``candidate.txt``). It names every corpus scenario without a
 scored run and is complete only when there is none. Nothing is silently skipped: every record
 that cannot be used is in ``notes``.
+
+Next to the gate, never changing it, it reports the recall after look-alike ids (ADR-0008 D9,
+second point): each invalid candidate whose first failing stage is data-level validation has its
+unknown ids replaced by their one look-alike data id (``replace_lookalike_ids``) and is
+evaluated again; the matched count of each candidate this makes valid replaces its 0.
 """
 
 import json
@@ -31,7 +36,8 @@ from potakt.evaluation.records import (
     RESPONSE_FILE,
     answer_of,
 )
-from potakt.evaluation.scenario import METADATA_FILE, Scenario
+from potakt.evaluation.scenario import METADATA_FILE, Scenario, ScenarioError, load_scenario
+from potakt.evaluation.test_a import evaluate_candidate, replace_lookalike_ids
 from potakt.evaluation.transport import server_text
 
 # The corpus of ADR-0007 §2, resolved from the repository root (src layout, like INSTRUCTION_PATH).
@@ -286,7 +292,9 @@ class Summary:
     Scores count the scored scenarios (those with a usable ``comparison.json`` of a corpus
     scenario); usage, thinking and stops count every run directory; ``thinking_unknown`` names
     the runs whose usage is known but whose thinking is not. Groups map a name to (matched, truth).
-    ``missing`` names the corpus scenarios without a scored run.
+    ``missing`` names the corpus scenarios without a scored run. ``lookalike_valid`` holds
+    (scenario, matched count) of each scored invalid candidate that replacing its look-alike ids
+    makes valid (ADR-0008 D9), in row order.
     """
 
     model: str
@@ -312,12 +320,20 @@ class Summary:
     stops: dict[str, int]
     rows: tuple[ScenarioRow, ...]
     recall_interval: tuple[float, float] | None
+    lookalike_valid: tuple[tuple[str, int], ...]
 
     @property
     def valid_counts(self) -> tuple[int, int]:
         """(matched, truth) over the valid candidates only (ADR-0008 D3(b), not the gate)."""
         valid = [row for row in self.rows if row.valid]
         return sum(row.matched_count for row in valid), sum(row.truth_count for row in valid)
+
+    @property
+    def lookalike_counts(self) -> tuple[int, int]:
+        """(matched, truth) after look-alike ids are replaced (ADR-0008 D9, not the gate): the
+        matched count of every candidate that this makes valid is added."""
+        made_valid = sum(matched for _, matched in self.lookalike_valid)
+        return self.matched_count + made_valid, self.truth_count
 
     @property
     def complete(self) -> bool:
@@ -344,6 +360,7 @@ class Summary:
             }
 
         valid_matched, valid_truth = self.valid_counts
+        lookalike_matched, lookalike_truth = self.lookalike_counts
         return {
             "model": self.model,
             "scenarios_run": self.scenarios_run,
@@ -374,6 +391,16 @@ class Summary:
                 "matched": valid_matched,
                 "truth": valid_truth,
                 "recall": _ratio(valid_matched, valid_truth),
+            },
+            "recall_lookalike": {
+                "matched": lookalike_matched,
+                "truth": lookalike_truth,
+                "recall": _ratio(lookalike_matched, lookalike_truth),
+                "invalid": self.scenarios_run - self.valid,
+                "made_valid": [
+                    {"scenario": name, "matched_count": matched}
+                    for name, matched in self.lookalike_valid
+                ],
             },
             "recall_interval": None
             if self.recall_interval is None
@@ -406,6 +433,19 @@ class Summary:
                 f" and it lies within the uncertainty of a {scenarios}-scenario corpus"
             )
         return lines
+
+    def _lookalike_line(self) -> str:
+        """ADR-0008 D9: the recall after look-alike ids and the candidates this made valid."""
+        matched, truth = self.lookalike_counts
+        made_valid = len(self.lookalike_valid)
+        line = (
+            f"Recall after look-alike ids (not the gate): {_shown(_ratio(matched, truth))} "
+            f"({matched}/{truth}); {made_valid} of {self.scenarios_run - self.valid} invalid "
+            "candidates made valid"
+        )
+        if made_valid:
+            line += f" ({', '.join(name for name, _ in self.lookalike_valid)})"
+        return line
 
     def _assumption_lines(self) -> list[str]:
         """ADR-0008 D12: each row with an unsupported quote, its quotes and the candidate's
@@ -457,6 +497,7 @@ class Summary:
             f"Recall: {fraction(self.matched_count, self.truth_count)}",
             *self._interval_lines(),
             f"Recall over valid candidates (not the gate): {fraction(*self.valid_counts)}",
+            self._lookalike_line(),
             f"Merged recall: {fraction(self.merged_matched_count, self.merged_truth_count)}",
             f"Precision: {fraction(self.matched_count, self.candidate_count)}",
             f"Recall by language: {groups(self.by_language)}",
@@ -503,6 +544,7 @@ def summarize(runs_dir: Path, corpus_dir: Path) -> Summary:
     notes: list[str] = []
     thinking_unknown: list[str] = []
     rows: list[ScenarioRow] = []
+    lookalike_valid: list[tuple[str, int]] = []
     cost_micro: float | None = 0.0 if _prices(model) else None
     for run in _directories(runs_dir):
         name = run.name
@@ -560,6 +602,12 @@ def summarize(runs_dir: Path, corpus_dir: Path) -> Summary:
             if assumptions_problem:
                 notes.append(f"{name}: {assumptions_problem}; assumptions not shown")
             rows.append(_row(name, *record, stop, tokens, run_cost, found))
+            if not record[0].valid and record[0].invalid_stage == "data":
+                made_valid, lookalike_problem = _lookalike_matched(run, corpus_dir)
+                if lookalike_problem:
+                    notes.append(f"{name}: {lookalike_problem}; look-alike ids not replaced")
+                if made_valid is not None:
+                    lookalike_valid.append((name, made_valid))
     if not registered:
         notes.append(f"{model}: not a registered model; stops not counted")
     missing = tuple(
@@ -590,7 +638,30 @@ def summarize(runs_dir: Path, corpus_dir: Path) -> Summary:
         rows=tuple(rows),
         # ADR-0008 D3(c) and its amendment: the scored scenarios, in the order of the rows.
         recall_interval=bootstrap_interval([(row.matched_count, row.truth_count) for row in rows]),
+        lookalike_valid=tuple(lookalike_valid),
     )
+
+
+def _lookalike_matched(run: Path, corpus_dir: Path) -> tuple[int | None, str]:
+    """ADR-0008 D9: the matched count of one run's data-level invalid candidate once its
+    look-alike ids are replaced, if that makes it valid, and ``""``; or ``None`` and the problem.
+
+    A ``candidate.txt`` that is missing or not UTF-8 gives nothing and no problem (the
+    assumptions already note a missing one); a scenario that cannot be loaded gives the problem.
+    """
+    try:
+        text = (run / CANDIDATE_FILE).read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None, ""
+    try:
+        scenario = load_scenario(corpus_dir / run.name)
+    except ScenarioError:
+        return None, "the scenario cannot be loaded"
+    replaced = replace_lookalike_ids(scenario, text)
+    if replaced is None:
+        return None, ""
+    comparison = evaluate_candidate(scenario, replaced)
+    return (comparison.matched_count if comparison.valid else None), ""
 
 
 def _row(

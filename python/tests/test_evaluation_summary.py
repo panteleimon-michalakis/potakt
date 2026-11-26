@@ -17,6 +17,8 @@ from pathlib import Path
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
+from runner_helpers import anthropic_message, truth_text
+from test_evaluation_lookalike_recall import written
 
 from potakt.evaluation import (
     LONG_PROMPT_PRICES_USD_PER_MILLION,
@@ -27,6 +29,7 @@ from potakt.evaluation import (
     model_directory_name,
     rescore_run,
     summarize,
+    write_answer,
 )
 from potakt.evaluation.summary import (
     ASSUMPTION_TEXT_LIMIT,
@@ -1188,3 +1191,99 @@ def test_a_missing_candidate_gives_no_assumption_and_a_note(tmp_path: Path) -> N
         "Note: 03-call-centre: candidate.txt not found; assumptions not shown"
         in summarize(runs, CORPUS).to_text().splitlines()
     )
+
+
+# --- ADR-0008 D9: the recall after look-alike ids ------------------------------------------------
+
+OPUS = "claude-opus-5-5"
+SUPERMARKET = "05-supermarket-checkouts"
+LOOKALIKE_LINE = (
+    "Recall after look-alike ids (not the gate): 0.295 (13/44); 1 of 4 invalid candidates made "
+    "valid (05-supermarket-checkouts)"
+)
+# The written ids quote a Greek capital verbatim, which ruff reads as Latin (RUF001).
+CALL_CENTRE_IDS = "/constraints/8/params/resource_ids"
+
+
+def lookalike_runs(tmp_path: Path) -> Path:
+    """Five recorded runs (``write_answer``): 01's truth; 05 with ``T2`` (Latin T) where its
+    truth has Greek Tau; 04 with ``Z1`` (no look-alike); 06 answering ``I cannot.``; 03 with
+    Greek Alpha and ``03`` (a look-alike of its Latin ``A03``) and ``Z9``."""
+    runs = tmp_path / OPUS
+    answers = {
+        "01-pharmacy": truth_text("01-pharmacy"),
+        "03-call-centre": written(
+            "03-call-centre",
+            (f"{CALL_CENTRE_IDS}/0", "Α03"),  # noqa: RUF001 Greek Alpha
+            (f"{CALL_CENTRE_IDS}/1", "Z9"),
+        ),
+        "04-restaurant": written("04-restaurant", ("/constraints/6/params/resource_ids/0", "Z1")),
+        SUPERMARKET: written(SUPERMARKET, ("/constraints/6/params/resource_ids/1", "T2")),
+        "06-ambulance-crews": "I cannot.",
+    }
+    for name, text in answers.items():
+        scenario = load_scenario(CORPUS / name)
+        write_answer(runs / name, scenario, OPUS, anthropic_message(OPUS, text))
+    return runs
+
+
+def test_a_lookalike_id_makes_one_data_level_candidate_valid(tmp_path: Path) -> None:
+    runs = lookalike_runs(tmp_path)
+
+    summary = summarize(runs, CORPUS)
+
+    assert summary.lookalike_valid == ((SUPERMARKET, 8),)
+    assert summary.lookalike_counts == (13, 44)
+    assert (summary.matched_count, summary.truth_count) == (5, 44)  # the gate is unchanged
+    lines = summary.to_text().splitlines()
+    valid_only = next(i for i, line in enumerate(lines) if line.startswith("Recall over valid"))
+    assert lines[valid_only + 1] == LOOKALIKE_LINE
+    assert json.loads(summary.to_json())["recall_lookalike"] == {
+        "invalid": 4,
+        "made_valid": [{"matched_count": 8, "scenario": SUPERMARKET}],
+        "matched": 13,
+        "recall": 13 / 44,
+        "truth": 44,
+    }
+    assert summary.notes == ()
+
+
+def test_a_scenario_that_cannot_be_loaded_gives_a_note_and_no_replacement(
+    tmp_path: Path,
+) -> None:
+    runs = lookalike_runs(tmp_path)
+    corpus = corpus_of(tmp_path, [path.name for path in runs.iterdir()])
+    (corpus / SUPERMARKET / "truth.json").write_text("{}", encoding="utf-8")
+
+    summary = summarize(runs, corpus)
+
+    assert summary.lookalike_valid == ()
+    assert summary.notes == (
+        f"{SUPERMARKET}: the scenario cannot be loaded; look-alike ids not replaced",
+    )
+    assert (
+        "Recall after look-alike ids (not the gate): 0.114 (5/44); 0 of 4 invalid candidates made "
+        "valid"
+    ) in summary.to_text().splitlines()
+
+
+def test_a_missing_candidate_is_not_replaced_and_has_only_the_assumptions_note(
+    tmp_path: Path,
+) -> None:
+    runs = lookalike_runs(tmp_path)
+    (runs / SUPERMARKET / "candidate.txt").unlink()
+
+    summary = summarize(runs, CORPUS)
+
+    assert summary.lookalike_valid == ()
+    assert summary.notes == (f"{SUPERMARKET}: candidate.txt not found; assumptions not shown",)
+
+
+def test_a_candidate_that_is_not_utf8_is_not_replaced(tmp_path: Path) -> None:
+    runs = lookalike_runs(tmp_path)
+    (runs / SUPERMARKET / "candidate.txt").write_bytes(b"\xff")
+
+    summary = summarize(runs, CORPUS)
+
+    assert summary.lookalike_valid == ()
+    assert summary.notes == ()
