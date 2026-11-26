@@ -607,7 +607,16 @@ def _eval_run(
                 if stopped is not None:
                     raise stopped
             else:
-                run_gemini(model, corpus, runs, key, transport, sleep=time.sleep, echo=typer.echo)
+                run_gemini(
+                    model,
+                    corpus,
+                    runs,
+                    key,
+                    transport,
+                    sleep=time.sleep,
+                    now=utc_now,
+                    echo=typer.echo,
+                )
         finally:
             warning = lock.release()  # however the run ends; only a crash leaves it
             if warning is not None:

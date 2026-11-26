@@ -38,6 +38,7 @@ from potakt.model.validation import issue_at
 __all__ = [
     "CANDIDATE_FILE",
     "COMPARISON_FILE",
+    "RECEIVED_FILE",
     "REFUSED_ATTEMPTS",
     "REGISTERED_MODELS",
     "REQUEST_FILE",
@@ -59,6 +60,8 @@ REQUEST_FILE = "request.json"
 RESPONSE_FILE = "response.json"
 CANDIDATE_FILE = "candidate.txt"
 COMPARISON_FILE = "comparison.json"
+# ADR-0008 D5: when a Gemini answer arrived, written by the runner just before response.json.
+RECEIVED_FILE = "received.json"
 _TEMPORARY_SUFFIX = ".tmp"
 # TASK-005c3g G5: where ``write_answer`` keeps an answer whose replace failed.
 UNSAVED_RESPONSE_FILE = RESPONSE_FILE + _TEMPORARY_SUFFIX

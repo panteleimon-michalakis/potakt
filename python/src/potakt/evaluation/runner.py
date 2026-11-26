@@ -45,6 +45,7 @@ from potakt.evaluation.compare import Comparison
 from potakt.evaluation.records import (
     CANDIDATE_FILE,
     COMPARISON_FILE,
+    RECEIVED_FILE,
     REQUEST_FILE,
     RESPONSE_FILE,
     UNSAVED_RESPONSE_FILE,
@@ -1571,6 +1572,7 @@ def _run_gemini(
     headers: dict[str, str],
     transport: Transport,
     sleep: Sleep,
+    now: Callable[[], datetime],
     echo: Echo,
 ) -> None:
     _complete_records(corpus_dir, model_dir, model, echo)
@@ -1595,9 +1597,13 @@ def _run_gemini(
             raise RunStopped(f"{name}: {error}") from None
         if response.status != 200:
             raise RunStopped(f"{name}: {describe_response(response, secret_values(headers))}")
+        received = json.dumps({"received_at": _stamp(now())}, indent=2) + "\n"  # ADR-0008 D5
         document = cast(dict[str, object], _json(response.body))
         scenario = _load(corpus_dir, name)
         try:
+            # Before response.json: every recorded answer has its file, and the next attempt
+            # replaces the file of an attempt that was not recorded.
+            write_atomic(model_dir / name / RECEIVED_FILE, received.encode("utf-8"))
             comparison = write_answer(model_dir / name, scenario, model, document)
             line = recorded_line(name, model, document, comparison)
         except Exception as error:  # never its text (TASK-005c3d H9)
@@ -1615,13 +1621,19 @@ def run_gemini(
     transport: Transport,
     *,
     sleep: Sleep,
+    now: Callable[[], datetime],
     echo: Echo,
 ) -> None:
     """Run every pending scenario of ``corpus_dir`` on a Gemini model, one ``generateContent``
     call at a time in UTF-8 byte order (TASK-005c3 F4), and record each answer under
     ``runs_dir / model_directory_name(model)``.
 
-    A 200 with a JSON object is recorded, a blocked prompt included (an invalid answer). Returns
+    A 200 with a JSON object is recorded, a blocked prompt included (an invalid answer). ADR-0008
+    D5: once such an answer arrived, ``now()`` is read once and ``received.json``
+    (``{"received_at": <UTC, whole seconds>}``) is written just before ``response.json``, in the
+    same step, so a failure there is the same stop and every recorded answer has its file; the
+    next attempt replaces the file of an attempt that was not recorded. A failed or retried call
+    writes none, nor does a Claude run; ``eval rescore`` and the summary never read it. Returns
     once every corpus scenario is recorded; raises ``RunStopped`` (never containing ``key``)
     when the run must stop, and running again sends only the scenarios still pending. Raises
     ``ValueError`` for a model that is not a registered Gemini model.
@@ -1631,7 +1643,8 @@ def run_gemini(
         raise ValueError(f"{model} is not a Gemini model")
     model_dir = runs_dir / model_directory_name(model)
     try:
-        _run_gemini(model, corpus_dir, model_dir, gemini_headers(key), transport, sleep, echo)
+        headers = gemini_headers(key)
+        _run_gemini(model, corpus_dir, model_dir, headers, transport, sleep, now, echo)
     except RunStopped as error:
         raise RunStopped(redact(str(error), [key])) from None
 

@@ -5,6 +5,7 @@ import json
 import os
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -20,9 +21,11 @@ from runner_helpers import (
     gemini_response,
     truth_text,
 )
+from typer.testing import CliRunner
 
 import potakt.evaluation.records as records_module
 import potakt.evaluation.runner as runner_module
+from potakt.cli import app
 from potakt.evaluation import CORPUS_PATH, load_scenario, write_answer
 from potakt.evaluation.runner import GEMINI_URL, USER_AGENT, run_gemini
 from potakt.evaluation.transport import HttpResponse, RunStopped, TransportError
@@ -61,6 +64,8 @@ class FakeGemini:
         default_factory=dict[str, list[HttpResponse | TransportError]]
     )
     calls: list[Call] = field(default_factory=list[Call])
+    # ADR-0008 D5: ``POST <scenario>`` for each call and ``now HH:MM:SS`` for each clock read.
+    events: list[str] = field(default_factory=list[str])
 
     def send(
         self, method: str, url: str, headers: dict[str, str], body: bytes | None, timeout: float
@@ -69,6 +74,7 @@ class FakeGemini:
         assert body is not None
         self.calls.append(Call(url, headers, body, timeout))
         name = self.scenario_of(body)
+        self.events.append(f"POST {name}")
         steps = self.script.get(name, [])
         if steps:
             step = steps.pop(0)
@@ -105,9 +111,22 @@ class Run:
     def model_dir(self) -> Path:
         return self.runs / GEMINI
 
+    def now(self) -> datetime:
+        """The runner's clock (``Sleeps``), each read logged in the server's events."""
+        moment = self.sleeps.now()
+        self.server.events.append(f"now {moment:%H:%M:%S}")
+        return moment
+
     def __call__(self) -> None:
         run_gemini(
-            GEMINI, self.corpus, self.runs, KEY, self.server, sleep=self.sleeps, echo=self.echo
+            GEMINI,
+            self.corpus,
+            self.runs,
+            KEY,
+            self.server,
+            sleep=self.sleeps,
+            now=self.now,
+            echo=self.echo,
         )
 
     def recorded(self) -> list[str]:
@@ -290,7 +309,14 @@ def test_nothing_pending_prints_nothing_to_run(tmp_path: Path) -> None:
 def test_only_gemini_runs_on_generate_content(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match=r"claude-haiku-5-5 is not a Gemini model"):
         run_gemini(
-            "claude-haiku-5-5", tmp_path, tmp_path, KEY, FakeGemini(), sleep=Sleeps(), echo=Echo()
+            "claude-haiku-5-5",
+            tmp_path,
+            tmp_path,
+            KEY,
+            FakeGemini(),
+            sleep=Sleeps(),
+            now=Sleeps().now,
+            echo=Echo(),
         )
 
 
@@ -528,3 +554,114 @@ def test_each_request_is_checked_again_when_it_is_built(
     assert run.server.sent() == ["01-pharmacy"]
     assert run.recorded() == ["01-pharmacy"]
     assert not (run.model_dir / "02-hotel-reception" / "request.json").exists()
+
+
+# --- ADR-0008 D5: received.json, the instant each answer arrived --------------------------------
+
+
+def received(run: Run, name: str) -> bytes:
+    return (run.model_dir / name / "received.json").read_bytes()
+
+
+def received_at(instant: str) -> bytes:
+    return b'{\n  "received_at": "' + instant.encode() + b'"\n}\n'
+
+
+def test_each_answer_records_when_it_was_received(tmp_path: Path) -> None:
+    server = FakeGemini(
+        script={"02-hotel-reception": [error(429, "RESOURCE_EXHAUSTED", "Quota exceeded", "30s")]}
+    )
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:3])
+
+    run()
+
+    assert received(run, "01-pharmacy") == received_at("2026-11-02T10:00:00Z")
+    assert received(run, "02-hotel-reception") == received_at("2026-11-02T10:00:30Z")
+    assert received(run, "03-call-centre") == received_at("2026-11-02T10:00:30Z")
+    assert server.events == [
+        "POST 01-pharmacy",
+        "now 10:00:00",
+        "POST 02-hotel-reception",
+        "POST 02-hotel-reception",
+        "now 10:00:30",
+        "POST 03-call-centre",
+        "now 10:00:30",
+    ]
+    for name in ALL_SCENARIOS[:3]:
+        assert sorted(path.name for path in (run.model_dir / name).iterdir()) == [
+            "candidate.txt",
+            "comparison.json",
+            "received.json",
+            "request.json",
+            "response.json",
+        ]
+
+
+def test_a_failed_call_writes_no_received_json(tmp_path: Path) -> None:
+    server = FakeGemini(script={"01-pharmacy": [error(400, "INVALID_ARGUMENT", "bad field")]})
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+
+    with pytest.raises(RunStopped, match=r"^01-pharmacy: HTTP 400"):
+        run()
+
+    assert not (run.model_dir / "01-pharmacy" / "received.json").exists()
+    assert server.events == ["POST 01-pharmacy"]
+
+
+def test_received_json_comes_before_the_answer_and_the_next_attempt_replaces_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = make_run(tmp_path, FakeGemini(), ALL_SCENARIOS[:1])
+    seen: list[bytes] = []
+
+    def write(run_dir: Path, scenario: Any, model: str, response: object) -> Any:
+        seen.append((run_dir / "received.json").read_bytes())
+        raise OSError(28, "No space left on device")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(runner_module, "write_answer", write)
+        with pytest.raises(RunStopped) as raised:
+            run()
+
+    assert seen == [received_at("2026-11-02T10:00:00Z")]
+    assert str(raised.value) == (
+        "01-pharmacy: could not be recorded (OSError); send this message to the reviewer"
+    )
+    assert not (run.model_dir / "01-pharmacy" / "response.json").exists()
+    run.sleeps.advance(3600)
+
+    run()
+
+    assert run.recorded() == ["01-pharmacy"]
+    assert received(run, "01-pharmacy") == received_at("2026-11-02T11:00:00Z")
+
+
+def test_a_refused_received_json_stops_before_the_answer_is_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(os, "replace", RefusedReplace(10, "received.json"))
+    run = make_run(tmp_path, FakeGemini(), ALL_SCENARIOS[:2])
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == (
+        "01-pharmacy: could not be recorded (PermissionError); send this message to the reviewer"
+    )
+    assert run.recorded() == []
+    assert run.server.sent() == ["01-pharmacy"]
+
+
+def test_rescore_leaves_received_json_byte_for_byte(tmp_path: Path) -> None:
+    server = FakeGemini(script={"01-pharmacy": [ok(gemini_response(truth_text("01-pharmacy")))]})
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:2])
+    run()
+    before = {name: received(run, name) for name in ALL_SCENARIOS[:2]}
+
+    rescored = CliRunner().invoke(
+        app, ["eval", "rescore", str(run.model_dir), "--corpus", str(run.corpus)]
+    )
+
+    assert rescored.exit_code == 0, rescored.stderr
+    assert {name: received(run, name) for name in ALL_SCENARIOS[:2]} == before

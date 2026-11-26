@@ -269,6 +269,7 @@ def test_the_runbook_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
         f"{OPUS}/batch-msgbatch_03.results.jsonl",
         f"{OPUS}/batches.json",
     ]
+    expected += [f"{GEMINI}/{name}/received.json" for name in ALL_SCENARIOS]  # ADR-0008 D5
     assert files == sorted(expected)  # no lock file left either
     assert not list(runs.rglob("*.tmp"))
     haiku_state = json.loads((runs / HAIKU / "batches.json").read_bytes())
