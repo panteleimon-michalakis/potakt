@@ -44,7 +44,8 @@ one that calls them (free, read-only); the owner runs both by following
   tier) and sends nothing; with `--yes` it reads the key from `POTAKT_ANTHROPIC_API_KEY` (Claude
   models, Message Batches API) or `POTAKT_GEMINI_API_KEY` (`gemini-3.8-flash`), records every
   pending scenario under `docs/validation/runs/test-a/<model>/` (`request.json`, `response.json`,
-  `candidate.txt`, `comparison.json`, and for Claude models `batches.json` and
+  `candidate.txt`, `comparison.json`, for Gemini `received.json` with the time each answer
+  arrived, and for Claude models `batches.json`, which keeps each ended batch's `ended_at`, and
   `batch-<id>.results.jsonl`) and prints the summary; a Claude run first compares the laptop clock
   with the API's and stops, sending nothing, if they differ by more than 2 minutes;
   `claude-opus-5-5` runs only after `claude-haiku-5-5` has a complete run, and the same command
@@ -77,8 +78,9 @@ The other commands are offline: none of them calls a model or needs credentials:
   runs at the batch prices, with how the answers stopped and the scenarios still missing; it is
   complete only when all ten are scored (exit code 0 printed, 1 missing directory). Without
   changing the gate it also shows one row per scenario, the recall over valid candidates, a 95 %
-  bootstrap interval of the recall, and each candidate's assumptions next to the scenario's
-  unsupported requests (ADR-0008 D3, D12);
+  bootstrap interval of the recall, the recall after look-alike ids are replaced in the invalid
+  candidates, and each candidate's assumptions next to the scenario's unsupported requests
+  (ADR-0008 D3, D9, D12);
 - `potakt eval rescore <model runs dir> [--corpus DIR]` recomputes each run's `candidate.txt` and
   `comparison.json` from its `response.json` alone, sending no request, and prints one line per
   scenario: `unchanged`, `updated (<files>)` or `skipped (no response.json)` (exit code 0 all

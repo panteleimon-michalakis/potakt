@@ -50,10 +50,13 @@ Test A records go to `runs/test-a/<model>/<scenario id>/` (ADR-0007 §7 and its 
 `request.json`, `response.json` (the raw answer, written first and never overwritten; UTF-8,
 or ASCII with every non-ASCII character escaped if any string in the answer holds an unpaired
 surrogate, which has no UTF-8 form; the answer is malformed only when its text or its stop holds
-one), `candidate.txt` and `comparison.json`. For a Claude
+one), `candidate.txt` and `comparison.json`; a Gemini run also writes `received.json`
+(`{"received_at": "<UTC, whole seconds>"}`, read when the answer arrived) just before
+`response.json` (ADR-0008 D5). For a Claude
 model, `runs/test-a/<model>/` also holds `batches.json` (one entry per batch creation: the batch id, the scenarios, when the create request
 was sent, the batch's creation time, the state `creating`, `open`, `held`, `done` or `failed`,
-and the problems that held the batch, kept after its release) and
+the problems that held the batch, kept after its release, and `ended_at`: for an ended batch the
+time the API reported, else `null`; ADR-0008 D5) and
 `batch-<id>.results.jsonl` (the raw batch results); the summary and `eval rescore` ignore these
 files. `candidate.txt` and `comparison.json` are derived from `response.json` alone, so
 `uv run potakt eval rescore ../docs/validation/runs/test-a/<model>` recomputes them offline after
@@ -63,8 +66,9 @@ named after a registered model or a scenario not in the corpus. `potakt eval sum
 model's results; the Test A gate is read only from a complete summary of `claude-opus-5-5`.
 The summary's cost counts every answer's tokens at the pinned prices. A refusal outside the
 billed categories is not billed, so the summary may overstate the cost. Its per-scenario rows,
-the recall over valid candidates and the bootstrap interval never change the gate (ADR-0008 D3);
-the owner rates the lines under «Unsupported requests and assumptions» (ADR-0008 D12).
+the recall over valid candidates, the bootstrap interval (ADR-0008 D3) and the recall after
+look-alike ids (ADR-0008 D9) never change the gate; the owner rates the lines under «Unsupported
+requests and assumptions» (ADR-0008 D12).
 
 Each scenario is one directory, `scenarios/<NN>-<slug>/`:
 - `request.md`: the manager's message, the only free text the LLM sees;

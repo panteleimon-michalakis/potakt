@@ -320,7 +320,8 @@ def eval_summary(
     completeness (the corpus scenarios still missing), breakdowns, diagnostics, how the answers
     stopped, usage and cost at the batch prices (ADR-0007 §7 «Records» and its amendment), and,
     without changing the gate, one row per scenario, the recall over valid candidates, a bootstrap
-    interval of the recall and the assumptions next to unsupported requests (ADR-0008 D3, D12).
+    interval of the recall, the recall after look-alike ids are replaced and the assumptions next
+    to unsupported requests (ADR-0008 D3, D9, D12).
 
     Exit code 0: summary printed; 1: missing directory; 2: usage error.
     """

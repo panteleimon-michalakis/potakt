@@ -75,6 +75,15 @@ output budget is decided again by an amendment to this ADR before the freeze, wi
 `batches.json` also keeps each ended batch's `ended_at` as the API reports it. A Gemini run writes
 `received.json` (`{"received_at": <UTC instant>}`) next to `response.json`. Neither changes a score.
 
+**Amendment (2026-11-25, TASK-005e4, before any LLM run).** Every `batches.json` entry has the key
+`ended_at`. On a `held` or `done` entry it holds the `ended_at` of the batch object whose poll first
+showed the batch ended, exactly as sent, when that is an RFC 3339 instant; it is `null` on every
+other entry and when the API gave none or an odd value, which never stops a run. `received_at` is
+the laptop's UTC clock read once the `200` answer arrived, in whole seconds (`2026-12-01T10:15:03Z`,
+the form of `started_at`). `received.json` is written just before `response.json`, so every
+recorded Gemini answer has one, and the next attempt replaces the file of an attempt that was not
+recorded. Claude runs write none.
+
 ### D6. A scenario that never gets an answer
 A corpus scenario that has no answer after four batches is sent again in one more run, at least 24
 hours later. If it still has no answer, it counts as an invalid candidate for the gate (every truth
@@ -102,6 +111,16 @@ letter that has a Latin look-alike (Α Β Ε Ζ Η Ι Κ Μ Ν Ο Ρ Τ Υ Χ) i
 - The report also gives, without changing the gate, the recall after every unknown id in each
   invalid candidate is replaced by its unique look-alike data id, and the number of candidates this
   makes valid.
+
+**Amendment (2026-11-25, TASK-005e4, before any LLM run).** How the summary computes the second
+point. Only a candidate whose first failing stage is data-level validation can change: every issue
+of that stage that names an unknown resource or task id, at a JSON pointer that leads to a string
+the candidate wrote, has that string replaced by the one data id of the same kind that is its
+look-alike, if exactly one is. The data ids are those of the candidate's own bindings of the
+scenario's files; an id read from a data file is never replaced. The changed candidate is
+evaluated like a first answer; if it is valid, its matched count replaces the 0 of the invalid
+candidate in the recall. The summary line `Recall after look-alike ids (not the gate)` names the
+candidates this makes valid.
 
 ### D10. Equal effect under the truth's hard pair rules (ADR-0007 §5.2)
 Let F be the set of (resource, task) pairs that the truth's hard `requires_attribute` and
