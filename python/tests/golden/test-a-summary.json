@@ -108,6 +108,18 @@
       "truth": 2
     }
   },
+  "recall_interval": {
+    "contains_gate": true,
+    "lower": 0.0,
+    "resamples": 10000,
+    "seed": 20261109,
+    "upper": 1.0
+  },
+  "recall_valid_only": {
+    "matched": 10,
+    "recall": 0.7692307692307693,
+    "truth": 13
+  },
   "scenarios": [
     {
       "candidate_count": 5,

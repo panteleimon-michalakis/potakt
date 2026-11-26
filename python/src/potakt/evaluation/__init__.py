@@ -50,6 +50,7 @@ from potakt.evaluation.summary import (
     LONG_PROMPT_PRICES_USD_PER_MILLION,
     PRICES_USD_PER_MILLION,
     Summary,
+    bootstrap_interval,
     model_directory_name,
     summarize,
 )
@@ -99,6 +100,7 @@ __all__ = [
     "UnmatchedTruth",
     "UnsupportedRequest",
     "answer_of",
+    "bootstrap_interval",
     "build_bundle",
     "compare_models",
     "denote",

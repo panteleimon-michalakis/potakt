@@ -12,6 +12,8 @@ that cannot be used is in ``notes``.
 """
 
 import json
+import math
+import random
 import re
 from collections import Counter
 from dataclasses import dataclass
@@ -49,6 +51,10 @@ ISSUE_CLASSES: dict[InvalidStage | None, str] = {
     "data": "data-level id or attribute",
     None: "stop reason",
 }
+# ADR-0007 §5.4: the gate of Test A; ADR-0008 D3(c): the bootstrap of the micro recall.
+GATE_RECALL = 0.70
+BOOTSTRAP_RESAMPLES = 10_000
+BOOTSTRAP_SEED = 20261109
 _OUTSIDE_DIRECTORY_ALPHABET = re.compile(r"[^A-Za-z0-9._-]")
 _MILLION = 1_000_000
 
@@ -214,6 +220,49 @@ def _number(value: int | None) -> str:
     return "n/a" if value is None else str(value)
 
 
+def bootstrap_interval(
+    counts: list[tuple[int, int]],
+    resamples: int = BOOTSTRAP_RESAMPLES,
+    seed: int = BOOTSTRAP_SEED,
+) -> tuple[float, float] | None:
+    """The 95 % percentile bootstrap interval of the micro recall (ADR-0008 D3(c)).
+
+    ``counts`` holds one (matched, truth) pair per scenario; ``None`` if it is empty or a truth
+    is 0. Each of ``resamples`` resamples draws ``n = len(counts)`` pairs with replacement and
+    computes Σ matched / Σ truth; the interval is the nearest-rank 2.5th and 97.5th percentiles
+    of the sorted ratios (0-based positions ``ceil(0.025 * resamples) - 1`` and
+    ``ceil(0.975 * resamples) - 1``).
+
+    A draw is ``int(rng.random() * n)`` with ``rng = random.Random(seed)``, never the module's
+    generator. Only ``random()`` is used because it is the one part of ``random`` whose sequence
+    Python keeps the same across versions: "The generator's random() method will continue to
+    produce the same sequence when the compatible seeder is given the same seed" (Python docs,
+    «Notes on Reproducibility»); ``randrange``, ``choice`` and ``choices`` may change.
+    """
+    if not counts or any(truth == 0 for _, truth in counts):
+        return None
+    rng = random.Random(seed)
+    n = len(counts)
+    ratios: list[float] = []
+    for _ in range(resamples):
+        matched = truth = 0
+        for _ in range(n):
+            drawn_matched, drawn_truth = counts[int(rng.random() * n)]
+            matched += drawn_matched
+            truth += drawn_truth
+        ratios.append(matched / truth)
+    ratios.sort()
+    return (
+        ratios[math.ceil(0.025 * resamples) - 1],
+        ratios[math.ceil(0.975 * resamples) - 1],
+    )
+
+
+def _contains_gate(interval: tuple[float, float]) -> bool:
+    """``lower <= GATE_RECALL <= upper`` (ADR-0008 D3: then the report says so)."""
+    return interval[0] <= GATE_RECALL <= interval[1]
+
+
 @dataclass(frozen=True, slots=True)
 class Summary:
     """One model's Test A results; ``to_json`` and ``to_text`` are deterministic.
@@ -246,6 +295,13 @@ class Summary:
     missing: tuple[str, ...]
     stops: dict[str, int]
     rows: tuple[ScenarioRow, ...]
+    recall_interval: tuple[float, float] | None
+
+    @property
+    def valid_counts(self) -> tuple[int, int]:
+        """(matched, truth) over the valid candidates only (ADR-0008 D3(b), not the gate)."""
+        valid = [row for row in self.rows if row.valid]
+        return sum(row.matched_count for row in valid), sum(row.truth_count for row in valid)
 
     @property
     def complete(self) -> bool:
@@ -271,6 +327,7 @@ class Summary:
                 for name, (matched, truth) in sorted(found.items())
             }
 
+        valid_matched, valid_truth = self.valid_counts
         return {
             "model": self.model,
             "scenarios_run": self.scenarios_run,
@@ -297,11 +354,42 @@ class Summary:
             "complete": self.complete,
             "stops": dict(sorted(self.stops.items())),
             "scenarios": [row.to_dict() for row in self.rows],
+            "recall_valid_only": {
+                "matched": valid_matched,
+                "truth": valid_truth,
+                "recall": _ratio(valid_matched, valid_truth),
+            },
+            "recall_interval": None
+            if self.recall_interval is None
+            else {
+                "lower": self.recall_interval[0],
+                "upper": self.recall_interval[1],
+                "resamples": BOOTSTRAP_RESAMPLES,
+                "seed": BOOTSTRAP_SEED,
+                "contains_gate": _contains_gate(self.recall_interval),
+            },
         }
 
     def to_json(self) -> str:
         """Indented UTF-8 JSON with sorted keys and a trailing ``\\n`` (like the comparison's)."""
         return json.dumps(self.to_dict(), indent=2, ensure_ascii=False, sort_keys=True) + "\n"
+
+    def _interval_lines(self) -> list[str]:
+        """The interval line and, only if the interval contains the gate, the gate note."""
+        if self.recall_interval is None:
+            return ["Recall 95% interval: n/a"]
+        lower, upper = self.recall_interval
+        scenarios = len(self.rows)
+        lines = [
+            f"Recall 95% interval: {lower:.3f} to {upper:.3f} (bootstrap over {scenarios}"
+            f" scenarios, {BOOTSTRAP_RESAMPLES} resamples, seed {BOOTSTRAP_SEED})"
+        ]
+        if _contains_gate(self.recall_interval):
+            lines.append(
+                f"Gate note: the interval contains {GATE_RECALL:.2f}; the point value decides,"
+                f" and it lies within the uncertainty of a {scenarios}-scenario corpus"
+            )
+        return lines
 
     def to_text(self) -> str:
         """A short report, one fact per line, ending with ``\\n``."""
@@ -336,6 +424,8 @@ class Summary:
             f"Scenarios: {self.scenarios_run} scored, {self.valid} valid",
             f"Complete: {complete}",
             f"Recall: {fraction(self.matched_count, self.truth_count)}",
+            *self._interval_lines(),
+            f"Recall over valid candidates (not the gate): {fraction(*self.valid_counts)}",
             f"Merged recall: {fraction(self.merged_matched_count, self.merged_truth_count)}",
             f"Precision: {fraction(self.matched_count, self.candidate_count)}",
             f"Recall by language: {groups(self.by_language)}",
@@ -463,6 +553,8 @@ def summarize(runs_dir: Path, corpus_dir: Path) -> Summary:
         missing=tuple(name for name in missing if name not in scored),
         stops=dict(stops),
         rows=tuple(rows),
+        # ADR-0008 D3(c) and its amendment: the scored scenarios, in the order of the rows.
+        recall_interval=bootstrap_interval([(row.matched_count, row.truth_count) for row in rows]),
     )
 
 

@@ -2,6 +2,9 @@ Test A summary: claude-opus-5-5
 Scenarios: 3 scored, 2 valid
 Complete: no (missing: 02-hotel-reception, 05-supermarket-checkouts, 06-ambulance-crews, 07-security-guards, 08-warehouse, 09-care-home, 10-municipal-nursery)
 Recall: 0.400 (10/25)
+Recall 95% interval: 0.000 to 1.000 (bootstrap over 3 scenarios, 10000 resamples, seed 20261109)
+Gate note: the interval contains 0.70; the point value decides, and it lies within the uncertainty of a 3-scenario corpus
+Recall over valid candidates (not the gate): 0.769 (10/13)
 Merged recall: 0.400 (10/25)
 Precision: 0.769 (10/13)
 Recall by language: el 1.000 (5/5), en 0.250 (5/20)

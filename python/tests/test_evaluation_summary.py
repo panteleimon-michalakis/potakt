@@ -10,21 +10,31 @@ so they cannot drift from the rules or from ``compare.py``.
 
 import dataclasses
 import json
+import random
 import shutil
 from pathlib import Path
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from potakt.evaluation import (
     LONG_PROMPT_PRICES_USD_PER_MILLION,
     PRICES_USD_PER_MILLION,
     InvalidStage,
+    bootstrap_interval,
     load_scenario,
     model_directory_name,
     rescore_run,
     summarize,
 )
-from potakt.evaluation.summary import ISSUE_CLASSES, ScenarioRow
+from potakt.evaluation.summary import (
+    BOOTSTRAP_RESAMPLES,
+    BOOTSTRAP_SEED,
+    GATE_RECALL,
+    ISSUE_CLASSES,
+    ScenarioRow,
+)
 
 REPO = Path(__file__).resolve().parents[2]
 CORPUS = REPO / "docs" / "validation" / "scenarios"
@@ -800,3 +810,187 @@ def test_the_row_keeps_a_server_stop_raw_in_json_and_safe_in_text(tmp_path: Path
     text = summarize(runs, CORPUS).to_text()
     assert ", stop MAX?[2J?TOKENS, " in row_lines(runs)[0]
     assert "\x1b" not in text
+
+
+# --- recall over valid candidates and its bootstrap interval (TASK-005e3 decision 3) --------
+# The pinned values come from the reviewer's scratch build (identical on CPython 3.12.16 and
+# 3.14.10). Each is a ratio of two integers, so the floats compare exactly with ==.
+
+COUNTS = [(5, 5), (5, 8), (0, 12), (3, 4), (7, 9), (2, 6), (4, 4), (1, 7), (6, 10), (3, 3)]
+PRIMES = [
+    (2, 3),
+    (4, 7),
+    (6, 11),
+    (10, 13),
+    (1, 17),
+    (15, 19),
+    (20, 23),
+    (3, 29),
+    (27, 31),
+    (30, 37),
+]
+GATE_NOTE = (
+    "Gate note: the interval contains 0.70; the point value decides, and it lies within the"
+    " uncertainty of a {n}-scenario corpus"
+)
+
+
+def test_the_bootstrap_constants() -> None:
+    assert (GATE_RECALL, BOOTSTRAP_RESAMPLES, BOOTSTRAP_SEED) == (0.70, 10_000, 20261109)
+
+
+def test_the_interval_of_counts_is_pinned() -> None:
+    assert bootstrap_interval(COUNTS) == (23 / 76, 41 / 53)
+    assert bootstrap_interval(COUNTS, seed=20261110) == (25 / 81, 47 / 61)
+    assert bootstrap_interval(COUNTS, resamples=100) == (1 / 3, 40 / 53)
+    assert bootstrap_interval(COUNTS, resamples=40) == (7 / 27, 19 / 27)
+
+
+def test_the_interval_is_the_nearest_rank_percentile() -> None:
+    # The positions 250 and 9 750 (off by one) would give (24 / 67, 30 / 37).
+    assert bootstrap_interval(PRIMES) == (53 / 148, 167 / 206)
+
+
+def test_the_interval_of_small_inputs() -> None:
+    assert bootstrap_interval([(5, 5), (5, 8), (0, 12)]) == (0.0, 1.0)
+    assert bootstrap_interval([(3, 4)]) == (0.75, 0.75)
+
+
+@pytest.mark.parametrize("counts", [[], [(0, 0), (1, 2)]], ids=["empty", "a-zero-truth"])
+def test_no_interval_without_scenarios_or_with_a_zero_truth(counts: list[tuple[int, int]]) -> None:
+    assert bootstrap_interval(counts) is None
+
+
+@st.composite
+def scenario_counts(draw: st.DrawFn) -> list[tuple[int, int]]:
+    truths = draw(st.lists(st.integers(1, 20), min_size=1, max_size=12))
+    return [(draw(st.integers(0, truth)), truth) for truth in truths]
+
+
+@settings(deadline=None, max_examples=200)
+@given(scenario_counts())
+def test_the_interval_lies_between_the_smallest_and_the_largest_ratio(
+    counts: list[tuple[int, int]],
+) -> None:
+    # A ratio of sums lies between the smallest and the largest ratio, and correctly rounded
+    # division keeps that order.
+    interval = bootstrap_interval(counts, resamples=200)
+
+    assert interval is not None
+    ratios = [matched / truth for matched, truth in counts]
+    assert min(ratios) <= interval[0] <= interval[1] <= max(ratios)
+
+
+@settings(deadline=None, max_examples=200)
+@given(
+    st.integers(1, 20).flatmap(lambda b: st.tuples(st.integers(0, b), st.just(b))),
+    st.lists(st.integers(1, 9), min_size=1, max_size=12),
+)
+def test_equal_ratios_give_exactly_that_ratio(
+    ratio: tuple[int, int], multipliers: list[int]
+) -> None:
+    a, b = ratio
+    counts = [(k * a, k * b) for k in multipliers]
+
+    assert bootstrap_interval(counts, resamples=200) == (a / b, a / b)
+
+
+def test_the_bootstrap_leaves_the_module_generator_untouched() -> None:
+    random.seed(7)
+    expected = random.random()
+    random.seed(7)
+
+    bootstrap_interval(COUNTS)
+
+    assert random.random() == expected
+
+
+def test_the_fixture_interval_and_its_gate_note() -> None:
+    summary = summarize(OPUS_RUNS, CORPUS)
+
+    assert summary.recall_interval == (0.0, 1.0)
+    lines = summary.to_text().splitlines()
+    recall = lines.index("Recall: 0.400 (10/25)")
+    assert lines[recall + 1 : recall + 4] == [
+        "Recall 95% interval: 0.000 to 1.000 (bootstrap over 3 scenarios, 10000 resamples,"
+        " seed 20261109)",
+        GATE_NOTE.format(n=3),
+        "Recall over valid candidates (not the gate): 0.769 (10/13)",
+    ]
+    document = json.loads(summary.to_json())
+    assert document["recall_interval"] == {
+        "lower": 0.0,
+        "upper": 1.0,
+        "resamples": 10000,
+        "seed": 20261109,
+        "contains_gate": True,
+    }
+    assert document["recall_valid_only"] == {"matched": 10, "truth": 13, "recall": 10 / 13}
+    assert summary.valid_counts == (10, 13)
+
+
+def test_an_interval_without_the_gate_has_no_note(tmp_path: Path) -> None:
+    runs = one_run(tmp_path, "claude-opus-5-5", {"usage": {"input_tokens": 1, "output_tokens": 1}})
+
+    summary = summarize(runs, CORPUS)
+
+    assert summary.recall_interval == (1.0, 1.0)
+    text = summary.to_text()
+    assert (
+        "Recall 95% interval: 1.000 to 1.000 (bootstrap over 1 scenarios, 10000 resamples,"
+        " seed 20261109)"
+    ) in text.splitlines()
+    assert "Gate note" not in text
+    assert json.loads(summary.to_json())["recall_interval"]["contains_gate"] is False
+
+
+def test_an_empty_runs_directory_has_no_interval(tmp_path: Path) -> None:
+    runs = tmp_path / "claude-opus-5-5"
+    runs.mkdir()
+
+    summary = summarize(runs, CORPUS)
+
+    lines = summary.to_text().splitlines()
+    assert "Recall 95% interval: n/a" in lines
+    assert "Recall over valid candidates (not the gate): n/a (0/0)" in lines
+    assert not any(line.startswith("Gate note") for line in lines)
+    document = json.loads(summary.to_json())
+    assert document["recall_interval"] is None
+    assert document["recall_valid_only"] == {"matched": 0, "truth": 0, "recall": None}
+
+
+@pytest.mark.parametrize(
+    ("interval", "contains"),
+    [
+        ((0.70, 0.70), True),
+        ((0.5, 0.70), True),
+        ((0.70000001, 0.9), False),
+        ((0.5, 0.69999999), False),
+    ],
+)
+def test_the_gate_note_boundary(interval: tuple[float, float], contains: bool) -> None:
+    summary = dataclasses.replace(summarize(OPUS_RUNS, CORPUS), recall_interval=interval)
+
+    assert (GATE_NOTE.format(n=3) in summary.to_text().splitlines()) is contains
+    assert summary.to_dict()["recall_interval"]["contains_gate"] is contains
+
+
+def test_without_a_valid_candidate_the_valid_only_recall_is_n_a(tmp_path: Path) -> None:
+    runs = tmp_path / "claude-opus-5-5"
+    shutil.copytree(OPUS_RUNS / "04-restaurant", runs / "04-restaurant")
+
+    summary = summarize(runs, CORPUS)
+
+    assert summary.valid_counts == (0, 0)
+    assert (
+        "Recall over valid candidates (not the gate): n/a (0/0)" in summary.to_text().splitlines()
+    )
+    assert summary.recall_interval == (0.0, 0.0)
+
+
+def test_the_interval_resamples_the_rows_in_row_order() -> None:
+    summary = summarize(OPUS_RUNS, CORPUS)
+
+    counts = [(row.matched_count, row.truth_count) for row in summary.rows]
+    assert counts == [(5, 5), (5, 8), (0, 12)]
+    assert summary.recall_interval == bootstrap_interval(counts)
