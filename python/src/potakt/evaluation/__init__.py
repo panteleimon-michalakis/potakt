@@ -57,12 +57,14 @@ from potakt.evaluation.summary import (
 from potakt.evaluation.test_a import (
     INSTRUCTION_PATH,
     STRONG_MODEL,
+    UNKNOWN_ID_MESSAGES,
     Prompt,
     UnknownModelError,
     evaluate_candidate,
     extract_candidate,
     render_payload,
     render_test_a,
+    replace_lookalike_ids,
     request_payload,
 )
 from potakt.evaluation.vacuity import is_vacuous
@@ -76,6 +78,7 @@ __all__ = [
     "REGISTERED_MODELS",
     "SCENARIO_TAGS",
     "STRONG_MODEL",
+    "UNKNOWN_ID_MESSAGES",
     "Answer",
     "Bundle",
     "BundleFile",
@@ -113,6 +116,7 @@ __all__ = [
     "render_bundle",
     "render_payload",
     "render_test_a",
+    "replace_lookalike_ids",
     "request_payload",
     "rescore_run",
     "score_answer",

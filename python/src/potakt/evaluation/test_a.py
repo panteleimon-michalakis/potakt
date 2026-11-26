@@ -10,7 +10,7 @@ import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, cast
 
 from potakt.evaluation.bundle import build_bundle, render_bundle
 from potakt.evaluation.compare import (
@@ -26,9 +26,12 @@ from potakt.model import (
     DecisionModelError,
     Unavailable,
     ValidationIssue,
+    load_instance,
     parse_decision_model,
     render_json_schema,
+    validate_data,
 )
+from potakt.model.lookalike import lookalike
 from potakt.model.validation import issue_at
 
 # The instruction text of ADR-0007 §7, resolved from the repository root (src layout:
@@ -49,6 +52,9 @@ EFFORT = "high"  # documented for both Claude models (sent to Haiku too, ADR §7
 ANTHROPIC_MAX_TOKENS: dict[str, int] = {"claude-opus-5-5": 64000, "claude-haiku-5-5": 64000}
 GEMINI_MAX_OUTPUT_TOKENS = 64000
 ANTHROPIC_PREFIX = "claude-"
+# ADR-0008 D9: the prefixes of the data-level messages of ``potakt.model.validation`` that name
+# an unknown id, and the kind of data id each one names.
+UNKNOWN_ID_MESSAGES = (("unknown resource id ", "resource"), ("unknown task id ", "task"))
 
 
 class UnknownModelError(ValueError):
@@ -158,6 +164,92 @@ def evaluate_candidate(scenario: LoadedScenario, text: str) -> Comparison:
             shutil.copyfile(scenario.directory / name, directory / name)
         candidate = load_model(text, directory)
     return compare_models(truth, candidate)
+
+
+def replace_lookalike_ids(scenario: LoadedScenario, text: str) -> str | None:
+    """The candidate ``text`` with its look-alike ids replaced (ADR-0008 D9, second point), or
+    ``None`` if nothing was replaced; never raises.
+
+    Only a candidate that reaches data-level validation can change: it parses, every ``source``
+    is one of the scenario's files (``source_issues``) and a copy of those files loads, as in
+    ``evaluate_candidate``. For each issue of ``validate_data`` whose message starts with a
+    prefix of ``UNKNOWN_ID_MESSAGES``, the string its JSON pointer leads to in the parsed
+    document is replaced by the one data id of that kind (of the candidate's own bindings) that
+    is its look-alike (``lookalike``). An id with no look-alike, or more than one, stays as
+    written; so does an id read from a data file, whose pointer leads to the ``source`` object.
+    The result is ``json.dumps(document, ensure_ascii=False)``.
+    """
+    try:
+        dm = parse_decision_model(text)
+    except DecisionModelError:
+        return None
+    if source_issues(dm, scenario.scenario.csv_files):
+        return None
+    with tempfile.TemporaryDirectory(prefix="potakt-candidate-") as folder:
+        directory = Path(folder)
+        for name in scenario.scenario.csv_files:
+            shutil.copyfile(scenario.directory / name, directory / name)
+        try:
+            instance = load_instance(dm, directory)
+        except DecisionModelError:
+            return None
+    known = {
+        "resource": frozenset(resource.id for resource in instance.resources),
+        "task": frozenset(task.id for task in instance.tasks),
+    }
+    document: object = json.loads(text)  # parse_decision_model read it as JSON
+    replaced = False
+    for issue in validate_data(dm, instance):
+        for prefix, kind in UNKNOWN_ID_MESSAGES:
+            if issue.message.startswith(prefix) and _replace_at(document, issue.path, known[kind]):
+                replaced = True
+    return json.dumps(document, ensure_ascii=False) if replaced else None
+
+
+_MISSING = object()  # what a JSON pointer leads to when it leads nowhere
+
+
+def _child(node: object, token: str) -> object:
+    """The member ``token`` of an object, or the element ``token`` of an array (RFC 6901: ASCII
+    decimal digits without a leading zero, below the length); ``_MISSING`` otherwise."""
+    if isinstance(node, dict):
+        return cast(dict[str, object], node).get(token, _MISSING)
+    if isinstance(node, list):
+        items = cast(list[object], node)
+        if _is_index(token) and int(token) < len(items):
+            return items[int(token)]
+    return _MISSING
+
+
+def _is_index(token: str) -> bool:
+    return token.isascii() and token.isdigit() and (token == "0" or not token.startswith("0"))
+
+
+def _replace_at(document: object, pointer: str, known: frozenset[str]) -> bool:
+    """Replace the string that the JSON pointer ``pointer`` leads to in ``document`` by its one
+    look-alike in ``known``; ``True`` if it was replaced. A pointer that leads nowhere, to the
+    root or to a value that is not a string replaces nothing.
+
+    RFC 6901: the pointer is split on ``/``, then each token is decoded, ``~1`` to ``/`` first
+    and then ``~0`` to ``~``."""
+    if not pointer.startswith("/"):
+        return False
+    tokens = [token.replace("~1", "/").replace("~0", "~") for token in pointer[1:].split("/")]
+    parent = document
+    for token in tokens[:-1]:
+        parent = _child(parent, token)
+    last = tokens[-1]
+    value = _child(parent, last)
+    if not isinstance(value, str):
+        return False
+    match = lookalike(value, known)
+    if match is None or match == value:
+        return False
+    if isinstance(parent, dict):
+        cast(dict[str, object], parent)[last] = match
+    else:
+        cast(list[object], parent)[int(last)] = match
+    return True
 
 
 def source_issues(dm: DecisionModel, csv_files: Sequence[str]) -> tuple[ValidationIssue, ...]:
