@@ -6,10 +6,11 @@ reasons») and Gemini ``generateContent`` (``candidates[].content.parts[]`` with
 ``thought``, ``finishReason``, ``promptFeedback.blockReason``).
 """
 
+import functools
 import json
 import os
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -40,9 +41,18 @@ from potakt.evaluation.records import write_atomic
 REPO = Path(__file__).resolve().parents[2]
 CORPUS = REPO / "docs" / "validation" / "scenarios"
 PHARMACY = CORPUS / "01-pharmacy"
-TRUTH_01 = (PHARMACY / "truth.json").read_text(encoding="utf-8")
-FENCED_01 = "```json\n" + TRUTH_01 + "\n```"
 OPUS, HAIKU, GEMINI = "claude-opus-5-5", "claude-haiku-5-5", "gemini-3.8-flash"
+
+
+@functools.cache
+def truth_01() -> str:
+    """01's truth as text, read when a test first needs it (never at import)."""
+    return (PHARMACY / "truth.json").read_text(encoding="utf-8")
+
+
+def fenced_01() -> str:
+    """01's truth in one ```json fence: a model's normal answer."""
+    return "```json\n" + truth_01() + "\n```"
 
 
 @pytest.fixture(scope="module")
@@ -93,9 +103,9 @@ def test_registered_models_in_run_order() -> None:
 
 
 def test_anthropic_end_turn_with_one_fenced_text_block() -> None:
-    answer = answer_of(OPUS, anthropic(text_block(FENCED_01)))
+    answer = answer_of(OPUS, anthropic(text_block(fenced_01())))
 
-    assert answer == Answer(FENCED_01, "end_turn", True)
+    assert answer == Answer(fenced_01(), "end_turn", True)
 
 
 def test_anthropic_text_blocks_are_joined_without_a_separator_and_thinking_is_ignored() -> None:
@@ -226,18 +236,18 @@ def test_answer_of_an_unregistered_model_is_refused(model: str) -> None:
 
 
 def test_a_normal_answer_is_scored_by_evaluate_candidate(pharmacy: LoadedScenario) -> None:
-    candidate, comparison = score_answer(pharmacy, Answer(FENCED_01, "end_turn", True))
+    candidate, comparison = score_answer(pharmacy, Answer(fenced_01(), "end_turn", True))
 
-    assert candidate == TRUTH_01
-    assert comparison == evaluate_candidate(pharmacy, TRUTH_01)
+    assert candidate == truth_01()
+    assert comparison == evaluate_candidate(pharmacy, truth_01())
     assert (comparison.recall, comparison.precision) == (1.0, 1.0)
 
 
 def test_an_answer_that_did_not_end_normally_is_invalid(pharmacy: LoadedScenario) -> None:
     # Even a complete DM counts as nothing when the answer was cut off (ADR-0007 §7 «Answer»).
-    candidate, comparison = score_answer(pharmacy, Answer(FENCED_01, "max_tokens", False))
+    candidate, comparison = score_answer(pharmacy, Answer(fenced_01(), "max_tokens", False))
 
-    assert candidate == TRUTH_01
+    assert candidate == truth_01()
     assert not comparison.valid
     assert comparison.recall == 0.0
     assert [(i.path, i.message) for i in comparison.issues] == [
@@ -281,7 +291,7 @@ def test_write_answer_writes_the_four_files_as_specified(
     tmp_path: Path, pharmacy: LoadedScenario
 ) -> None:
     run = tmp_path / OPUS / "01-pharmacy"
-    response = anthropic(text_block(FENCED_01), text_block(""))
+    response = anthropic(text_block(fenced_01()), text_block(""))
     write_request(run, opus_payload(pharmacy))
 
     comparison = write_answer(run, pharmacy, OPUS, response)
@@ -295,15 +305,15 @@ def test_write_answer_writes_the_four_files_as_specified(
     assert (run / "response.json").read_bytes() == (
         json.dumps(response, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
     ).encode("utf-8")
-    assert (run / "candidate.txt").read_bytes() == TRUTH_01.encode("utf-8")
+    assert (run / "candidate.txt").read_bytes() == truth_01().encode("utf-8")
     assert (run / "comparison.json").read_bytes() == comparison.to_json().encode("utf-8")
-    assert comparison == evaluate_candidate(pharmacy, TRUTH_01)
+    assert comparison == evaluate_candidate(pharmacy, truth_01())
     assert b"\r\n" not in b"".join(path.read_bytes() for path in run.iterdir())
 
 
 def test_write_answer_refuses_a_second_call(tmp_path: Path, pharmacy: LoadedScenario) -> None:
     run = tmp_path / "01-pharmacy"
-    write_answer(run, pharmacy, OPUS, anthropic(text_block(FENCED_01)))
+    write_answer(run, pharmacy, OPUS, anthropic(text_block(fenced_01())))
     before = {path.name: path.read_bytes() for path in run.iterdir()}
 
     with pytest.raises(FileExistsError):
@@ -316,7 +326,7 @@ def test_response_json_survives_a_failure_of_the_derived_writes_and_rescore_comp
     tmp_path: Path, pharmacy: LoadedScenario, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     run = tmp_path / "01-pharmacy"
-    response = anthropic(text_block(FENCED_01))
+    response = anthropic(text_block(fenced_01()))
 
     def broken(scenario: LoadedScenario, text: str) -> Comparison:
         raise RuntimeError("a harness bug")
@@ -330,15 +340,15 @@ def test_response_json_survives_a_failure_of_the_derived_writes_and_rescore_comp
     assert json.loads((run / "response.json").read_bytes()) == response
 
     assert rescore_run(run, pharmacy, OPUS) == ("candidate.txt", "comparison.json")
-    assert (run / "candidate.txt").read_bytes() == TRUTH_01.encode("utf-8")
-    expected = evaluate_candidate(pharmacy, TRUTH_01).to_json().encode("utf-8")
+    assert (run / "candidate.txt").read_bytes() == truth_01().encode("utf-8")
+    expected = evaluate_candidate(pharmacy, truth_01()).to_json().encode("utf-8")
     assert (run / "comparison.json").read_bytes() == expected
 
 
 def recorded_run(tmp_path: Path, pharmacy: LoadedScenario) -> Path:
     run = tmp_path / "01-pharmacy"
     write_request(run, opus_payload(pharmacy))
-    write_answer(run, pharmacy, OPUS, anthropic(text_block(FENCED_01)))
+    write_answer(run, pharmacy, OPUS, anthropic(text_block(fenced_01())))
     return run
 
 
@@ -371,7 +381,7 @@ def test_rescore_restores_an_edited_candidate_and_never_touches_the_raw_files(
     (run / "candidate.txt").write_bytes(b"{}")
 
     assert rescore_run(run, pharmacy, OPUS) == ("candidate.txt",)
-    assert (run / "candidate.txt").read_bytes() == TRUTH_01.encode("utf-8")
+    assert (run / "candidate.txt").read_bytes() == truth_01().encode("utf-8")
     assert {name: (run / name).read_bytes() for name in raw} == raw
 
 
@@ -380,8 +390,10 @@ def test_rescore_follows_a_changed_rule_without_a_new_response(
 ) -> None:
     # A recorded answer that did not end normally is rescored as invalid, from response.json alone.
     run = tmp_path / "01-pharmacy"
-    write_answer(run, pharmacy, OPUS, anthropic(text_block(FENCED_01), stop="max_tokens"))
-    (run / "comparison.json").write_bytes(evaluate_candidate(pharmacy, TRUTH_01).to_json().encode())
+    write_answer(run, pharmacy, OPUS, anthropic(text_block(fenced_01()), stop="max_tokens"))
+    (run / "comparison.json").write_bytes(
+        evaluate_candidate(pharmacy, truth_01()).to_json().encode()
+    )
 
     assert rescore_run(run, pharmacy, OPUS) == ("comparison.json",)
     assert json.loads((run / "comparison.json").read_bytes())["valid"] is False
@@ -412,9 +424,9 @@ def test_a_leftover_temporary_file_is_overwritten(tmp_path: Path, pharmacy: Load
     run.mkdir()
     (run / "candidate.txt.tmp").write_bytes(b"left over by a crash")
 
-    write_answer(run, pharmacy, OPUS, anthropic(text_block(FENCED_01)))
+    write_answer(run, pharmacy, OPUS, anthropic(text_block(fenced_01())))
 
-    assert (run / "candidate.txt").read_bytes() == TRUTH_01.encode("utf-8")
+    assert (run / "candidate.txt").read_bytes() == truth_01().encode("utf-8")
     assert not (run / "candidate.txt.tmp").exists()
 
 
@@ -425,17 +437,21 @@ MALFORMED = Answer("", "malformed", False)
 
 
 @pytest.mark.parametrize(
-    ("model", "response"),
+    ("model", "make"),
     [
-        (OPUS, anthropic(text_block(FENCED_01), text_block(SURROGATE))),
-        (GEMINI, gemini({"text": "fine " + SURROGATE + " text"})),
+        (OPUS, lambda: anthropic(text_block(fenced_01()), text_block(SURROGATE))),
+        (GEMINI, lambda: gemini({"text": "fine " + SURROGATE + " text"})),
     ],
     ids=["anthropic-text", "gemini-text"],
 )
 def test_a_lone_surrogate_in_the_text_is_stored_exactly_and_is_malformed(
-    tmp_path: Path, pharmacy: LoadedScenario, model: str, response: dict[str, object]
+    tmp_path: Path,
+    pharmacy: LoadedScenario,
+    model: str,
+    make: Callable[[], dict[str, object]],
 ) -> None:
     # U2: .encode("utf-8") raised in _response_bytes, so the batch stayed open on every run.
+    response = make()  # built here: 01's truth is read by the test, never at import
     run = tmp_path / model / "01-pharmacy"
 
     comparison = write_answer(run, pharmacy, model, response)
@@ -459,17 +475,21 @@ def test_a_lone_surrogate_in_the_text_is_stored_exactly_and_is_malformed(
 
 
 @pytest.mark.parametrize(
-    ("model", "response"),
+    ("model", "make"),
     [
-        (OPUS, anthropic(text_block(FENCED_01), stop="end" + SURROGATE)),
-        (GEMINI, gemini({"text": "x"}, finish="STOP" + SURROGATE)),
-        (GEMINI, {"promptFeedback": {"blockReason": SURROGATE + "SAFETY"}}),
+        (OPUS, lambda: anthropic(text_block(fenced_01()), stop="end" + SURROGATE)),
+        (GEMINI, lambda: gemini({"text": "x"}, finish="STOP" + SURROGATE)),
+        (GEMINI, lambda: {"promptFeedback": {"blockReason": SURROGATE + "SAFETY"}}),
     ],
     ids=["stop_reason", "finishReason", "blockReason"],
 )
 def test_a_lone_surrogate_in_the_stop_is_malformed(
-    tmp_path: Path, pharmacy: LoadedScenario, model: str, response: dict[str, object]
+    tmp_path: Path,
+    pharmacy: LoadedScenario,
+    model: str,
+    make: Callable[[], dict[str, object]],
 ) -> None:
+    response = make()  # built here: 01's truth is read by the test, never at import
     assert answer_of(model, response) == MALFORMED
 
     comparison = write_answer(tmp_path / "run", pharmacy, model, response)
@@ -480,13 +500,13 @@ def test_a_lone_surrogate_in_the_stop_is_malformed(
 
 def test_a_paired_surrogate_escape_is_valid_text(pharmacy: LoadedScenario) -> None:
     # "😀" in JSON is one character, U+1F600: valid Unicode, kept as text.
-    response = json.loads(json.dumps(anthropic(text_block(FENCED_01 + "\U0001f600"))))
+    response = json.loads(json.dumps(anthropic(text_block(fenced_01() + "\U0001f600"))))
 
-    assert answer_of(OPUS, response) == Answer(FENCED_01 + "\U0001f600", "end_turn", True)
+    assert answer_of(OPUS, response) == Answer(fenced_01() + "\U0001f600", "end_turn", True)
 
 
 def test_valid_text_is_still_stored_as_utf_8(tmp_path: Path, pharmacy: LoadedScenario) -> None:
-    response = anthropic(text_block(FENCED_01 + " café"))
+    response = anthropic(text_block(fenced_01() + " café"))
 
     write_answer(tmp_path, pharmacy, OPUS, response)
 
@@ -743,7 +763,7 @@ def test_an_answer_whose_replace_is_refused_ten_times_is_kept_in_its_temporary_f
 ) -> None:
     # G5: never lose a first answer; the next run stops on response.json.tmp instead.
     monkeypatch.setattr(os, "replace", RefusedReplace(10, "response.json"))
-    response = anthropic({"type": "text", "text": TRUTH_01})
+    response = anthropic({"type": "text", "text": truth_01()})
 
     with pytest.raises(PermissionError):
         write_answer(tmp_path, pharmacy, HAIKU, response)

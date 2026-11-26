@@ -685,6 +685,7 @@ def diagnosed(result: Comparison) -> list[tuple[str, str, str | None]]:
 
 SICK_LEAVE = "karampetsos-sick-leave"
 # The two draft pairs only the sick leave forbids (the other absences forbid the third, see above).
+# The ids are 06's, verbatim: Greek capitals that ruff reads as Latin look-alikes (RUF001).
 SICK_PAIRS = {("Ε04", "13-Α-Δ"), ("Ε04", "14-Α-Ο")}  # noqa: RUF001
 
 

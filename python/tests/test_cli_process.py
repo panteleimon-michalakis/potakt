@@ -18,7 +18,6 @@ REPO = Path(__file__).resolve().parents[2]
 GOLDEN = Path(__file__).resolve().parent / "golden"
 CLINIC_MODEL = REPO / "examples" / "clinic-el" / "model.json"
 CLINIC_SOLUTION = REPO / "examples" / "clinic-el" / "solution.json"
-CLINIC_TITLE = json.loads(CLINIC_MODEL.read_text(encoding="utf-8"))["title"]
 RETAIL_MODEL = REPO / "examples" / "retail-en" / "model.json"
 RETAIL_SOLUTION = REPO / "examples" / "retail-en" / "solution.json"
 # Two moved shifts put one full-timer and one part-timer under their own contract hours.
@@ -114,11 +113,12 @@ def test_text_report_matches_the_golden_file_byte_for_byte() -> None:
 
 def test_text_report_is_utf8_with_lf_line_endings() -> None:
     # The JSON report is ASCII; the text report starts with the Greek title of the model.
+    title = json.loads(CLINIC_MODEL.read_text(encoding="utf-8"))["title"]
     result = potakt("check", CLINIC_MODEL, CLINIC_SOLUTION)
 
     assert result.returncode == 0, result.stderr
     assert b"\r\n" not in result.stdout
-    assert result.stdout.startswith(f"{CLINIC_TITLE} (clinic-el-2026-w45 v1)\n".encode())
+    assert result.stdout.startswith(f"{title} (clinic-el-2026-w45 v1)\n".encode())
     assert b"\nScore: hard 0, soft 57 (feasible)\n" in result.stdout
 
 

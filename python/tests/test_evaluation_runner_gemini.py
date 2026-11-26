@@ -1,6 +1,7 @@
 """The Gemini Test A runner (TASK-005c3 F4): one ``generateContent`` call per pending scenario,
 through a fake transport. No test opens a connection."""
 
+import functools
 import json
 import os
 import time
@@ -87,16 +88,19 @@ class FakeGemini:
     def scenario_of(body: bytes) -> str:
         """The scenario of a request: the one whose ``request.md`` its user message contains."""
         text = json.loads(body)["contents"][0]["parts"][0]["text"]
-        return next(name for name, request in REQUESTS.items() if request in text)
+        return next(name for name, request in requests().items() if request in text)
 
     def sent(self) -> list[str]:
         return [self.scenario_of(call.body) for call in self.calls]
 
 
-REQUESTS = {
-    name: (CORPUS_PATH / name / "request.md").read_text(encoding="utf-8").strip()
-    for name in ALL_SCENARIOS
-}
+@functools.cache
+def requests() -> dict[str, str]:
+    """Each scenario's ``request.md``, read when a call is first matched (never at import)."""
+    return {
+        name: (CORPUS_PATH / name / "request.md").read_text(encoding="utf-8").strip()
+        for name in ALL_SCENARIOS
+    }
 
 
 @dataclass

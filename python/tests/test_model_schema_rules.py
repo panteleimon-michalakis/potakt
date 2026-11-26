@@ -43,8 +43,6 @@ from potakt.model.scope import in_scope
 PYTHON = Path(__file__).resolve().parents[1]
 REPO = PYTHON.parent
 SCHEMA_FILE = REPO / "spec" / "decision-model.schema.json"
-SCHEMA: dict[str, Any] = json.loads(SCHEMA_FILE.read_text(encoding="utf-8"))
-VALIDATOR = Draft202012Validator(SCHEMA)
 FIXTURES = PYTHON / "tests" / "fixtures"
 
 # Templates that take either hardness, read from the catalog (``_HardOrSoft`` subclasses).
@@ -53,6 +51,17 @@ HARD_OR_SOFT = frozenset(
 )
 
 Document = dict[str, Any]
+
+
+@cache
+def schema() -> dict[str, Any]:
+    """The committed schema, read when a test first needs it (never at import)."""
+    return json.loads(SCHEMA_FILE.read_text(encoding="utf-8"))
+
+
+@cache
+def validator() -> Draft202012Validator:
+    return Draft202012Validator(schema())
 
 
 def _parses(text: str) -> bool:
@@ -84,13 +93,13 @@ def schema_errors(document: Any) -> list[str]:
     """The schema's error messages for ``document``, each with its JSON path; empty if valid."""
     return [
         f"{error.json_path}: {error.message}"
-        for error in sorted(VALIDATOR.iter_errors(document), key=lambda e: e.json_path)
+        for error in sorted(validator().iter_errors(document), key=lambda e: e.json_path)
     ]
 
 
 def test_the_committed_schema_is_a_valid_draft_2020_12_schema() -> None:
-    assert SCHEMA["$schema"] == "https://json-schema.org/draft/2020-12/schema"
-    Draft202012Validator.check_schema(SCHEMA)
+    assert schema()["$schema"] == "https://json-schema.org/draft/2020-12/schema"
+    Draft202012Validator.check_schema(schema())
 
 
 def test_the_repository_has_the_models_the_differential_test_needs() -> None:
@@ -129,14 +138,17 @@ def test_the_schema_accepts_every_model_the_validator_accepts_in_the_repository(
     assert rejected == {}
 
 
-TRUTHS: list[Document] = [json.loads(path.read_text(encoding="utf-8")) for path in _truth_paths()]
+@cache
+def truths() -> list[Document]:
+    """The ten corpus truths, read when a strategy first draws one (never at import)."""
+    return [json.loads(path.read_text(encoding="utf-8")) for path in _truth_paths()]
 
 
 @st.composite
 def valid_mutations(draw: st.DrawFn) -> Document:
     """A corpus truth with some non-coverage rules dropped, the rules shuffled and some
     hard-or-soft rules flipped (hard: weight removed; soft: weight 1-10000)."""
-    truth = cast("Document", json.loads(json.dumps(draw(st.sampled_from(TRUTHS)))))
+    truth = cast("Document", json.loads(json.dumps(draw(st.sampled_from(truths())))))
     rules: list[Document] = truth["constraints"]
     kept = [
         rule
@@ -1200,7 +1212,7 @@ def matches_a_template(message: str, kinds: frozenset[str] = SHOWN) -> bool:
 
 def resolve(pointer: str) -> Any:
     """The node of the committed schema at a JSON pointer (RFC 6901)."""
-    node: Any = SCHEMA
+    node: Any = schema()
     for token in pointer.split("/")[1:]:
         key = token.replace("~1", "/").replace("~0", "~")
         node = node[int(key)] if isinstance(node, list) else node[key]
@@ -1236,12 +1248,17 @@ def truth(scenario: str) -> Document:
 
 SLIPS = [(rule, slip) for rule in RULES for slip in rule.slips]
 SLIP_IDS = [f"{rule.id}-{k}" for rule in RULES for k, _ in enumerate(rule.slips)]
-TEMPLATES = collect_templates(SOURCES)
+
+
+@cache
+def templates() -> set[str]:
+    """Every message template of ``SOURCES``, collected (the files read) when a test needs it."""
+    return collect_templates(SOURCES)
 
 
 def test_every_message_template_has_a_rule_and_no_row_is_stale() -> None:
-    unmapped = sorted(TEMPLATES - MESSAGE_TO_RULE.keys())
-    stale = sorted(MESSAGE_TO_RULE.keys() - TEMPLATES)
+    unmapped = sorted(templates() - MESSAGE_TO_RULE.keys())
+    stale = sorted(MESSAGE_TO_RULE.keys() - templates())
 
     assert unmapped == [], "a validation message without a RULES row"
     assert stale == [], "a MESSAGE_TO_RULE template that no longer exists in the code"
@@ -1259,7 +1276,7 @@ def test_the_collector_finds_messages_of_every_kind_of_sink() -> None:
         "{} is above the maximum of {}",
         '"{}" is not one of the scenario\'s data files: {}',
     ):
-        assert template in TEMPLATES, template
+        assert template in templates(), template
 
 
 def test_every_rule_row_is_well_formed() -> None:
@@ -1292,7 +1309,7 @@ def test_each_slip_breaks_its_rule(rule: Rule, slip: Slip, tmp_path: Path) -> No
 
 
 def test_the_pydantic_templates_are_not_in_the_code_and_name_rules() -> None:
-    assert PYDANTIC_TEMPLATES.keys().isdisjoint(TEMPLATES)
+    assert PYDANTIC_TEMPLATES.keys().isdisjoint(templates())
     assert set(PYDANTIC_TEMPLATES.values()) <= RULE_BY_ID.keys()
 
 
@@ -1350,7 +1367,7 @@ WEIGHT_IFF_SOFT = {
 
 
 def test_every_hard_or_soft_template_carries_the_weight_rule() -> None:
-    defs = SCHEMA["$defs"]
+    defs = schema()["$defs"]
     names = sorted(
         name
         for name, definition in defs.items()
@@ -1367,7 +1384,7 @@ def test_the_schema_shows_no_pydantic_constraint_names() -> None:
     # are not JSON Schema keywords.
     leaked = [
         f"{path}/{key}"
-        for path, node in _nodes(SCHEMA)
+        for path, node in _nodes(schema())
         if isinstance(node, dict)
         for key in cast("Document", node)
         if key in ("ge", "le", "gt", "lt") and path[-1:] != ("properties",)
@@ -1600,7 +1617,7 @@ ONLY_D = frozenset({"D"})
 @st.composite
 def one_mutation(draw: st.DrawFn) -> tuple[str, Document, str]:
     """One of the ten truths with one arbitrary mutation, and what the mutation did."""
-    truth = draw(st.sampled_from(TRUTHS), label="truth")
+    truth = draw(st.sampled_from(truths()), label="truth")
     document = cast("Document", json.loads(json.dumps(truth)))
     operator = draw(st.sampled_from(MUTATIONS), label="operator")
     return truth["id"], document, operator(draw, document)
