@@ -9,6 +9,8 @@ look-alike, so the summary can report the recall after that replacement without 
 import copy
 import functools
 import json
+import shutil
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -152,6 +154,28 @@ def test_every_replaceable_id_of_a_candidate_is_replaced_in_one_call() -> None:
 
     assert replaced is not None
     assert json.loads(replaced) == truth(name)
+
+
+def test_a_data_file_column_binding_is_never_replaced(tmp_path: Path) -> None:
+    # Self-review (code-review, Important): an unknown id read from a CSV file is reported at the
+    # column binding (/params/source/resource_id), a column name the candidate wrote. Here that
+    # name is a look-alike of the resource id K1, and it must still stay as written.
+    name = "04-restaurant"
+    folder = tmp_path / name
+    shutil.copytree(CORPUS_PATH / name, folder)
+    column = "\N{GREEK CAPITAL LETTER KAPPA}1"
+    header, *rows = (folder / "time_off.csv").read_text(encoding="utf-8").splitlines()
+    ids = ["Z9", *(row.split(",")[0] for row in rows[1:])]  # Z9: an unknown id in the file
+    lines = [f"{header},{column}", *(f"{row},{id_}" for row, id_ in zip(rows, ids, strict=True))]
+    (folder / "time_off.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    loaded = load_scenario(folder)
+    pointer = "/constraints/4/params/source/resource_id"
+    text = written(name, (pointer, column))
+    before = evaluate_candidate(loaded, text)
+    assert before.invalid_stage == "data"
+    assert [issue.path for issue in before.issues] == [pointer]
+
+    assert replace_lookalike_ids(loaded, text) is None
 
 
 @st.composite

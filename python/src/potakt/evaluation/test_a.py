@@ -176,8 +176,10 @@ def replace_lookalike_ids(scenario: LoadedScenario, text: str) -> str | None:
     prefix of ``UNKNOWN_ID_MESSAGES``, the string its JSON pointer leads to in the parsed
     document is replaced by the one data id of that kind (of the candidate's own bindings) that
     is its look-alike (``lookalike``). An id with no look-alike, or more than one, stays as
-    written; so does an id read from a data file, whose pointer leads to the ``source`` object.
-    The result is ``json.dumps(document, ensure_ascii=False)``.
+    written; so does an id read from a data file: its issue points into the ``source`` binding
+    (``.../params/source/resource_id``), at the column name the candidate wrote, which is never
+    an id and is never replaced (``_IN_DATA_FILE``). The result is
+    ``json.dumps(document, ensure_ascii=False)``.
     """
     try:
         dm = parse_decision_model(text)
@@ -200,6 +202,8 @@ def replace_lookalike_ids(scenario: LoadedScenario, text: str) -> str | None:
     document: object = json.loads(text)  # parse_decision_model read it as JSON
     replaced = False
     for issue in validate_data(dm, instance):
+        if _IN_DATA_FILE in issue.path:  # an id read from a data file (ADR-0008 D9 amendment)
+            continue
         for prefix, kind in UNKNOWN_ID_MESSAGES:
             if issue.message.startswith(prefix) and _replace_at(document, issue.path, known[kind]):
                 replaced = True
@@ -207,6 +211,9 @@ def replace_lookalike_ids(scenario: LoadedScenario, text: str) -> str | None:
 
 
 _MISSING = object()  # what a JSON pointer leads to when it leads nowhere
+# Where ``validate_data`` reports an unknown id read from a data file: an ``unavailable`` rule's
+# ``source`` binding, whose ``resource_id`` holds a column name, not an id.
+_IN_DATA_FILE = "/params/source/"
 
 
 def _child(node: object, token: str) -> object:
