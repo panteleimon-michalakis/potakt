@@ -11,6 +11,11 @@ and ``eval rescore`` ignore (they read directories only). The API key is only ev
 request header; it is never written, printed or put in a URL, and every ``RunStopped`` message is
 redacted of it.
 
+Every ``batches.json`` entry has the key ``ended_at`` (ADR-0008 D5): a ``held`` or ``done`` entry
+keeps the batch object's ``ended_at``, verbatim, from the poll that first showed the batch ended,
+when that is an RFC 3339 instant; it is ``null`` otherwise, and an odd or missing value never
+stops a run. A release keeps it. It is a record only and never changes a score.
+
 A batch is never paid for twice (TASK-005c3b D1, D2, TASK-005c3c E2, E3): a ``creating`` entry is
 saved before every create call, so a create whose outcome is unclear (no response, a 3xx, a 408,
 any status of 500 or more, an unreadable 200, an interruption or a crash) is reconciled against
@@ -166,7 +171,10 @@ _LOCK_SHOWN = 120  # characters of a lock file shown in a message
 _STATES = ("creating", "open", "held", "done", "failed")
 _ACTIVE = ("creating", "open")  # at most one entry is in one of these states
 _WITH_BATCH = ("open", "held", "done")  # the states whose entry names a batch
-_ENTRY_KEYS = frozenset({"id", "scenarios", "started_at", "created_at", "state", "problems"})
+_ENDED = ("held", "done")  # the states whose entry may keep the batch's ended_at (ADR-0008 D5)
+_ENTRY_KEYS = frozenset(
+    {"id", "scenarios", "started_at", "created_at", "state", "problems", "ended_at"}
+)
 _CUSTOM_ID = re.compile(r"[a-zA-Z0-9_-]{1,64}")
 _BATCH_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _INSTANT = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d+)?(Z|[+-]\d{2}:\d{2})")
@@ -286,6 +294,12 @@ class _Batch:
     only; ``started_at`` is the UTC instant just before the last create call, in whole seconds
     (``2026-11-02T07:15:03Z``). ``problems`` is empty except for a held batch, and for a ``done``
     one that was held and then released.
+
+    ``ended_at`` (ADR-0008 D5) is the batch object's ``ended_at``, exactly as the poll that first
+    showed the batch ended sent it, when that is an RFC 3339 instant (``_instant``); it is set
+    only when the entry becomes ``held`` or ``done``, kept by a release, and ``None`` on every
+    other entry and when the API gave none or an odd value. It is a record only: it never
+    changes a score or stops a run.
     """
 
     id: str | None
@@ -294,6 +308,7 @@ class _Batch:
     created_at: str | None
     state: str
     problems: tuple[str, ...] = ()
+    ended_at: str | None = None
 
 
 def _stamp(moment: datetime) -> str:
@@ -318,6 +333,12 @@ def _entry(item: object) -> _Batch | None:
     entry = cast(dict[str, object], item)
     batch_id, scenarios, state = entry["id"], entry["scenarios"], entry["state"]
     started_at, created_at, problems = entry["started_at"], entry["created_at"], entry["problems"]
+    ended_at = entry["ended_at"]
+    # ADR-0008 D5: null, or an instant on an ended (held or done) entry only.
+    if ended_at is not None and not (
+        state in _ENDED and isinstance(ended_at, str) and _instant(ended_at) is not None
+    ):
+        return None
     if not (
         state in _STATES
         and isinstance(scenarios, list)
@@ -349,7 +370,7 @@ def _entry(item: object) -> _Batch | None:
     elif batch_id is not None or created_at is not None:
         return None
     names = tuple(cast(list[str], scenarios))
-    return _Batch(batch_id, names, started_at, created_at, cast(str, state), texts)
+    return _Batch(batch_id, names, started_at, created_at, cast(str, state), texts, ended_at)
 
 
 def _load_state(model_dir: Path) -> list[_Batch]:
@@ -436,6 +457,7 @@ def _save_state(model_dir: Path, batches: list[_Batch]) -> None:
                 "created_at": batch.created_at,
                 "state": batch.state,
                 "problems": list(batch.problems),
+                "ended_at": batch.ended_at,
             }
             for batch in batches
         ]
@@ -661,6 +683,7 @@ class _BatchStatus:
     results_url: str | None
     created_at: str
     cancelled: bool  # ``cancel_initiated_at`` is set: the owner (or anyone) cancelled it
+    ended_at: str | None = None  # ADR-0008 D5: an RFC 3339 instant (``_instant``), else None
 
     @property
     def total(self) -> int:
@@ -670,7 +693,9 @@ class _BatchStatus:
 def _batch_status(document: object) -> _BatchStatus | None:
     """The batch object ``document``; ``None`` if a field the runner reads is missing or odd,
     ``created_at`` included: it must be an RFC 3339 instant (``_instant``, TASK-005c3e J2), so a
-    stored ``created_at`` is always one, and printable."""
+    stored ``created_at`` is always one, and printable. ``ended_at`` (ADR-0008 D5) is the
+    object's ``ended_at`` when that is a string that ``_instant`` reads, else ``None``: a
+    missing or odd one never makes the object unreadable."""
     batch_id = _field(document, "id")
     status = _field(document, "processing_status")
     raw_counts = _field(document, "request_counts")
@@ -695,8 +720,10 @@ def _batch_status(document: object) -> _BatchStatus | None:
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             return None
         counts[name] = value
+    ended_at = _field(document, "ended_at")
+    ended = ended_at if isinstance(ended_at, str) and _instant(ended_at) is not None else None
     return _BatchStatus(
-        batch_id, cast(str, status), counts, results_url, created_at, cancel is not None
+        batch_id, cast(str, status), counts, results_url, created_at, cancel is not None, ended
     )
 
 
@@ -1278,10 +1305,13 @@ class _AnthropicRun:
             more = MORE_PROBLEMS.format(count=len(problems) - MAX_PROBLEMS, id=batch_id)
             problems = [*problems[:MAX_PROBLEMS], more]
         # E4: a problem holds the batch, so no run sends its scenarios again (a new, paid batch)
-        # until the owner releases it after the reviewer's decision.
+        # until the owner releases it after the reviewer's decision. ADR-0008 D5: the entry keeps
+        # the ended_at of the poll that saw the batch ended.
         state = "held" if problems else "done"
         batches = [
-            replace(item, state=state, problems=tuple(problems)) if item.id == batch_id else item
+            replace(item, state=state, problems=tuple(problems), ended_at=status.ended_at)
+            if item.id == batch_id
+            else item
             for item in _load_state(self.model_dir)
         ]
         _save_state(self.model_dir, batches)

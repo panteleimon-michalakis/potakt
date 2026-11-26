@@ -66,6 +66,7 @@ from potakt.evaluation.transport import HttpResponse, RunStopped, TransportError
 HAIKU = "claude-haiku-5-5"
 OPUS = "claude-opus-5-5"
 CREATED_AT = "2026-11-02T10:00:05.123456Z"
+ENDED_AT = "2026-11-02T10:04:41.987654Z"  # ADR-0008 D5: kept verbatim in batches.json
 LIST_URL = f"{BATCHES_URL}?limit=100"
 
 Outcome = Callable[[int, str], dict[str, Any]]
@@ -140,6 +141,9 @@ class FakeBatches:
     stamp_with_clock: bool = False  # created_at from the clock instead of CREATED_AT
     cancelled: set[str] = field(default_factory=set[str])
     omit_cancel_field: bool = False  # batch objects without cancel_initiated_at
+    # ADR-0008 D5: the ``ended_at`` of an ended batch (``None`` before it ended), as sent.
+    ended_at: object = ENDED_AT
+    omit_ended_field: bool = False  # batch objects without ended_at
     list_failures: list[TransportError] = field(default_factory=list[TransportError])
     results_base: str = BATCHES_URL
     raw_results: dict[str, bytes] = field(default_factory=dict[str, bytes])
@@ -199,13 +203,15 @@ class FakeBatches:
             "processing_status": "ended" if ended else "in_progress",
             "request_counts": counts,
             "created_at": self.created_at[batch_id],
-            "ended_at": None,
+            "ended_at": self.ended_at if ended else None,
             "expires_at": "2026-11-03T10:00:05Z",
             "cancel_initiated_at": "2026-11-02T10:00:30Z" if cancelled else None,
             "results_url": f"{self.results_base}/{batch_id}/results" if ended else None,
         }
         if self.omit_cancel_field:
             del document["cancel_initiated_at"]
+        if self.omit_ended_field:
+            del document["ended_at"]
         return document
 
     def results(self, batch_id: str) -> bytes:
@@ -456,6 +462,7 @@ def test_the_happy_path_records_all_ten_scenarios(tmp_path: Path) -> None:
                 "created_at": CREATED_AT,
                 "state": "open",
                 "problems": [],
+                "ended_at": None,
             }
         ]
 
@@ -993,6 +1000,7 @@ def test_a_lost_create_adopts_the_one_candidate_batch(tmp_path: Path) -> None:
             "created_at": CREATED_AT,
             "state": "done",
             "problems": [],
+            "ended_at": ENDED_AT,
         }
     ]
     assert run.sleeps == [120, 120, 60]  # TASK-005c3h H6: the workspace wait, then as before
@@ -1242,6 +1250,14 @@ HELD_ENTRY = batch_entry("msgbatch_01", ["01-pharmacy"], "held", problems=["a pr
         state_text(OPEN | {"created_at": "\ud83d"}),
         state_text(HELD_ENTRY | {"created_at": "yesterday"}),
         state_text(batch_entry("msgbatch_01", ["01-pharmacy"], "done") | {"created_at": ""}),
+        # ADR-0008 D5: every entry has ended_at; an instant only on a held or done entry.
+        state_text({key: value for key, value in OPEN.items() if key != "ended_at"}),
+        state_text(OPEN | {"ended_at": ENDED_AT}),
+        state_text(CREATING | {"ended_at": ENDED_AT}),
+        state_text(batch_entry(None, ["01-pharmacy"], "failed") | {"ended_at": ENDED_AT}),
+        state_text(batch_entry("msgbatch_01", ["01-pharmacy"], "done") | {"ended_at": "yesterday"}),
+        state_text(HELD_ENTRY | {"ended_at": ""}),
+        state_text(batch_entry("msgbatch_01", ["01-pharmacy"], "done") | {"ended_at": 5}),
     ],
 )
 def test_an_invalid_batch_state_stops_and_is_kept(tmp_path: Path, text: str) -> None:
@@ -1254,6 +1270,84 @@ def test_an_invalid_batch_state_stops_and_is_kept(tmp_path: Path, text: str) -> 
 
     assert (run.model_dir / BATCH_STATE_FILE).read_text(encoding="utf-8") == text
     assert run.server.calls == []
+
+
+# --- ADR-0008 D5: the ended_at of each ended batch ----------------------------------------------
+
+
+@pytest.mark.parametrize("sent", [ENDED_AT, "2026-11-02T12:04:41+02:00", "2026-11-02T10:04:41Z"])
+def test_an_ended_batch_keeps_the_apis_ended_at_verbatim(tmp_path: Path, sent: str) -> None:
+    run = make_run(tmp_path, FakeBatches(ended_at=sent), ALL_SCENARIOS[:2])
+
+    run()
+
+    assert run.state()["batches"] == [
+        batch_entry("msgbatch_01", ALL_SCENARIOS[:2], "done", ended_at=sent)
+    ]
+
+
+@pytest.mark.parametrize("sent", [None, 5, True, "yesterday", "2026-11-02T10:04:41", "", "\ud83d"])
+def test_an_unreadable_ended_at_is_null_and_never_stops_the_run(
+    tmp_path: Path, sent: object
+) -> None:
+    run = make_run(tmp_path, FakeBatches(ended_at=sent), ALL_SCENARIOS[:2])
+
+    run()
+
+    assert run.recorded() == list(ALL_SCENARIOS[:2])
+    assert run.state()["batches"] == [batch_entry("msgbatch_01", ALL_SCENARIOS[:2], "done")]
+
+
+def test_a_batch_object_without_ended_at_gives_null(tmp_path: Path) -> None:
+    run = make_run(tmp_path, FakeBatches(omit_ended_field=True), ALL_SCENARIOS[:2])
+
+    run()
+
+    assert run.recorded() == list(ALL_SCENARIOS[:2])
+    assert run.state()["batches"] == [batch_entry("msgbatch_01", ALL_SCENARIOS[:2], "done")]
+
+
+def test_ended_at_is_written_between_created_at_and_id(tmp_path: Path) -> None:
+    server = FakeBatches()
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+    seen: list[str] = []
+    server.on_first_poll = lambda: seen.append(
+        (run.model_dir / BATCH_STATE_FILE).read_text(encoding="utf-8")
+    )
+
+    run()
+
+    after = (run.model_dir / BATCH_STATE_FILE).read_text(encoding="utf-8")
+    assert f'"created_at": "{CREATED_AT}",\n      "ended_at": null,\n      "id"' in seen[0]
+    assert f'"created_at": "{CREATED_AT}",\n      "ended_at": "{ENDED_AT}",\n      "id"' in after
+
+
+def test_a_held_batch_keeps_its_ended_at_through_the_release(tmp_path: Path) -> None:
+    run = held_run(tmp_path)
+    held = batch_entry(
+        "msgbatch_01",
+        ALL_SCENARIOS[:2],
+        "held",
+        problems=["batch msgbatch_01: no result for 02-hotel-reception"],
+        ended_at=ENDED_AT,
+    )
+    assert run.state()["batches"] == [held]
+
+    run(release="msgbatch_01")
+
+    assert run.state()["batches"] == [
+        held | {"state": "done"},
+        batch_entry(
+            "msgbatch_02",
+            ["02-hotel-reception"],
+            "done",
+            started_at="2026-11-02T10:01:00Z",  # after the first batch's one poll sleep
+            ended_at=ENDED_AT,
+        ),
+    ]
+    run.echo.clear()
+    run()  # the state written by the release is read back
+    assert run.echo == ["nothing to run"]
 
 
 def test_a_missing_corpus_stops(tmp_path: Path) -> None:
@@ -1609,7 +1703,9 @@ def test_the_creating_entry_is_saved_before_the_first_post(tmp_path: Path) -> No
     )  # fmt: skip
 
     assert seen == [{"batches": [batch_entry(None, ALL_SCENARIOS[:2], "creating")]}]
-    assert run.state()["batches"] == [batch_entry("msgbatch_01", ALL_SCENARIOS[:2], "done")]
+    assert run.state()["batches"] == [
+        batch_entry("msgbatch_01", ALL_SCENARIOS[:2], "done", ended_at=ENDED_AT)
+    ]
     text = (run.model_dir / BATCH_STATE_FILE).read_bytes()
     assert text == (json.dumps(run.state(), indent=2, sort_keys=True) + "\n").encode()
 
@@ -1858,7 +1954,9 @@ def test_an_interrupted_create_that_made_a_batch_is_adopted_by_the_next_run(
     assert run.sleeps == [120, 180, 60]  # the first run's H6 wait, then the second run's
     assert len(server.creates()) == 1
     assert run.recorded() == list(ALL_SCENARIOS[:2])
-    assert run.state()["batches"] == [batch_entry("msgbatch_01", ALL_SCENARIOS[:2], "done")]
+    assert run.state()["batches"] == [
+        batch_entry("msgbatch_01", ALL_SCENARIOS[:2], "done", ended_at=ENDED_AT)
+    ]
 
 
 def test_an_interrupted_create_without_a_batch_is_marked_failed_and_sent_again(

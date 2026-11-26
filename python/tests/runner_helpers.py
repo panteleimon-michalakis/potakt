@@ -91,10 +91,11 @@ def batch_entry(
     created_at: str | None = "2026-11-02T10:00:05.123456Z",
     started_at: str = STARTED_AT,
     problems: list[str] | tuple[str, ...] = (),
+    ended_at: str | None = None,
 ) -> dict[str, Any]:
-    """One entry of ``batches.json`` (TASK-005c3b D1, TASK-005c3c E4); ``creating`` and
-    ``failed`` have no id and no ``created_at``; ``problems`` is empty unless the batch was
-    held."""
+    """One entry of ``batches.json`` (TASK-005c3b D1, TASK-005c3c E4, ADR-0008 D5); ``creating``
+    and ``failed`` have no id and no ``created_at``; ``problems`` is empty unless the batch was
+    held; ``ended_at`` is the API's, kept for an ended (``held`` or ``done``) batch."""
     if state in ("creating", "failed"):
         batch_id, created_at = None, None
     return {
@@ -104,6 +105,7 @@ def batch_entry(
         "created_at": created_at,
         "state": state,
         "problems": list(problems),
+        "ended_at": ended_at,
     }
 
 
