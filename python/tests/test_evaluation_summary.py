@@ -375,6 +375,112 @@ def test_a_missing_or_unreadable_response_counts_zero_with_a_note(tmp_path: Path
     )
 
 
+# -- TASK-005e4 decision 5: an explicit nesting limit and unreadable files --
+
+
+def nested(depth: int) -> str:
+    return "[" * depth + "]" * depth
+
+
+def raw_response(tmp_path: Path, data: bytes) -> Path:
+    """The 01 truth run alone, with ``data`` as its ``response.json``."""
+    runs = one_run(tmp_path, "claude-opus-5-5", None)
+    (runs / "01-pharmacy" / "response.json").write_bytes(data)
+    return runs
+
+
+@pytest.mark.parametrize("depth", [65, 100_000])
+def test_a_response_nested_too_deep_is_named_with_the_limit(tmp_path: Path, depth: int) -> None:
+    # 100 000 levels: the base read it through RecursionError as "is not valid JSON".
+    runs = raw_response(tmp_path, nested(depth).encode())
+
+    assert usage_and_notes(runs) == (
+        {"input_tokens": 0, "output_tokens": 0},
+        ["01-pharmacy: response.json is nested more than 64 levels deep; usage counted as 0"],
+    )
+
+
+def test_a_response_nested_exactly_to_the_limit_is_read(tmp_path: Path) -> None:
+    runs = raw_response(tmp_path, nested(64).encode())
+
+    assert usage_and_notes(runs) == (
+        {"input_tokens": 0, "output_tokens": 0},
+        ["01-pharmacy: usage unknown in response.json; usage counted as 0"],
+    )
+
+
+def test_a_response_that_is_not_utf8_is_not_valid_json(tmp_path: Path) -> None:
+    runs = raw_response(tmp_path, b'{"usage": "\xff"}')
+
+    assert usage_and_notes(runs) == (
+        {"input_tokens": 0, "output_tokens": 0},
+        ["01-pharmacy: response.json is not valid JSON; usage counted as 0"],
+    )
+
+
+@pytest.mark.parametrize(("depth", "shown"), [(63, ["kept"]), (64, [])])
+def test_a_candidate_nested_past_the_limit_shows_no_assumption(
+    tmp_path: Path, depth: int, shown: list[str]
+) -> None:
+    # The object around "x" is one level more: 63 gives 64 levels in all, 64 gives 65.
+    candidate = f'{{"assumptions": [{{"text": "kept"}}], "x": {nested(depth)}}}'
+    runs = with_candidate(tmp_path, "03-call-centre", candidate)
+
+    summary = summarize(runs, CORPUS)
+
+    assert summary.rows[1].assumptions == tuple(shown)
+    assert summary.notes == ()
+
+
+@pytest.mark.parametrize(
+    ("refused", "scored", "note"),
+    [
+        ("comparison.json", False, "03-call-centre: comparison.json cannot be read; not scored"),
+        (
+            "response.json",
+            True,
+            "03-call-centre: response.json cannot be read; usage counted as 0",
+        ),
+        (
+            "candidate.txt",
+            True,
+            "03-call-centre: candidate.txt cannot be read; assumptions not shown",
+        ),
+    ],
+)
+def test_a_file_that_cannot_be_read_gives_one_note(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, refused: str, scored: bool, note: str
+) -> None:
+    runs = tmp_path / "claude-opus-5-5"
+    shutil.copytree(OPUS_RUNS / "03-call-centre", runs / "03-call-centre")
+    real = Path.read_bytes
+
+    def read_bytes(path: Path) -> bytes:
+        if path.name == refused:  # as Windows answers while another program holds the file
+            raise PermissionError(13, "Permission denied")
+        return real(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+
+    summary = summarize(runs, CORPUS)
+
+    assert summary.notes == (note,)
+    expected = (1, ()) if scored else (0, ("03-call-centre",))
+    assert (summary.scenarios_run, summary.not_scored) == expected
+
+
+def test_without_01s_candidate_the_only_note_is_its_own(tmp_path: Path) -> None:
+    # TASK-005e3's traceability gap: 01 has no unsupported request, so no section line either.
+    runs = copy_runs(tmp_path)
+    (runs / "01-pharmacy" / "candidate.txt").unlink()
+
+    summary = summarize(runs, CORPUS)
+
+    assert summary.notes == ("01-pharmacy: candidate.txt not found; assumptions not shown",)
+    assert summary.rows[0].assumptions == ()
+    assert "  01-pharmacy" not in section_of(runs)
+
+
 # --- thinking tokens (TASK-005e3 decision 1, ADR-0008 D3(a)) ---------------------------------
 
 

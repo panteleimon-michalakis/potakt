@@ -39,6 +39,7 @@ from potakt.evaluation.records import (
 from potakt.evaluation.scenario import METADATA_FILE, Scenario, ScenarioError, load_scenario
 from potakt.evaluation.test_a import evaluate_candidate, replace_lookalike_ids
 from potakt.evaluation.transport import server_text
+from potakt.model import MAX_NESTING, json_nesting_exceeds
 
 # The corpus of ADR-0007 §2, resolved from the repository root (src layout, like INSTRUCTION_PATH).
 CORPUS_PATH = Path(__file__).resolve().parents[4] / "docs" / "validation" / "scenarios"
@@ -711,10 +712,41 @@ def _read_record(run: Path, corpus_dir: Path) -> tuple[tuple[_Record, Scenario] 
     if not path.is_file():
         return None, f"{COMPARISON_FILE} not found"
     try:
-        record = _Record.model_validate_json(path.read_bytes())
+        data = path.read_bytes()
+    except OSError:
+        return None, f"{COMPARISON_FILE} cannot be read"
+    try:
+        record = _Record.model_validate_json(data)
     except ValidationError:
         return None, f"{COMPARISON_FILE} is not a valid comparison"
     return (record, scenario), ""
+
+
+# The problems of ``_json_text``.
+_UNREADABLE = "cannot be read"
+_NOT_JSON = "is not valid JSON"
+_TOO_DEEP = f"is nested more than {MAX_NESTING} levels deep"
+
+
+def _json_text(path: Path) -> tuple[str | None, str]:
+    """The text of a JSON record before ``json.loads``, and ``""``; or ``None`` and the problem.
+
+    The bytes are read (an ``OSError`` is ``_UNREADABLE``), decoded as strict UTF-8 (else
+    ``_NOT_JSON``) and checked with ``json_nesting_exceeds`` on the raw text (else
+    ``_TOO_DEEP``): an explicit limit decided by our code, so no reader depends on the
+    interpreter's recursion limit (CLAUDE.md DoD 6).
+    """
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None, _UNREADABLE
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None, _NOT_JSON
+    if json_nesting_exceeds(text):
+        return None, _TOO_DEEP
+    return text, ""
 
 
 def _read_response(run: Path) -> tuple[object, str]:
@@ -722,10 +754,13 @@ def _read_response(run: Path) -> tuple[object, str]:
     path = run / RESPONSE_FILE
     if not path.is_file():
         return None, f"{RESPONSE_FILE} not found"
+    text, problem = _json_text(path)
+    if text is None:
+        return None, f"{RESPONSE_FILE} {problem}"
     try:
-        return json.loads(path.read_bytes()), ""
-    except (ValueError, RecursionError):
-        return None, f"{RESPONSE_FILE} is not valid JSON"
+        return json.loads(text), ""
+    except ValueError:
+        return None, f"{RESPONSE_FILE} {_NOT_JSON}"
 
 
 def _read_assumptions(run: Path) -> tuple[tuple[str, ...], str]:
@@ -734,14 +769,20 @@ def _read_assumptions(run: Path) -> tuple[tuple[str, ...], str]:
     The candidate is read as JSON whatever its validity: each item of a top-level
     ``assumptions`` list that is an object with a string ``text`` counts, in order, through
     ``server_text`` (model output: printable, cut to ``ASSUMPTION_TEXT_LIMIT``, and a lone
-    surrogate becomes ``?``). Anything else gives no assumption and no problem.
+    surrogate becomes ``?``). A missing file or one that cannot be read is a problem; anything
+    else (not UTF-8, nested too deep, not JSON, no such list) gives no assumption and no problem.
     """
     path = run / CANDIDATE_FILE
     if not path.is_file():
         return (), f"{CANDIDATE_FILE} not found"
+    text, problem = _json_text(path)
+    if problem == _UNREADABLE:
+        return (), f"{CANDIDATE_FILE} {_UNREADABLE}"
+    if text is None:
+        return (), ""
     try:
-        candidate: object = json.loads(path.read_bytes())
-    except (ValueError, RecursionError):
+        candidate: object = json.loads(text)
+    except ValueError:
         return (), ""
     if not isinstance(candidate, dict):
         return (), ""
