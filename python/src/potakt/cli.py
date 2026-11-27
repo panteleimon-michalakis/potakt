@@ -235,6 +235,35 @@ def _stop(code: int, *lines: str) -> NoReturn:
     raise typer.Exit(code=code)
 
 
+# TASK-005e6 decision 5 (ADR-0008 D1): --dev of the offline commands only changes their defaults.
+DEV_HELP = (
+    "Read the development set (ADR-0008 D1): the defaults become docs/validation/dev and "
+    "docs/validation/runs/dev/round-1."
+)
+CORPUS_HELP = (
+    "Scenario corpus directory (default: the repository's docs/validation/scenarios, or "
+    "docs/validation/dev with --dev)."
+)
+RUNS_HELP = (
+    "Test A runs directory of all models (default: the repository's docs/validation/runs/test-a, "
+    "or docs/validation/runs/dev/round-1 with --dev)."
+)
+
+
+def _corpus(corpus: Path | None, dev: bool) -> Path:
+    """An explicit ``--corpus``, else the default of the set (``--dev``), read when called."""
+    if corpus is not None:
+        return corpus
+    return DEV_CORPUS_PATH if dev else CORPUS_PATH
+
+
+def _runs(runs: Path | None, dev: bool) -> Path:
+    """An explicit ``--runs``, else the default of the set (``--dev``), read when called."""
+    if runs is not None:
+        return runs
+    return DEV_RUNS_PATH if dev else RUNS_PATH
+
+
 def _scenario(directory: Path) -> LoadedScenario:
     try:
         return load_scenario(directory)
@@ -312,14 +341,10 @@ def eval_summary(
         ),
     ],
     corpus: Annotated[
-        Path,
-        typer.Option(
-            "--corpus",
-            help="Scenario corpus directory (default: the repository's docs/validation/scenarios).",
-            show_default=False,
-        ),
-    ] = CORPUS_PATH,
+        Path | None, typer.Option("--corpus", help=CORPUS_HELP, show_default=False)
+    ] = None,
     as_json: Annotated[bool, typer.Option("--json", help="Print the summary as JSON.")] = False,
+    dev: Annotated[bool, typer.Option("--dev", help=DEV_HELP)] = False,
 ) -> None:
     """Summarize one model's recorded Test A runs.
 
@@ -332,6 +357,7 @@ def eval_summary(
 
     Exit code 0: summary printed; 1: missing directory; 2: usage error.
     """
+    corpus = _corpus(corpus, dev)
     if not corpus.is_dir():
         _stop(1, f"{corpus} is not a directory")
     try:
@@ -352,13 +378,9 @@ def eval_rescore(
         ),
     ],
     corpus: Annotated[
-        Path,
-        typer.Option(
-            "--corpus",
-            help="Scenario corpus directory (default: the repository's docs/validation/scenarios).",
-            show_default=False,
-        ),
-    ] = CORPUS_PATH,
+        Path | None, typer.Option("--corpus", help=CORPUS_HELP, show_default=False)
+    ] = None,
+    dev: Annotated[bool, typer.Option("--dev", help=DEV_HELP)] = False,
 ) -> None:
     """Recompute one model's Test A scores from response.json alone; nothing is sent.
 
@@ -371,6 +393,7 @@ def eval_rescore(
     corpus directory, a runs directory not named after a registered model, or a scenario not in
     the corpus (its line is printed and processing continues); 2: usage error.
     """
+    corpus = _corpus(corpus, dev)
     for directory in (runs, corpus):
         if not directory.is_dir():
             _stop(1, f"{directory} is not a directory")
@@ -400,26 +423,12 @@ def eval_repairs(
             show_default=False,
         ),
     ],
-    runs: Annotated[
-        Path,
-        typer.Option(
-            "--runs",
-            help=(
-                "Test A runs directory of all models (default: the repository's "
-                "docs/validation/runs/test-a)."
-            ),
-            show_default=False,
-        ),
-    ] = RUNS_PATH,
+    runs: Annotated[Path | None, typer.Option("--runs", help=RUNS_HELP, show_default=False)] = None,
     corpus: Annotated[
-        Path,
-        typer.Option(
-            "--corpus",
-            help="Scenario corpus directory (default: the repository's docs/validation/scenarios).",
-            show_default=False,
-        ),
-    ] = CORPUS_PATH,
+        Path | None, typer.Option("--corpus", help=CORPUS_HELP, show_default=False)
+    ] = None,
     as_json: Annotated[bool, typer.Option("--json", help="Print the report as JSON.")] = False,
+    dev: Annotated[bool, typer.Option("--dev", help=DEV_HELP)] = False,
 ) -> None:
     """Report the recall after one repair of a model's invalid candidates; nothing is sent.
 
@@ -437,6 +446,7 @@ def eval_repairs(
         check_registered(model)
     except UnknownModelError as error:
         _stop(EXIT_USAGE, str(error))
+    runs, corpus = _runs(runs, dev), _corpus(corpus, dev)
     try:
         report = repairs_report(model, runs, corpus)
     except (ValueError, RunStopped) as error:
@@ -446,26 +456,12 @@ def eval_repairs(
 
 @eval_app.command("draws")
 def eval_draws(
-    runs: Annotated[
-        Path,
-        typer.Option(
-            "--runs",
-            help=(
-                "Test A runs directory of all models (default: the repository's "
-                "docs/validation/runs/test-a)."
-            ),
-            show_default=False,
-        ),
-    ] = RUNS_PATH,
+    runs: Annotated[Path | None, typer.Option("--runs", help=RUNS_HELP, show_default=False)] = None,
     corpus: Annotated[
-        Path,
-        typer.Option(
-            "--corpus",
-            help="Scenario corpus directory (default: the repository's docs/validation/scenarios).",
-            show_default=False,
-        ),
-    ] = CORPUS_PATH,
+        Path | None, typer.Option("--corpus", help=CORPUS_HELP, show_default=False)
+    ] = None,
     as_json: Annotated[bool, typer.Option("--json", help="Print the report as JSON.")] = False,
+    dev: Annotated[bool, typer.Option("--dev", help=DEV_HELP)] = False,
 ) -> None:
     """Report the draw-to-draw variation of claude-opus-5-5's three draws; nothing is sent.
 
@@ -478,6 +474,7 @@ def eval_draws(
     Exit code 0: report printed; 1: missing runs or corpus directory, or a draw not complete;
     2: usage error.
     """
+    runs, corpus = _runs(runs, dev), _corpus(corpus, dev)
     try:
         report = draws_report(runs, corpus)
     except ValueError as error:
@@ -693,10 +690,7 @@ def eval_run(
     claude-opus-5-5, or --repair with --repeat).
     """
     # TASK-005e6 decision 3: the defaults are resolved when the command runs.
-    if corpus is None:
-        corpus = DEV_CORPUS_PATH if dev else CORPUS_PATH
-    if runs is None:
-        runs = DEV_RUNS_PATH if dev else RUNS_PATH
+    runs, corpus = _runs(runs, dev), _corpus(corpus, dev)
     try:
         kind = _run_kind(model, repair, repeat)
         _eval_run(model, runs, corpus, poll_seconds, yes, release, kind, dev)

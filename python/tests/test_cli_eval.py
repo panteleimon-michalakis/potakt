@@ -3,8 +3,10 @@
 import json
 import shutil
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
+import typer
 from evaluation_helpers import scenario_metadata, write_scenario_dir
 from helpers import constraint, minimal_dm
 from hypothesis import example, given, settings
@@ -18,8 +20,9 @@ from runner_helpers import (
 )
 from typer.testing import CliRunner, Result
 
+import potakt.cli as cli
 import potakt.evaluation.test_a as test_a_module
-from potakt.cli import app
+from potakt.cli import app, eval_app
 from potakt.evaluation import CORPUS_PATH, load_scenario, write_answer
 from potakt.evaluation.draws import draws_report, scenario_draws
 from potakt.evaluation.repairs_report import repairs_report
@@ -652,3 +655,120 @@ def test_repairs_help_states_the_exit_codes() -> None:
         "Exit code 0: report printed; 1: missing runs or corpus directory, or the model's first "
         "run not complete; 2: usage error (also an unregistered model id)"
     ) in text
+
+
+# --- TASK-005e6 decision 5: --dev on the offline commands (ADR-0008 D1) ------------------------
+
+DEV = REPO / "docs" / "validation" / "dev"
+DEV_NAMES = ("91-swimming-pool", "92-museum-front-desk", "93-fuel-station")
+OPUS = "claude-opus-5-5"
+
+
+def dev_records(model_dir: Path, model: str = HAIKU, text: str | None = None) -> Path:
+    """A complete run of ``model`` over the development set in ``model_dir``: each answer is the
+    scenario's truth, or ``text``."""
+    for name in DEV_NAMES:
+        answer = (DEV / name / "truth.json").read_text(encoding="utf-8") if text is None else text
+        message = anthropic_message(model, answer)
+        write_answer(model_dir / name, load_scenario(DEV / name), model, message)
+    return model_dir
+
+
+def eval_command(*args: str) -> Result:
+    return runner.invoke(app, ["eval", *args])
+
+
+def test_summary_with_dev_reads_the_development_set(tmp_path: Path) -> None:
+    runs = dev_records(tmp_path / HAIKU)
+
+    with_dev = eval_command("summary", "--dev", str(runs))
+    without = eval_command("summary", str(runs))
+    explicit = eval_command("summary", "--dev", str(runs), "--corpus", str(CORPUS))
+
+    assert (with_dev.exit_code, without.exit_code, explicit.exit_code) == (0, 0, 0)
+    assert "Complete: yes" in with_dev.stdout.splitlines()
+    corpus_missing = f"Complete: no (missing: {', '.join(ALL_SCENARIOS)})"
+    assert corpus_missing in without.stdout.splitlines()
+    assert corpus_missing in explicit.stdout.splitlines()  # an explicit --corpus wins
+
+
+def test_rescore_with_dev_reads_the_development_set(tmp_path: Path) -> None:
+    runs = dev_records(tmp_path / HAIKU)
+
+    with_dev = eval_command("rescore", "--dev", str(runs))
+    without = eval_command("rescore", str(runs))
+
+    assert with_dev.exit_code == 0, with_dev.stderr
+    assert with_dev.stdout == "".join(f"{name}: unchanged\n" for name in DEV_NAMES)
+    assert without.exit_code == 1
+    assert without.stdout == "".join(
+        f"{name}: not a scenario of the corpus\n" for name in DEV_NAMES
+    )
+
+
+@pytest.fixture
+def default_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """``eval``'s default runs directories moved under ``tmp_path``: the development one is
+    returned, the Test A one does not exist."""
+    monkeypatch.setattr(cli, "RUNS_PATH", tmp_path / "test-a")
+    monkeypatch.setattr(cli, "DEV_RUNS_PATH", tmp_path / "dev" / "round-1")
+    return tmp_path / "dev" / "round-1"
+
+
+def test_repairs_with_dev_resolve_both_defaults(tmp_path: Path, default_runs: Path) -> None:
+    dev_records(default_runs / HAIKU, text="Sorry.")
+
+    with_dev = eval_command("repairs", "--model", HAIKU, "--dev")
+    without = eval_command("repairs", "--model", HAIKU)
+    explicit = eval_command("repairs", "--model", HAIKU, "--dev", "--runs", str(tmp_path / "x"))
+
+    assert with_dev.exit_code == 0, with_dev.stderr
+    assert with_dev.stdout.startswith(
+        "Repairs: claude-haiku-5-5 (ADR-0008 D7, not the gate)\n"
+        "First run: 3 scored, 0 valid, 3 invalid\n"
+    )
+    assert (without.exit_code, without.stderr) == (1, f"{tmp_path / 'test-a'} is not a directory\n")
+    assert explicit.stderr == f"{tmp_path / 'x'} is not a directory\n"  # an explicit --runs wins
+
+
+def test_draws_with_dev_resolve_both_defaults(tmp_path: Path, default_runs: Path) -> None:
+    for folder in (OPUS, f"repeat-2/{OPUS}", f"repeat-3/{OPUS}"):
+        dev_records(default_runs / folder, OPUS)
+
+    with_dev = eval_command("draws", "--dev")
+    without = eval_command("draws")
+
+    assert with_dev.exit_code == 0, with_dev.stderr
+    assert with_dev.stdout.startswith(
+        "Draws: claude-opus-5-5 (ADR-0008 D8, not the gate)\n"
+        "Draw 1 (claude-opus-5-5): recall 1.000 ("
+    )
+    assert (without.exit_code, without.stderr) == (1, f"{tmp_path / 'test-a'} is not a directory\n")
+
+
+def option_help(command: str, option: str) -> str:
+    """The help string of one option of an ``eval`` command, as declared."""
+    click_command = cast(Any, typer.main.get_command(eval_app)).commands[command]
+    return next(param.help for param in click_command.params if option in param.opts)
+
+
+DEV_HELP = (
+    "Read the development set (ADR-0008 D1): the defaults become docs/validation/dev and "
+    "docs/validation/runs/dev/round-1."
+)
+CORPUS_HELP = (
+    "Scenario corpus directory (default: the repository's docs/validation/scenarios, or "
+    "docs/validation/dev with --dev)."
+)
+RUNS_HELP = (
+    "Test A runs directory of all models (default: the repository's docs/validation/runs/test-a, "
+    "or docs/validation/runs/dev/round-1 with --dev)."
+)
+
+
+@pytest.mark.parametrize("command", ["summary", "rescore", "repairs", "draws"])
+def test_the_offline_commands_describe_dev(command: str) -> None:
+    assert option_help(command, "--dev") == DEV_HELP
+    assert option_help(command, "--corpus") == CORPUS_HELP
+    if command in ("repairs", "draws"):
+        assert option_help(command, "--runs") == RUNS_HELP
