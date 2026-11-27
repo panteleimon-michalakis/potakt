@@ -50,7 +50,14 @@ import potakt.evaluation.records as records_module
 import potakt.evaluation.runner as runner_module
 import potakt.evaluation.test_a as test_a_module
 from potakt.cli import app, eval_app
-from potakt.evaluation import CORPUS_PATH, load_scenario, render_test_a, summarize, write_answer
+from potakt.evaluation import (
+    CORPUS_PATH,
+    DEV_CORPUS_PATH,
+    load_scenario,
+    render_test_a,
+    summarize,
+    write_answer,
+)
 from potakt.evaluation.repairs_report import repairs_report
 from potakt.evaluation.runner import RUNS_PATH, cost_upper_bound
 from potakt.evaluation.transport import HttpResponse, RunStopped, TransportError, UrllibTransport
@@ -227,6 +234,238 @@ def test_the_dry_run_names_the_last_batches_and_the_unanswered_scenarios(tmp_pat
         "Unanswered (ADR-0008 D6): 04-restaurant",
     ]
     assert "Cost upper bound: $" in result.stdout
+
+
+# --- TASK-005e6 decision 3: the development set and eval run --dev (ADR-0008 D1) ---------------
+
+DEV_NAMES = ("91-swimming-pool", "92-museum-front-desk", "93-fuel-station")
+DEV_WITHOUT_DEV = (
+    "{names}: development scenarios run only with --dev (ADR-0008 D1); nothing was sent"
+)
+CORPUS_WITH_DEV = "{names}: corpus scenarios never run with --dev (ADR-0008 D1); nothing was sent"
+DEV_RUNS_WITHOUT = (
+    "{runs} is under {root}, where only --dev runs record (ADR-0008 D1); nothing was sent"
+)
+CORPUS_RUNS_WITH = (
+    "{runs} is under {root}, where --dev runs never record (ADR-0008 D1); nothing was sent"
+)
+
+
+def named_corpus(folder: Path, *names: str) -> Path:
+    """A corpus whose scenarios are names only (an empty ``scenario.json`` each): ``check_set``
+    reads nothing else."""
+    for name in names:
+        (folder / name).mkdir(parents=True)
+        (folder / name / "scenario.json").write_bytes(b"{}")
+    return folder
+
+
+@pytest.fixture
+def run_roots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    """``RUNS_PATH`` and ``DEV_RUNS_ROOT`` moved under ``tmp_path``; ``check_set`` reads them when
+    called, so no test touches the repository's runs directories."""
+    test_a, dev = tmp_path / "runs" / "test-a", tmp_path / "runs" / "dev"
+    monkeypatch.setattr(runner_module, "RUNS_PATH", test_a)
+    monkeypatch.setattr(runner_module, "DEV_RUNS_ROOT", dev)
+    return test_a, dev
+
+
+def set_stop(corpus: Path, runs: Path, dev: bool) -> str:
+    with pytest.raises(RunStopped) as raised:
+        runner_module.check_set(corpus, runs, dev)
+    return str(raised.value)
+
+
+def test_a_run_without_dev_refuses_development_scenarios(
+    tmp_path: Path, run_roots: tuple[Path, Path]
+) -> None:
+    corpus = named_corpus(tmp_path / "c", "93-fuel-station", "01-pharmacy", "91-swimming-pool")
+
+    stop = set_stop(corpus, run_roots[0], False)
+
+    assert stop == DEV_WITHOUT_DEV.format(names="91-swimming-pool, 93-fuel-station")
+
+
+def test_a_run_with_dev_refuses_corpus_scenarios(
+    tmp_path: Path, run_roots: tuple[Path, Path]
+) -> None:
+    names = ("91-swimming-pool", "10-municipal-nursery", "02-hotel-reception")
+    corpus = named_corpus(tmp_path / "c", *names)
+
+    stop = set_stop(corpus, run_roots[1] / "round-1", True)
+
+    assert stop == CORPUS_WITH_DEV.format(names="02-hotel-reception, 10-municipal-nursery")
+
+
+def below(root: Path, how: str) -> Path:
+    """A runs directory that is ``root`` or under it, spelled in one of several ways."""
+    return {
+        "the root": root,
+        "strictly under": root / "round-1",
+        "deeper": root / "round-2" / "claude-haiku-5-5",
+        "x/..": root / "x" / "..",
+        "via a sibling": root.parent / "other" / ".." / root.name / "round-1",
+    }[how]
+
+
+HOW = ["the root", "strictly under", "deeper", "x/..", "via a sibling"]
+
+
+@pytest.mark.parametrize("how", HOW)
+def test_a_run_without_dev_refuses_a_runs_directory_under_the_development_root(
+    tmp_path: Path, run_roots: tuple[Path, Path], how: str
+) -> None:
+    corpus = named_corpus(tmp_path / "c", "01-pharmacy")
+    runs = below(run_roots[1], how)
+
+    stop = set_stop(corpus, runs, False)
+
+    assert stop == DEV_RUNS_WITHOUT.format(runs=runs, root=run_roots[1])
+
+
+@pytest.mark.parametrize("how", HOW)
+def test_a_run_with_dev_refuses_a_runs_directory_under_the_test_a_root(
+    tmp_path: Path, run_roots: tuple[Path, Path], how: str
+) -> None:
+    corpus = named_corpus(tmp_path / "c", *DEV_NAMES)
+    runs = below(run_roots[0], how)
+
+    stop = set_stop(corpus, runs, True)
+
+    assert stop == CORPUS_RUNS_WITH.format(runs=runs, root=run_roots[0])
+
+
+def test_a_relative_runs_directory_is_compared_as_an_absolute_one(
+    tmp_path: Path, run_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The owner may type a path relative to python/: its text never starts with the root.
+    corpus = named_corpus(tmp_path / "c", "01-pharmacy")
+    monkeypatch.chdir(tmp_path / "c")
+    runs = Path("..") / "runs" / "dev" / "round-1"
+
+    stop = set_stop(corpus, runs, False)
+
+    assert stop == DEV_RUNS_WITHOUT.format(runs=runs, root=run_roots[1])
+
+
+def test_the_allowed_combinations_pass(tmp_path: Path, run_roots: tuple[Path, Path]) -> None:
+    test_a, dev_root = run_roots
+    corpus = named_corpus(tmp_path / "corpus", "01-pharmacy", "10-municipal-nursery")
+    dev = named_corpus(tmp_path / "dev", *DEV_NAMES)
+    unpinned = named_corpus(tmp_path / "unpinned", "42-unpinned")
+
+    runner_module.check_set(corpus, test_a, False)
+    runner_module.check_set(corpus, tmp_path / "elsewhere", False)
+    runner_module.check_set(dev, dev_root / "round-1", True)
+    runner_module.check_set(dev, tmp_path / "elsewhere", True)
+    runner_module.check_set(unpinned, tmp_path / "elsewhere", False)
+    runner_module.check_set(unpinned, tmp_path / "elsewhere", True)
+    # A sibling whose name only starts with the root's is not under it.
+    runner_module.check_set(corpus, Path(f"{dev_root}-2"), False)
+    runner_module.check_set(dev, Path(f"{test_a}-2"), True)
+
+
+def test_the_first_stop_that_applies_is_raised(
+    tmp_path: Path, run_roots: tuple[Path, Path]
+) -> None:
+    mixed = named_corpus(tmp_path / "mixed", "01-pharmacy", "91-swimming-pool")
+
+    without = set_stop(mixed, run_roots[1], False)
+    with_dev = set_stop(mixed, run_roots[0], True)
+
+    assert without == DEV_WITHOUT_DEV.format(names="91-swimming-pool")
+    assert with_dev == CORPUS_WITH_DEV.format(names="01-pharmacy")
+
+
+def test_check_set_reads_the_tables_when_called(
+    tmp_path: Path, run_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dev = named_corpus(tmp_path / "dev", *DEV_NAMES)
+    monkeypatch.setattr(runner_module, "DEV_PAYLOAD_SHA256", {})
+
+    runner_module.check_set(dev, run_roots[0], False)  # no longer development scenarios
+
+
+def dev_run(runs: Path | None, model: str, *extra: str) -> Result:
+    """``eval run --dev`` with the default corpus (the repository's development set)."""
+    where = [] if runs is None else ["--runs", str(runs)]
+    return runner.invoke(app, ["eval", "run", "--model", model, "--dev", *where, *extra])
+
+
+def test_the_dev_dry_run_plans_the_development_set(tmp_path: Path) -> None:
+    result = dev_run(tmp_path, HAIKU)
+
+    assert result.exit_code == 0, result.stderr
+    lines = result.stdout.splitlines()
+    assert lines[0] == "Test A run plan: claude-haiku-5-5 (development set)"
+    assert lines[1] == f"Runs directory: {tmp_path / HAIKU}"
+    assert lines[2] == "Pending (3): 91-swimming-pool, 92-museum-front-desk, 93-fuel-station"
+    assert next(line for line in lines if line.startswith("Cost upper bound:")).startswith(
+        "Cost upper bound: $0.0569 (3 requests;"
+    )
+    assert not (tmp_path / HAIKU).exists()  # a dry run writes nothing
+
+
+def complete_dev_run(runs: Path, model: str) -> None:
+    """A complete first run of ``model`` over the development set: three invalid answers."""
+    for name in DEV_NAMES:
+        scenario = load_scenario(DEV_CORPUS_PATH / name)
+        write_answer(runs / model / name, scenario, model, anthropic_message(model))
+
+
+def test_the_dev_repair_dry_run_names_both_parts(tmp_path: Path) -> None:
+    complete_dev_run(tmp_path, HAIKU)
+
+    result = dev_run(tmp_path, HAIKU, "--repair")
+
+    assert result.exit_code == 0, result.stderr
+    lines = result.stdout.splitlines()
+    assert lines[0] == "Test A run plan: claude-haiku-5-5 (development set, repair)"
+    assert lines[2] == "Pending (3): 91-swimming-pool, 92-museum-front-desk, 93-fuel-station"
+
+
+def test_dev_without_runs_resolves_to_the_development_runs_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "DEV_RUNS_PATH", tmp_path / "dev" / "round-1")
+
+    result = dev_run(None, HAIKU)
+
+    assert result.exit_code == 0, result.stderr
+    assert f"Runs directory: {tmp_path / 'dev' / 'round-1' / HAIKU}" in result.stdout.splitlines()
+
+
+def test_a_dev_yes_run_records_under_the_runs_directory_given(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
+    server = FakeBatches()
+    monkeypatch.setattr(cli, "make_transport", lambda: server)
+    runs = tmp_path / "dev-runs"
+
+    result = dev_run(runs, HAIKU, "--yes", "--poll-seconds", "10")
+
+    assert result.exit_code == 0, result.stderr
+    assert server.creates() == [list(DEV_NAMES)]
+    for name in DEV_NAMES:
+        assert (runs / HAIKU / name / "response.json").is_file()
+    summary = summarize(runs / HAIKU, DEV_CORPUS_PATH).to_text()
+    assert "Complete: yes" in summary
+    assert result.stdout.endswith(summary)
+
+
+@pytest.mark.parametrize("extra", [(), ("--yes",)], ids=["dry", "yes"])
+def test_a_run_without_dev_refuses_the_development_set_and_writes_nothing(
+    tmp_path: Path, extra: tuple[str, ...]
+) -> None:
+    runs = tmp_path / "runs"
+
+    result = eval_run(runs, HAIKU, *extra, corpus=DEV_CORPUS_PATH)
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert result.stderr == DEV_WITHOUT_DEV.format(names=", ".join(DEV_NAMES)) + "\n"
+    assert not runs.exists()
 
 
 # --- TASK-005e5 decision 6: eval run --repair (ADR-0008 D7) ------------------------------------
@@ -1172,6 +1411,44 @@ def test_a_leftover_temporary_file_is_ignored_by_git(path: str) -> None:
 )
 def test_the_records_are_not_ignored_by_the_tmp_rule(path: str) -> None:
     assert not gitignore_matches(TMP_RULE, path)
+
+
+# TASK-005e6 decision 3: the same two rules for the development runs, in every round.
+DEV_LOCK_RULE = "docs/validation/runs/dev/**/.eval-run.lock"
+DEV_TMP_RULE = "docs/validation/runs/dev/**/*.tmp"
+
+
+def test_the_development_rules_are_in_the_gitignore() -> None:
+    repository = Path(__file__).resolve().parents[2]
+    lines = (repository / ".gitignore").read_text(encoding="utf-8").splitlines()
+
+    assert DEV_LOCK_RULE in lines
+    assert DEV_TMP_RULE in lines
+    lock = "docs/validation/runs/dev/round-1/.eval-run.lock"
+    assert repository / lock == runner_module.DEV_RUNS_PATH / LOCK
+
+
+@pytest.mark.parametrize(
+    ("rule", "path"),
+    [
+        (DEV_LOCK_RULE, "docs/validation/runs/dev/round-1/.eval-run.lock"),
+        (
+            DEV_TMP_RULE,
+            "docs/validation/runs/dev/round-1/claude-haiku-5-5/91-swimming-pool/response.json.tmp",
+        ),
+        (DEV_TMP_RULE, "docs/validation/runs/dev/round-2/claude-haiku-5-5/batches.json.tmp"),
+    ],
+    ids=["lock", "scenario", "round-2"],
+)
+def test_development_leftovers_are_ignored_by_git(rule: str, path: str) -> None:
+    assert gitignore_matches(rule, path)
+
+
+def test_the_development_records_are_not_ignored() -> None:
+    path = "docs/validation/runs/dev/round-1/claude-haiku-5-5/batches.json"
+
+    assert not gitignore_matches(DEV_LOCK_RULE, path)
+    assert not gitignore_matches(DEV_TMP_RULE, path)
 
 
 def test_a_lock_that_cannot_be_read_still_blocks_with_the_message(
@@ -2271,6 +2548,16 @@ def test_the_default_runs_directory_is_the_repository_one() -> None:
     assert expected == RUNS_PATH
 
 
+def test_the_development_paths_are_the_repository_ones() -> None:
+    # TASK-005e6 decision 3 (ADR-0008 D1 and its amendment).
+    validation = Path(__file__).resolve().parents[2] / "docs" / "validation"
+
+    assert validation / "dev" == DEV_CORPUS_PATH
+    assert validation / "runs" / "dev" == runner_module.DEV_RUNS_ROOT
+    assert validation / "runs" / "dev" / "round-1" == runner_module.DEV_RUNS_PATH
+    assert cli.DEV_RUNS_PATH == runner_module.DEV_RUNS_PATH
+
+
 def environment_readers(path: Path) -> list[str]:
     """The functions of a module that read ``os.environ`` or call ``getenv``."""
     tree = ast.parse(path.read_bytes())
@@ -2345,11 +2632,11 @@ def test_the_run_help_states_the_exit_codes_and_files() -> None:
         "stopped (the reason on stderr), a held batch, a missing or invalid key, claude-opus-5-5 "
         "before a complete claude-haiku-5-5 run, a repair or repeat run before the run it needs "
         "is complete, another run active (the lock file), a --release of a batch that is not "
-        "held, an unknown batch in the workspace, a request that differs from its pin, a missing "
-        "directory or a corpus without a scenario, an unexpected error (its type only, never its "
-        "text), or an interruption; 2: usage error (also an unregistered model id, --release "
-        "without --yes, --repeat for another model than claude-opus-5-5, or --repair with "
-        "--repeat)"
+        "held, an unknown batch in the workspace, a request that differs from its pin, a scenario "
+        "or runs directory of the other set, a missing directory or a corpus without a scenario, "
+        "an unexpected error (its type only, never its text), or an interruption; 2: usage error "
+        "(also an unregistered model id, --release without --yes, --repeat for another model than "
+        "claude-opus-5-5, or --repair with --repeat)"
     ) in text
     assert "the same under <runs>/repair/<model dir>/ and <runs>/repeat-<K>/claude-opus-5-5/" in (
         text
@@ -2364,6 +2651,40 @@ def test_the_run_help_states_the_exit_codes_and_files() -> None:
     assert "this check never changes the exit code" in text
     assert "default: the repository's docs/validation/runs/test-a" in text
     assert str(RUNS_PATH) not in text
+
+
+def option_help(command: str, option: str) -> str:
+    """The help string of one option of an ``eval`` command, as declared (the rendered panel
+    cuts a word longer than its column, such as a long path, with an ellipsis)."""
+    click_command = cast(Any, typer.main.get_command(eval_app)).commands[command]
+    return next(param.help for param in click_command.params if option in param.opts)
+
+
+def test_the_run_help_describes_dev() -> None:
+    # TASK-005e6 decisions 3 and 10.
+    text = help_text("eval", "run")
+
+    assert option_help("run", "--dev") == (
+        "Run the development set (ADR-0008 D1): docs/validation/dev, recorded under "
+        "docs/validation/runs/dev/round-1; never the gate."
+    )
+    assert option_help("run", "--corpus") == (
+        "Scenario corpus directory (default: the repository's docs/validation/scenarios, or "
+        "docs/validation/dev with --dev)."
+    )
+    assert option_help("run", "--runs") == (
+        "Test A runs directory of all models, created if missing (default: the repository's "
+        "docs/validation/runs/test-a, or docs/validation/runs/dev/round-1 with --dev)."
+    )
+    assert "--dev Run the development set (ADR-0008 D1)" in text
+    assert (
+        "With --dev, run the development set instead (ADR-0008 D1): --corpus defaults to the "
+        "repository's docs/validation/dev and --runs to docs/validation/runs/dev/round-1, and "
+        "each request is checked against the development pins. A run with --dev refuses a corpus "
+        "scenario and a runs directory under docs/validation/runs/test-a; a run without it "
+        "refuses a development scenario and a runs directory under docs/validation/runs/dev."
+    ) in text
+    assert str(runner_module.DEV_RUNS_PATH) not in text
 
 
 @pytest.mark.parametrize(

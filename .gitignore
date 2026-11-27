@@ -33,6 +33,9 @@ Thumbs.db
 docs/validation/runs/test-a/.eval-run.lock
 # A leftover temporary file of a record (an unsaved answer is kept in one): never committed
 docs/validation/runs/test-a/**/*.tmp
+# The same for the development runs (ADR-0008 D1), in every round
+docs/validation/runs/dev/**/.eval-run.lock
+docs/validation/runs/dev/**/*.tmp
 
 # Local agent files
 .claude/

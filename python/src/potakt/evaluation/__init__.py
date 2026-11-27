@@ -56,6 +56,7 @@ from potakt.evaluation.scenario import (
 )
 from potakt.evaluation.summary import (
     CORPUS_PATH,
+    DEV_CORPUS_PATH,
     LONG_PROMPT_PRICES_USD_PER_MILLION,
     PRICES_USD_PER_MILLION,
     Summary,
@@ -81,6 +82,7 @@ from potakt.evaluation.vacuity import is_vacuous
 __all__ = [
     "CATEGORIES",
     "CORPUS_PATH",
+    "DEV_CORPUS_PATH",
     "INSTRUCTION_PATH",
     "LONG_PROMPT_PRICES_USD_PER_MILLION",
     "PRICES_USD_PER_MILLION",

@@ -229,3 +229,6 @@ gives the dates.
 - Schema section (`potakt schema`): SHA256 `afd54559d52d492c8ce49914a886be49b2f377187d11098f8fff7395dec9c02c`.
 - Payloads: the 30 values of `PAYLOAD_SHA256` in `python/src/potakt/evaluation/runner.py` at the
   commit that last changed this appendix.
+- Development payloads: the 9 values of `DEV_PAYLOAD_SHA256` in
+  `python/src/potakt/evaluation/runner.py` at the commit that last changed this appendix (the
+  development set of D1: three scenarios for each of the three models).

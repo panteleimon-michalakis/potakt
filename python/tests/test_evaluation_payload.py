@@ -20,6 +20,7 @@ import potakt.evaluation.runner as runner_module
 import potakt.evaluation.test_a as test_a_module
 from potakt.evaluation import (
     CORPUS_PATH,
+    DEV_CORPUS_PATH,
     INSTRUCTION_PATH,
     REGISTERED_MODELS,
     STRONG_MODEL,
@@ -225,6 +226,89 @@ def test_a_changed_byte_in_the_prompt_changes_the_pinned_payload(
             payload_sha256(CORPUS_PATH, "01-pharmacy", model)
             != PINNED_PAYLOADS[(model, "01-pharmacy")]
         )
+
+
+# --- TASK-005e6 decision 3: the nine development payloads pinned (ADR-0008 D1, Appendix A) ------
+# The same SHA-256 for each request.json of the development set, rendered on 2026-11-27 by the
+# reviewer (3 scenarios x 3 models).
+
+DEV_PINS = """
+claude-haiku-5-5
+  91-swimming-pool 836adb0369c5ef9ceb006cc023b7fe2cff00776acfff94a1dbcd559188c451af
+  92-museum-front-desk 2eaeec98cadf5abb106b2927182588af61e67ae796b36f5b8c104b36c41d17de
+  93-fuel-station 023eb530e872dd278633210e6fddce9e2201880f05b653a6b5bafeb701f782a7
+gemini-3.8-flash
+  91-swimming-pool 06998f2806bddb730107eab138da06d78a56349ea480bea478d85691464ee30c
+  92-museum-front-desk f4bd1cfe711d99ec6d617129e51f12f022c339aef9d7c9da90d20c5b142d5329
+  93-fuel-station d783b9e6fa5fea27bdeb66815a1b9a09e36c0a24e831822ccf43724857a71717
+claude-opus-5-5
+  91-swimming-pool c8eb5532b7b141ff467ed5cb6c4d7c1724c1e6ae6753fd3b295b452afc75bc53
+  92-museum-front-desk ed311a4ad20212e1a7f2604b72042431263290f75228a7a2cceaae806f269602
+  93-fuel-station 290c98af0fc82745fa9235099160720afd701dc0f19cd08c14accb0d95080ef1
+"""
+
+DEV_PINNED_PAYLOADS = _pins(DEV_PINS)
+
+
+def test_the_dev_pins_cover_every_development_scenario_and_model() -> None:
+    names = sorted(
+        (path.name for path in DEV_CORPUS_PATH.iterdir() if (path / "scenario.json").is_file()),
+        key=lambda name: name.encode("utf-8"),
+    )
+    assert names == ["91-swimming-pool", "92-museum-front-desk", "93-fuel-station"]
+    assert sorted(DEV_PINNED_PAYLOADS) == sorted(
+        (model, name) for model in REGISTERED_MODELS for name in names
+    )
+    assert len(DEV_PINNED_PAYLOADS) == 9
+
+
+def test_the_runner_checks_development_requests_against_exactly_this_table() -> None:
+    assert dict(runner_module.DEV_PAYLOAD_SHA256) == DEV_PINNED_PAYLOADS  # both ways
+    assert len(runner_module.DEV_PAYLOAD_SHA256) == 9
+
+
+@pytest.mark.parametrize(("model", "name"), sorted(DEV_PINNED_PAYLOADS))
+def test_each_development_payload_is_pinned(model: str, name: str) -> None:
+    assert payload_sha256(DEV_CORPUS_PATH, name, model) == DEV_PINNED_PAYLOADS[(model, name)]
+
+
+def test_the_corpus_and_development_tables_share_no_scenario() -> None:
+    corpus = {name for _, name in runner_module.PAYLOAD_SHA256}
+    development = {name for _, name in runner_module.DEV_PAYLOAD_SHA256}
+
+    assert len(corpus) == 10
+    assert len(development) == 3
+    assert corpus & development == set()
+
+
+def test_a_changed_byte_in_a_development_csv_changes_its_payload(tmp_path: Path) -> None:
+    # 93-fuel-station's CSV files are windows-1253: one bit of a digit keeps them decodable.
+    corpus = tmp_path / "dev"
+    shutil.copytree(DEV_CORPUS_PATH / "93-fuel-station", corpus / "93-fuel-station")
+    csv = corpus / "93-fuel-station" / "ypalliloi.csv"
+    data = bytearray(csv.read_bytes())
+    data[-2] = data[-2] ^ 1  # one bit of the last character before the final line break
+    csv.write_bytes(bytes(data))
+
+    for model in REGISTERED_MODELS:
+        assert (
+            payload_sha256(corpus, "93-fuel-station", model)
+            != DEV_PINNED_PAYLOADS[(model, "93-fuel-station")]
+        )
+
+
+ADR_0008 = (
+    Path(__file__).resolve().parents[2] / "docs" / "adr" / "0008-phase-0-protocol-revision.md"
+)
+
+
+def test_appendix_a_names_both_payload_tables_with_their_sizes() -> None:
+    text = ADR_0008.read_text(encoding="utf-8")
+    appendix = " ".join(text[text.index("## Appendix A") :].split())
+
+    assert "Payloads: the 30 values of `PAYLOAD_SHA256`" in appendix
+    assert "Development payloads: the 9 values of `DEV_PAYLOAD_SHA256`" in appendix
+    assert (len(runner_module.PAYLOAD_SHA256), len(runner_module.DEV_PAYLOAD_SHA256)) == (30, 9)
 
 
 # --- TASK-005e5 decision 5: the repair request is the pinned first request plus two turns ------

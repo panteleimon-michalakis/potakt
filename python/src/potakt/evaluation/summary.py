@@ -44,6 +44,8 @@ from potakt.model import MAX_NESTING, json_nesting_exceeds
 
 # The corpus of ADR-0007 §2, resolved from the repository root (src layout, like INSTRUCTION_PATH).
 CORPUS_PATH = Path(__file__).resolve().parents[4] / "docs" / "validation" / "scenarios"
+# ADR-0008 D1 (amendment of TASK-005e6): the development set, resolved like CORPUS_PATH.
+DEV_CORPUS_PATH = Path(__file__).resolve().parents[4] / "docs" / "validation" / "dev"
 # USD per million (input, output) tokens, from the providers' official pricing pages on
 # 2026-11-02: the Anthropic Batch API prices (ADR-0007 §7 amendment «Transport»), Gemini's free
 # tier. A run whose input tokens exceed a long-prompt threshold uses that model's second pair

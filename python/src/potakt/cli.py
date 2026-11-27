@@ -15,6 +15,7 @@ from potakt import __version__
 from potakt.checker import check, render_check_result
 from potakt.evaluation import (
     CORPUS_PATH,
+    DEV_CORPUS_PATH,
     INSTRUCTION_PATH,
     REGISTERED_MODELS,
     STRONG_MODEL,
@@ -33,11 +34,13 @@ from potakt.evaluation.draws import draws_report
 from potakt.evaluation.records import RESPONSE_FILE
 from potakt.evaluation.repairs_report import repairs_report
 from potakt.evaluation.runner import (
+    DEV_RUNS_PATH,
     REPAIR_DIR,
     RUNS_PATH,
     audit_batches,
     check_order,
     check_pins,
+    check_set,
     corpus_scenarios,
     preflight,
     run_anthropic,
@@ -549,24 +552,28 @@ def eval_run(
         ),
     ],
     runs: Annotated[
-        Path,
+        Path | None,
         typer.Option(
             "--runs",
             help=(
                 "Test A runs directory of all models, created if missing (default: the "
-                "repository's docs/validation/runs/test-a)."
+                "repository's docs/validation/runs/test-a, or docs/validation/runs/dev/round-1 "
+                "with --dev)."
             ),
             show_default=False,
         ),
-    ] = RUNS_PATH,
+    ] = None,
     corpus: Annotated[
-        Path,
+        Path | None,
         typer.Option(
             "--corpus",
-            help="Scenario corpus directory (default: the repository's docs/validation/scenarios).",
+            help=(
+                "Scenario corpus directory (default: the repository's docs/validation/scenarios, "
+                "or docs/validation/dev with --dev)."
+            ),
             show_default=False,
         ),
-    ] = CORPUS_PATH,
+    ] = None,
     poll_seconds: Annotated[
         int,
         typer.Option(
@@ -615,6 +622,16 @@ def eval_run(
             show_default=False,
         ),
     ] = None,
+    dev: Annotated[
+        bool,
+        typer.Option(
+            "--dev",
+            help=(
+                "Run the development set (ADR-0008 D1): docs/validation/dev, recorded under "
+                "docs/validation/runs/dev/round-1; never the gate."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Run Test A for one model; without --yes, print the plan and send nothing.
 
@@ -651,6 +668,12 @@ def eval_run(
     complete first run, then K = 3 after repeat 2) it sends the pinned first requests again as
     draw K under <runs>/repeat-<K>/claude-opus-5-5 (ADR-0008 D8); none of these changes the gate.
 
+    With --dev, run the development set instead (ADR-0008 D1): --corpus defaults to the
+    repository's docs/validation/dev and --runs to docs/validation/runs/dev/round-1, and each
+    request is checked against the development pins. A run with --dev refuses a corpus scenario
+    and a runs directory under docs/validation/runs/test-a; a run without it refuses a
+    development scenario and a runs directory under docs/validation/runs/dev.
+
     Files: <runs>/<model dir>/<scenario id>/ with request.json, response.json, candidate.txt,
     comparison.json; for Claude models also <runs>/<model dir>/ batches.json and
     batch-<id>.results.jsonl (and unanswered.json for a scenario given up after five batches);
@@ -660,13 +683,19 @@ def eval_run(
     reason on stderr), a held batch, a missing or invalid key, claude-opus-5-5 before a complete
     claude-haiku-5-5 run, a repair or repeat run before the run it needs is complete, another run
     active (the lock file), a --release of a batch that is not held, an unknown batch in the
-    workspace, a request that differs from its pin, a missing directory or a corpus without a
-    scenario, an unexpected error (its type only, never its text), or an interruption; 2: usage
-    error (also an unregistered model id, --release without --yes, --repeat for another model than
-    claude-opus-5-5, or --repair with --repeat).
+    workspace, a request that differs from its pin, a scenario or runs directory of the other set,
+    a missing directory or a corpus without a scenario, an unexpected error (its type only, never
+    its text), or an interruption; 2: usage error (also an unregistered model id, --release
+    without --yes, --repeat for another model than claude-opus-5-5, or --repair with --repeat).
     """
+    # TASK-005e6 decision 3: the defaults are resolved when the command runs.
+    if corpus is None:
+        corpus = DEV_CORPUS_PATH if dev else CORPUS_PATH
+    if runs is None:
+        runs = DEV_RUNS_PATH if dev else RUNS_PATH
     try:
-        _eval_run(model, runs, corpus, poll_seconds, yes, release, _run_kind(model, repair, repeat))
+        kind = _run_kind(model, repair, repeat)
+        _eval_run(model, runs, corpus, poll_seconds, yes, release, kind, dev)
     except (typer.Exit, typer.Abort):  # RuntimeError subclasses in Typer 0.27.3: not unexpected
         raise
     except KeyboardInterrupt:  # TASK-005c3h H8: also outside the run (Typer: exit 130, silent)
@@ -706,6 +735,7 @@ def _eval_run(
     yes: bool,
     release: str | None,
     kind: str | None,
+    dev: bool,
 ) -> None:
     try:
         check_registered(model)
@@ -721,10 +751,11 @@ def _eval_run(
         _stop(1, f"no scenario in {corpus}")
     anthropic = model.startswith(ANTHROPIC_PREFIX)
     try:
+        check_set(corpus, runs, dev)  # TASK-005e6 decision 3 (ADR-0008 D1): the other set
         check_pins()  # TASK-005c3g G8: before anything is rendered, read or sent
         check_order(model, runs, corpus, kind)
         if not yes:
-            typer.echo(run_plan(model, corpus, runs, kind), nl=False)
+            typer.echo(run_plan(model, corpus, runs, kind, dev=dev), nl=False)
             return
         if release is not None and not anthropic:
             raise RunStopped(f"{server_text(release)} is not a held batch of {model}")

@@ -101,6 +101,8 @@ __all__ = [
     "ANTHROPIC_VERSION",
     "BATCHES_URL",
     "BATCH_STATE_FILE",
+    "DEV_RUNS_PATH",
+    "DEV_RUNS_ROOT",
     "FIRST_MODEL",
     "GEMINI_MODEL_URL",
     "GEMINI_URL",
@@ -115,6 +117,7 @@ __all__ = [
     "audit_batches",
     "check_order",
     "check_pins",
+    "check_set",
     "corpus_scenarios",
     "cost_upper_bound",
     "lock_text",
@@ -142,6 +145,10 @@ GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:ge
 GEMINI_TIMEOUT_SECONDS = 600.0
 # The records of ADR-0007 §7 «Records», resolved from the repository root like CORPUS_PATH.
 RUNS_PATH = Path(__file__).resolve().parents[4] / "docs" / "validation" / "runs" / "test-a"
+# ADR-0008 D1 (amendment of TASK-005e6): the records of the development runs; a later round after a
+# revision records in a directory of its own under DEV_RUNS_ROOT.
+DEV_RUNS_ROOT = RUNS_PATH.parent / "dev"
+DEV_RUNS_PATH = DEV_RUNS_ROOT / "round-1"
 # ADR-0007 §7 amendment «Order»: the strong model runs only after this one has a complete run.
 FIRST_MODEL = "claude-haiku-5-5"
 # TASK-005c3c E3 (ADR-0007 §7 amendment «Unclear create»): the one list call of a reconciliation
@@ -2217,6 +2224,50 @@ PAYLOAD_SHA256: Mapping[tuple[str, str], str] = MappingProxyType(
         for name, digest in digests.items()
     }
 )
+# ADR-0008 D1 and Appendix A (TASK-005e6): the SHA256 of the UTF-8 bytes of each development
+# request.json (``render_payload``), by (model, scenario), rendered on 2026-11-27 by the reviewer;
+# the test of the payloads compares this table with its own.
+DEV_PAYLOAD_SHA256: Mapping[tuple[str, str], str] = MappingProxyType(
+    {
+        (model, name): digest
+        for model, digests in {
+            "claude-haiku-5-5": {
+                "91-swimming-pool": (
+                    "836adb0369c5ef9ceb006cc023b7fe2cff00776acfff94a1dbcd559188c451af"
+                ),
+                "92-museum-front-desk": (
+                    "2eaeec98cadf5abb106b2927182588af61e67ae796b36f5b8c104b36c41d17de"
+                ),
+                "93-fuel-station": (
+                    "023eb530e872dd278633210e6fddce9e2201880f05b653a6b5bafeb701f782a7"
+                ),
+            },
+            "gemini-3.8-flash": {
+                "91-swimming-pool": (
+                    "06998f2806bddb730107eab138da06d78a56349ea480bea478d85691464ee30c"
+                ),
+                "92-museum-front-desk": (
+                    "f4bd1cfe711d99ec6d617129e51f12f022c339aef9d7c9da90d20c5b142d5329"
+                ),
+                "93-fuel-station": (
+                    "d783b9e6fa5fea27bdeb66815a1b9a09e36c0a24e831822ccf43724857a71717"
+                ),
+            },
+            "claude-opus-5-5": {
+                "91-swimming-pool": (
+                    "c8eb5532b7b141ff467ed5cb6c4d7c1724c1e6ae6753fd3b295b452afc75bc53"
+                ),
+                "92-museum-front-desk": (
+                    "ed311a4ad20212e1a7f2604b72042431263290f75228a7a2cceaae806f269602"
+                ),
+                "93-fuel-station": (
+                    "290c98af0fc82745fa9235099160720afd701dc0f19cd08c14accb0d95080ef1"
+                ),
+            },
+        }.items()
+        for name, digest in digests.items()
+    }
+)
 REQUEST_DIFFERS = (
     "{name}: the request for {model} differs from the one the harness pins (SHA256 {pinned}); "
     "nothing was sent"
@@ -2227,10 +2278,13 @@ REQUEST_UNPINNED = "{name}: no request is pinned for {model}; nothing was sent"
 def _pinned_payload(corpus_dir: Path, name: str, model: str) -> dict[str, object]:
     """The request payload of scenario ``name`` for ``model`` (the ``eval prompt`` payload), as
     rendered now; ``RunStopped`` unless the SHA256 of its UTF-8 bytes (``render_payload``, the
-    bytes of ``request.json``) is the one ``PAYLOAD_SHA256`` pins (TASK-005c3h H7). Reads the
-    table when called. Nothing is written."""
+    bytes of ``request.json``) is the one ``PAYLOAD_SHA256`` pins (TASK-005c3h H7), or, for a
+    scenario it does not pin, ``DEV_PAYLOAD_SHA256`` (TASK-005e6, ADR-0008 D1). Reads both tables
+    when called. Nothing is written."""
     payload = request_payload(_render(corpus_dir, name), model)
     pinned = PAYLOAD_SHA256.get((model, name))
+    if pinned is None:
+        pinned = DEV_PAYLOAD_SHA256.get((model, name))
     if pinned is None:
         raise RunStopped(REQUEST_UNPINNED.format(name=name, model=model))
     digest = hashlib.sha256(render_payload(payload).encode("utf-8")).hexdigest()
@@ -2268,6 +2322,50 @@ def check_pins() -> None:
     schema = test_a_module.render_json_schema().encode("utf-8")
     if hashlib.sha256(schema).hexdigest() != SCHEMA_SHA256:
         raise RunStopped(PIN_DIFFERS.format(what="schema section", pinned=SCHEMA_SHA256))
+
+
+# TASK-005e6 decision 3 (ADR-0008 D1 and its amendment): the corpus and the development set never
+# mix, in what a run sends or where it records.
+DEV_SCENARIOS_WITHOUT_DEV = (
+    "{names}: development scenarios run only with --dev (ADR-0008 D1); nothing was sent"
+)
+CORPUS_SCENARIOS_WITH_DEV = (
+    "{names}: corpus scenarios never run with --dev (ADR-0008 D1); nothing was sent"
+)
+DEV_RUNS_WITHOUT_DEV = (
+    "{runs} is under {root}, where only --dev runs record (ADR-0008 D1); nothing was sent"
+)
+CORPUS_RUNS_WITH_DEV = (
+    "{runs} is under {root}, where --dev runs never record (ADR-0008 D1); nothing was sent"
+)
+
+
+def _under(path: Path, root: Path) -> bool:
+    """``path`` is ``root`` or under it: ``os.path.normcase(os.path.abspath(...))`` of both is
+    equal, or the path's starts with the root's followed by ``os.sep``; so ``..`` parts, a path
+    relative to the working directory and, on Windows, letter case do not matter."""
+    target = os.path.normcase(os.path.abspath(path))
+    base = os.path.normcase(os.path.abspath(root))
+    return target == base or target.startswith(base + os.sep)
+
+
+def check_set(corpus_dir: Path, runs_dir: Path, dev: bool) -> None:
+    """TASK-005e6 decision 3 (ADR-0008 D1): ``RunStopped`` with the first of these that applies:
+    without ``--dev``, a scenario of ``corpus_dir`` that ``DEV_PAYLOAD_SHA256`` names
+    (``DEV_SCENARIOS_WITHOUT_DEV``); with it, one that ``PAYLOAD_SHA256`` names
+    (``CORPUS_SCENARIOS_WITH_DEV``); without it, ``runs_dir`` at or under ``DEV_RUNS_ROOT``
+    (``DEV_RUNS_WITHOUT_DEV``); with it, ``runs_dir`` at or under ``RUNS_PATH``
+    (``CORPUS_RUNS_WITH_DEV``). Scenarios are named in UTF-8 byte order; the tables and both
+    roots are read when called. Nothing is read but the names of ``corpus_dir``."""
+    other = {scenario for _, scenario in (PAYLOAD_SHA256 if dev else DEV_PAYLOAD_SHA256)}
+    found = [name for name in _corpus_names(corpus_dir) if name in other]
+    if found:
+        message = CORPUS_SCENARIOS_WITH_DEV if dev else DEV_SCENARIOS_WITHOUT_DEV
+        raise RunStopped(message.format(names=", ".join(found)))
+    root = RUNS_PATH if dev else DEV_RUNS_ROOT
+    if _under(runs_dir, root):
+        message = CORPUS_RUNS_WITH_DEV if dev else DEV_RUNS_WITHOUT_DEV
+        raise RunStopped(message.format(runs=runs_dir, root=str(root)))
 
 
 def _missing(run_dir: Path, corpus_dir: Path) -> list[str]:
@@ -2406,9 +2504,13 @@ def _not_sent_plan(corpus_dir: Path, model: str, first_dir: Path | None) -> list
     return lines
 
 
-def run_plan(model: str, corpus_dir: Path, runs_dir: Path, kind: str | None = None) -> str:
+def run_plan(
+    model: str, corpus_dir: Path, runs_dir: Path, kind: str | None = None, *, dev: bool = False
+) -> str:
     """What ``eval run`` would do for ``model`` and a run of ``kind`` (TASK-005e5 decisions 3
-    and 6), one fact per line, ending with ``\\n``. Reads no key and sends nothing.
+    and 6), one fact per line, ending with ``\\n``. Reads no key and sends nothing. The first
+    line names the model and, in parentheses, ``development set`` for a ``--dev`` run
+    (TASK-005e6) and the kind, joined by ``, ``.
 
     TASK-005c3h H5: ``RunStopped`` (the ``--yes`` message) for a leftover ``response.json.tmp``
     that ``--yes`` would stop on; a leftover of the open batch adds its ``REPLACED`` line. While
@@ -2428,8 +2530,9 @@ def run_plan(model: str, corpus_dir: Path, runs_dir: Path, kind: str | None = No
     # TASK-005c3h H7: as --yes checks them
     _check_requests(corpus_dir, pending, model, first_dir)
     recorded = recorded_scenarios(corpus_dir, model_dir)
+    parts = [*(["development set"] if dev else []), *([] if kind is None else [_kind_label(kind)])]
     lines = [
-        f"Test A run plan: {model}" + ("" if kind is None else f" ({_kind_label(kind)})"),
+        f"Test A run plan: {model}" + (f" ({', '.join(parts)})" if parts else ""),
         f"Runs directory: {model_dir}",
         f"Pending ({len(pending)}): {', '.join(pending) or 'none'}",
         f"Recorded ({len(recorded)}): {', '.join(recorded) or 'none'}",
