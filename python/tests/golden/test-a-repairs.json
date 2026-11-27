@@ -1,0 +1,98 @@
+{
+  "candidates": [
+    {
+      "first_issue_class": "schema",
+      "matched_count": 0,
+      "outcome": "invalid",
+      "reason": null,
+      "repair_issue_class": "JSON or fence",
+      "scenario": "03-call-centre",
+      "truth_count": 8
+    },
+    {
+      "first_issue_class": "stop reason",
+      "matched_count": 12,
+      "outcome": "valid",
+      "reason": null,
+      "repair_issue_class": null,
+      "scenario": "04-restaurant",
+      "truth_count": 12
+    },
+    {
+      "first_issue_class": "data-level id or attribute",
+      "matched_count": 8,
+      "outcome": "valid",
+      "reason": null,
+      "repair_issue_class": null,
+      "scenario": "05-supermarket-checkouts",
+      "truth_count": 8
+    },
+    {
+      "first_issue_class": "JSON or fence",
+      "matched_count": null,
+      "outcome": "not sent",
+      "reason": "empty answer",
+      "repair_issue_class": null,
+      "scenario": "06-ambulance-crews",
+      "truth_count": 11
+    },
+    {
+      "first_issue_class": "stop reason",
+      "matched_count": null,
+      "outcome": "not sent",
+      "reason": "no answer",
+      "repair_issue_class": null,
+      "scenario": "07-security-guards",
+      "truth_count": 5
+    },
+    {
+      "first_issue_class": "JSON or fence",
+      "matched_count": null,
+      "outcome": "without answer",
+      "reason": null,
+      "repair_issue_class": null,
+      "scenario": "08-warehouse",
+      "truth_count": 6
+    },
+    {
+      "first_issue_class": "JSON or fence",
+      "matched_count": null,
+      "outcome": "missing",
+      "reason": null,
+      "repair_issue_class": null,
+      "scenario": "09-care-home",
+      "truth_count": 9
+    }
+  ],
+  "complete": false,
+  "invalid": 7,
+  "made_valid": [
+    {
+      "matched_count": 12,
+      "scenario": "04-restaurant"
+    },
+    {
+      "matched_count": 8,
+      "scenario": "05-supermarket-checkouts"
+    }
+  ],
+  "missing": [
+    "09-care-home"
+  ],
+  "model": "claude-haiku-5-5",
+  "not_sent": 2,
+  "recall": {
+    "matched": 20,
+    "recall": 0.25316455696202533,
+    "truth": 79
+  },
+  "recall_after_repair": {
+    "matched": 40,
+    "recall": 0.5063291139240507,
+    "truth": 79
+  },
+  "recorded": 3,
+  "scored": 10,
+  "valid": 3,
+  "without_answer": 1
+}

@@ -228,6 +228,45 @@ def expected_repair(corpus: Path, first_dir: Path, model: str, name: str) -> dic
     return repair_payload(first, model, first_answers()[name][0], issues)
 
 
+REPAIRS_MODEL = "claude-haiku-5-5"  # TASK-005e5 decision 7: the golden's model
+BATCH_IDS = tuple(f"msgbatch_0{number}" for number in range(1, 6))
+
+
+def write_repairs_fixture(runs: Path, corpus: Path = CORPUS_PATH) -> None:
+    """TASK-005e5 decision 7: a complete first run of Haiku over the whole corpus and its repair
+    run, with every outcome of ``eval repairs``: 03 (schema) repaired invalid, 04 (stopped) and 05
+    (data-level) repaired valid, 06 an empty answer and 07 unanswered (not sent), 08 without an
+    answer in the repair run, 09 missing there; 01, 02 and 10 valid. Recorded with
+    ``write_answer`` (and ``unanswered_records``), no model and no runner."""
+    model = REPAIRS_MODEL
+    first, repair = runs / model, runs / "repair" / model
+    answers = first_answers()
+    texts: dict[str, tuple[str, bool]] = {
+        "01-pharmacy": answers["01-pharmacy"],
+        "02-hotel-reception": answers["02-hotel-reception"],
+        "03-call-centre": answers["03-call-centre"],
+        "04-restaurant": answers["04-restaurant"],
+        "05-supermarket-checkouts": answers["05-supermarket-checkouts"],
+        "06-ambulance-crews": answers[EMPTY],
+        "08-warehouse": ("Sorry.", True),
+        "09-care-home": ("Sorry.", True),
+        "10-municipal-nursery": (truth_text("10-municipal-nursery"), True),
+    }
+    for name, (text, normal) in texts.items():
+        scenario = load_scenario(corpus / name)
+        write_answer(first / name, scenario, model, answer_response(model, text, normal))
+    unanswered_records(first / "07-security-guards", corpus / "07-security-guards", BATCH_IDS)
+    repaired = {
+        "03-call-centre": "Sorry.",
+        "04-restaurant": truth_text("04-restaurant"),
+        "05-supermarket-checkouts": truth_text("05-supermarket-checkouts"),
+    }
+    for name, text in repaired.items():
+        scenario = load_scenario(corpus / name)
+        write_answer(repair / name, scenario, model, answer_response(model, text))
+    unanswered_records(repair / "08-warehouse", corpus / "08-warehouse", BATCH_IDS)
+
+
 def files_containing(root: Path, needle: str) -> list[str]:
     """The files under ``root`` whose bytes contain ``needle`` (UTF-8)."""
     data = needle.encode("utf-8")

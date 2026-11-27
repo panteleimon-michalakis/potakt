@@ -40,6 +40,7 @@ from potakt.evaluation.summary import (
     GATE_RECALL,
     ISSUE_CLASSES,
     ScenarioRow,
+    unscored,
 )
 
 REPO = Path(__file__).resolve().parents[2]
@@ -1515,6 +1516,18 @@ def test_an_unanswered_scenario_counts_its_whole_truth_as_missed(tmp_path: Path)
     assert summary.rows[1].truth_count == truth > 0
     assert summary.matched_count == summary.rows[0].matched_count  # 02 adds nothing matched
     assert summary.truth_count == summary.rows[0].truth_count + truth
+
+
+def test_unscored_lists_the_missing_then_the_not_scored_scenarios(tmp_path: Path) -> None:
+    # TASK-005e5 decision 7: the names of an incomplete run, as the order rule lists them.
+    runs, corpus = runs_with_an_unanswered_scenario(tmp_path)
+    assert unscored(runs, corpus) == []
+    (runs / "01-pharmacy" / "comparison.json").unlink()
+
+    assert unscored(runs, corpus) == ["01-pharmacy"]
+    assert unscored(tmp_path / "nothing", corpus) == ["01-pharmacy", HOTEL]
+    with pytest.raises(ValueError, match="is not a directory"):
+        unscored(runs, tmp_path / "no-corpus")
 
 
 def test_rescore_skips_an_unanswered_scenario_and_keeps_its_records(tmp_path: Path) -> None:

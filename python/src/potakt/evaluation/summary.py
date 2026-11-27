@@ -175,6 +175,17 @@ def _shown(ratio: float | None) -> str:
     return "n/a" if ratio is None else f"{ratio:.3f}"
 
 
+def fraction(matched: int, truth: int) -> str:
+    """A recall and its counts as the summary shows them, ``0.400 (40/100)`` (TASK-005e5:
+    shared by ``eval repairs``)."""
+    return f"{_shown(_ratio(matched, truth))} ({matched}/{truth})"
+
+
+def ratio(numerator: int, denominator: int) -> float | None:
+    """``numerator / denominator``, ``None`` (JSON ``null``) for a zero denominator."""
+    return _ratio(numerator, denominator)
+
+
 @dataclass(frozen=True, slots=True)
 class ScenarioRow:
     """One scored scenario (ADR-0008 D3(a)), with its unsupported requests and the candidate's
@@ -664,6 +675,20 @@ def summarize(runs_dir: Path, corpus_dir: Path) -> Summary:
 
 # TASK-005e5 decision 2: the problem of a look-alike step whose files cannot be copied.
 COPY_FAILED = "the scenario's files cannot be copied"
+
+
+def unscored(run_dir: Path, corpus_dir: Path) -> list[str]:
+    """The corpus scenarios without a scored run in ``run_dir``: the summary's ``missing``, then
+    its ``not_scored`` (each name once), as the order rule lists them; every corpus scenario, in
+    UTF-8 byte order, if ``run_dir`` is not a directory (TASK-005e5: the order rules of the
+    repair and repeat runs and the reports of ``eval repairs`` and ``eval draws``). ``ValueError``
+    if ``corpus_dir`` is not a directory."""
+    if not corpus_dir.is_dir():
+        raise ValueError(f"{corpus_dir} is not a directory")
+    if not run_dir.is_dir():
+        return [path.name for path in _directories(corpus_dir) if (path / METADATA_FILE).is_file()]
+    summary = summarize(run_dir, corpus_dir)
+    return list(dict.fromkeys([*summary.missing, *summary.not_scored]))
 
 
 def _lookalike_matched(run: Path, corpus_dir: Path) -> tuple[int | None, str]:

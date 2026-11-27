@@ -51,6 +51,7 @@ import potakt.evaluation.runner as runner_module
 import potakt.evaluation.test_a as test_a_module
 from potakt.cli import app, eval_app
 from potakt.evaluation import CORPUS_PATH, load_scenario, render_test_a, summarize, write_answer
+from potakt.evaluation.repairs_report import repairs_report
 from potakt.evaluation.runner import RUNS_PATH, cost_upper_bound
 from potakt.evaluation.transport import HttpResponse, RunStopped, TransportError, UrllibTransport
 
@@ -370,6 +371,37 @@ def test_yes_repair_runs_the_repairs_in_the_repair_directory(
     recorded = sorted(p.parent.name for p in (runs / "repair" / HAIKU).glob("*/response.json"))
     assert recorded == list(REPAIRED)
     assert not (runs / ".eval-run.lock").exists()
+    # TASK-005e5 decision 7: the closing report is eval repairs's, not the summary.
+    report = repairs_report(HAIKU, runs, corpus).to_text()
+    assert result.stdout.endswith(report)
+    assert report.startswith("Repairs: claude-haiku-5-5 (ADR-0008 D7, not the gate)\n")
+    assert "Test A summary" not in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("error", "shown"),
+    [
+        (ValueError("x is not a directory"), "x is not a directory"),
+        (PermissionError(13, "Denied"), "Denied"),
+        (RunStopped("03-call-centre: cannot read x"), "03-call-centre: cannot read x"),
+    ],
+)
+def test_a_repairs_report_that_cannot_be_built_is_reported_and_the_run_exits_0(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: Exception, shown: str
+) -> None:
+    corpus, runs, _ = repair_setup(tmp_path)
+    monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
+    monkeypatch.setattr(cli, "make_transport", lambda: FakeBatches())
+
+    def fails(*args: object) -> object:
+        raise error
+
+    monkeypatch.setattr(cli, "repairs_report", fails)
+
+    result = eval_run(runs, HAIKU, "--repair", "--yes", corpus=corpus)
+
+    assert result.exit_code == 0, result.stderr
+    assert result.stderr == f"cannot summarize {runs / 'repair' / HAIKU}: {shown}\n"
 
 
 def test_the_dry_run_has_no_d6_line_without_such_a_scenario(tmp_path: Path) -> None:
@@ -2213,7 +2245,9 @@ def test_the_run_help_states_the_exit_codes_and_files() -> None:
     assert str(RUNS_PATH) not in text
 
 
-@pytest.mark.parametrize("name", ["prompt", "compare", "summary", "rescore", "run", "preflight"])
+@pytest.mark.parametrize(
+    "name", ["prompt", "compare", "summary", "rescore", "run", "preflight", "repairs"]
+)
 def test_each_eval_command_has_a_one_line_summary(name: str) -> None:
     # TASK-005c3g G12 (n7): Typer lists the first paragraph of the docstring with its own line
     # breaks, so a two-line first paragraph broke the command list mid-sentence.

@@ -65,7 +65,7 @@ from potakt.evaluation.summary import (
     LONG_PROMPT_PRICES_USD_PER_MILLION,
     PRICES_USD_PER_MILLION,
     model_directory_name,
-    summarize,
+    unscored,
 )
 from potakt.evaluation.test_a import (
     ANTHROPIC_MAX_TOKENS,
@@ -2264,12 +2264,11 @@ def check_pins() -> None:
 
 
 def _missing(run_dir: Path, corpus_dir: Path) -> list[str]:
-    """The corpus scenarios without a scored run in ``run_dir`` (a summary's missing and not
-    scored ones); every corpus scenario if ``run_dir`` does not exist."""
+    """The corpus scenarios without a scored run in ``run_dir`` (``unscored``); every corpus
+    scenario if ``run_dir`` does not exist."""
     if not run_dir.is_dir():
         return _corpus_names(corpus_dir)
-    summary = summarize(run_dir, corpus_dir)
-    return list(dict.fromkeys([*summary.missing, *summary.not_scored]))
+    return unscored(run_dir, corpus_dir)
 
 
 REPAIR_ORDER = "{model} repairs run only after {model} has a complete run (missing: {names})"

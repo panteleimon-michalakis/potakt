@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from runner_helpers import write_repairs_fixture
 
 REPO = Path(__file__).resolve().parents[2]
 GOLDEN = Path(__file__).resolve().parent / "golden"
@@ -252,6 +253,11 @@ def test_eval_rescore_matches_the_golden_byte_for_byte(tmp_path: Path) -> None:
         ("rescore-ok", 0),
         ("rescore-missing-directory", 1),
         ("rescore-unregistered-model", 1),
+        # TASK-005e5 decision 7: eval repairs.
+        ("repairs-help", 0),
+        ("repairs-missing-directory", 1),
+        ("repairs-incomplete-run", 1),
+        ("repairs-unregistered-model", 2),
         # eval run (TASK-005c3 F5): the key variables are absent (conftest), so nothing is sent.
         ("run-dry", 0),
         ("run-missing-key", 1),
@@ -284,6 +290,10 @@ def test_eval_exit_codes(case: str, expected: int, tmp_path: Path) -> None:
         "rescore-ok": ("rescore", runs),
         "rescore-missing-directory": ("rescore", tmp_path / "nope"),
         "rescore-unregistered-model": ("rescore", unregistered),
+        "repairs-help": ("repairs", "--help"),
+        "repairs-missing-directory": ("repairs", "--model", HAIKU, "--runs", tmp_path / "nope"),
+        "repairs-incomplete-run": ("repairs", "--model", HAIKU, "--runs", tmp_path),
+        "repairs-unregistered-model": ("repairs", "--model", "claude-sonnet-5-5"),
         "run-dry": ("run", "--model", "claude-haiku-5-5", *test_a),
         "run-missing-key": ("run", "--model", "gemini-3.8-flash", *test_a, "--yes"),
         # The dry run: without the order rule it would print the plan and exit 0 (TASK-005c3b
@@ -306,3 +316,24 @@ def test_eval_exit_codes(case: str, expected: int, tmp_path: Path) -> None:
         assert result.stderr.startswith(
             b"claude-opus-5-5 runs only after claude-haiku-5-5 has a complete run"
         )
+    if case == "repairs-incomplete-run":
+        assert result.stderr.startswith(b"claude-haiku-5-5 has no complete run (missing: ")
+
+
+HAIKU = "claude-haiku-5-5"
+
+
+@pytest.mark.parametrize(("extra", "golden"), [((), "txt"), (("--json",), "json")])
+def test_eval_repairs_matches_the_goldens_byte_for_byte(
+    tmp_path: Path, extra: tuple[str, ...], golden: str
+) -> None:
+    # TASK-005e5 decision 7: the records are written here; the corpus is the repository's.
+    write_repairs_fixture(tmp_path, SCENARIOS)
+
+    result = potakt(
+        "eval", "repairs", "--model", HAIKU, "--runs", tmp_path, "--corpus", SCENARIOS, *extra
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == b""
+    assert result.stdout == (GOLDEN / f"test-a-repairs.{golden}").read_bytes()

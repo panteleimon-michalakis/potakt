@@ -7,11 +7,13 @@ from pathlib import Path
 import pytest
 from evaluation_helpers import scenario_metadata, write_scenario_dir
 from helpers import constraint, minimal_dm
+from runner_helpers import anthropic_message, truth_text, write_repairs_fixture
 from typer.testing import CliRunner, Result
 
 import potakt.evaluation.test_a as test_a_module
 from potakt.cli import app
-from potakt.evaluation import CORPUS_PATH
+from potakt.evaluation import CORPUS_PATH, load_scenario, write_answer
+from potakt.evaluation.repairs_report import repairs_report
 
 REPO = Path(__file__).resolve().parents[2]
 CORPUS = REPO / "docs" / "validation" / "scenarios"
@@ -367,3 +369,152 @@ def test_rescore_help_states_the_lines_and_exit_codes() -> None:
         "model, or a scenario not in the corpus (its line is printed and processing continues)"
     ) in text
     assert "RUNS_DIR" in text
+
+
+# --- eval repairs (TASK-005e5 decision 7, ADR-0008 D7) -----------------------------------------
+
+HAIKU = "claude-haiku-5-5"
+
+
+def repairs(runs: Path, *extra: str, corpus: Path = CORPUS) -> Result:
+    args = ["eval", "repairs", "--model", HAIKU, "--runs", str(runs), "--corpus", str(corpus)]
+    return runner.invoke(app, [*args, *extra])
+
+
+def test_the_repairs_report_matches_the_goldens_through_the_api(tmp_path: Path) -> None:
+    write_repairs_fixture(tmp_path)
+
+    report = repairs_report(HAIKU, tmp_path, CORPUS)
+
+    assert report.to_text() == (GOLDEN / "test-a-repairs.txt").read_text(encoding="utf-8")
+    assert report.to_json() == (GOLDEN / "test-a-repairs.json").read_text(encoding="utf-8")
+
+
+def test_the_repairs_command_prints_the_goldens(tmp_path: Path) -> None:
+    write_repairs_fixture(tmp_path)
+
+    text = repairs(tmp_path)
+    as_json = repairs(tmp_path, "--json")
+
+    assert (text.exit_code, as_json.exit_code) == (0, 0), text.stderr + as_json.stderr
+    assert (text.stderr, as_json.stderr) == ("", "")
+    assert text.stdout_bytes == (GOLDEN / "test-a-repairs.txt").read_bytes()
+    assert as_json.stdout_bytes == (GOLDEN / "test-a-repairs.json").read_bytes()
+
+
+def test_the_golden_numbers_are_the_fixtures_counts(tmp_path: Path) -> None:
+    # The truth counts of the corpus: 01 5, 02 8, 03 8, 04 12, 05 8, 06 11, 07 5, 08 6, 09 9,
+    # 10 7 (79). Valid first: 01, 02, 10 (20 matched). Valid after one repair: 04, 05 (+20).
+    write_repairs_fixture(tmp_path)
+
+    document = json.loads(repairs_report(HAIKU, tmp_path, CORPUS).to_json())
+
+    assert document["recall"] == {"matched": 5 + 8 + 7, "truth": 79, "recall": 20 / 79}
+    assert document["recall_after_repair"] == {"matched": 40, "truth": 79, "recall": 40 / 79}
+    counts = (document["recorded"], document["without_answer"], document["not_sent"])
+    assert counts == (3, 1, 2)
+    assert document["missing"] == ["09-care-home"]
+
+
+def test_only_a_repair_that_is_valid_adds_its_matched_count(tmp_path: Path) -> None:
+    # A crafted record: 03's repair is invalid but lists matched pairs; they never count.
+    write_repairs_fixture(tmp_path)
+    crafted = tmp_path / "repair" / HAIKU / "03-call-centre" / "comparison.json"
+    valid = json.loads((tmp_path / HAIKU / "01-pharmacy" / "comparison.json").read_bytes())
+    document = json.loads(crafted.read_bytes())
+    document["matched"] = valid["matched"]
+    document["unmatched_truth"] = document["unmatched_truth"][len(valid["matched"]) :]
+    crafted.write_text(json.dumps(document), encoding="utf-8")
+
+    report = repairs_report(HAIKU, tmp_path, CORPUS)
+
+    assert json.loads(report.to_json())["recall_after_repair"]["matched"] == 40
+
+
+def test_a_first_run_without_an_invalid_candidate_has_none(tmp_path: Path) -> None:
+    corpus = tmp_path / "corpus"
+    for name in ("01-pharmacy", "02-hotel-reception"):
+        shutil.copytree(CORPUS / name, corpus / name)
+        message = anthropic_message(HAIKU, truth_text(name))
+        write_answer(tmp_path / "runs" / HAIKU / name, load_scenario(corpus / name), HAIKU, message)
+
+    result = repairs(tmp_path / "runs", corpus=corpus)
+
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout == (
+        "Repairs: claude-haiku-5-5 (ADR-0008 D7, not the gate)\n"
+        "First run: 2 scored, 2 valid, 0 invalid\n"
+        "Repair run: 0 recorded, 0 without an answer, 0 not sent, 0 missing\n"
+        "Complete: yes\n"
+        "Recall: 1.000 (13/13)\n"
+        "Recall after one repair (not the gate): 1.000 (13/13); 0 of 0 invalid candidates valid "
+        "after one repair\n"
+        "Per invalid candidate:\n"
+        "  none\n"
+    )
+    document = json.loads(repairs(tmp_path / "runs", "--json", corpus=corpus).stdout)
+    assert (document["candidates"], document["complete"]) == ([], True)
+
+
+def test_a_repair_run_with_every_candidate_recorded_is_complete(tmp_path: Path) -> None:
+    write_repairs_fixture(tmp_path)
+    name = "09-care-home"
+    write_answer(
+        tmp_path / "repair" / HAIKU / name,
+        load_scenario(CORPUS / name),
+        HAIKU,
+        anthropic_message(HAIKU, truth_text(name)),
+    )
+
+    lines = repairs(tmp_path).stdout.splitlines()
+
+    assert "Complete: yes" in lines
+    assert "Repair run: 4 recorded, 1 without an answer, 2 not sent, 0 missing" in lines
+    assert "  09-care-home: first invalid (JSON or fence), repair valid, matched 9 of 9" in lines
+
+
+def test_repairs_of_an_incomplete_first_run_exit_1(tmp_path: Path) -> None:
+    write_repairs_fixture(tmp_path)
+    (tmp_path / HAIKU / "02-hotel-reception" / "comparison.json").unlink()
+    shutil.rmtree(tmp_path / HAIKU / "10-municipal-nursery")
+
+    result = repairs(tmp_path)
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    # As check_order lists them: the summary's missing (in corpus order), then the not scored.
+    assert result.stderr == (
+        "claude-haiku-5-5 has no complete run (missing: 02-hotel-reception, 10-municipal-nursery)\n"
+    )
+    shutil.rmtree(tmp_path / HAIKU)
+    nothing = repairs(tmp_path)
+    assert nothing.exit_code == 1
+    assert nothing.stderr.startswith("claude-haiku-5-5 has no complete run (missing: 01-pharmacy,")
+
+
+@pytest.mark.parametrize("which", ["runs", "corpus"])
+def test_repairs_report_a_missing_directory_and_exit_1(tmp_path: Path, which: str) -> None:
+    missing = tmp_path / "nope"
+    runs, corpus = (missing, CORPUS) if which == "runs" else (tmp_path, missing)
+
+    result = repairs(runs, corpus=corpus)
+
+    assert result.exit_code == 1
+    assert result.stderr == f"{missing} is not a directory\n"
+
+
+def test_repairs_of_an_unregistered_model_are_a_usage_error(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["eval", "repairs", "--model", "claude-sonnet-5-5"])
+
+    assert result.exit_code == 2
+    assert "claude-sonnet-5-5" in result.stderr
+
+
+def test_repairs_help_states_the_exit_codes() -> None:
+    text = help_text("eval", "repairs")
+
+    assert "never the gate" in text
+    assert (
+        "Exit code 0: report printed; 1: missing runs or corpus directory, or the model's first "
+        "run not complete; 2: usage error (also an unregistered model id)"
+    ) in text

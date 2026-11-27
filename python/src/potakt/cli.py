@@ -30,6 +30,7 @@ from potakt.evaluation import (
     summarize,
 )
 from potakt.evaluation.records import RESPONSE_FILE
+from potakt.evaluation.repairs_report import repairs_report
 from potakt.evaluation.runner import (
     REPAIR_DIR,
     RUNS_PATH,
@@ -384,6 +385,60 @@ def eval_rescore(
     raise typer.Exit(code=0 if in_corpus else 1)
 
 
+@eval_app.command("repairs")
+def eval_repairs(
+    model: Annotated[
+        str,
+        typer.Option(
+            "--model",
+            help=f"Model id: {', '.join(REGISTERED_MODELS)}.",
+            show_default=False,
+        ),
+    ],
+    runs: Annotated[
+        Path,
+        typer.Option(
+            "--runs",
+            help=(
+                "Test A runs directory of all models (default: the repository's "
+                "docs/validation/runs/test-a)."
+            ),
+            show_default=False,
+        ),
+    ] = RUNS_PATH,
+    corpus: Annotated[
+        Path,
+        typer.Option(
+            "--corpus",
+            help="Scenario corpus directory (default: the repository's docs/validation/scenarios).",
+            show_default=False,
+        ),
+    ] = CORPUS_PATH,
+    as_json: Annotated[bool, typer.Option("--json", help="Print the report as JSON.")] = False,
+) -> None:
+    """Report the recall after one repair of a model's invalid candidates; nothing is sent.
+
+    Read the model's first run (<runs>/<model dir>) and its repair run (<runs>/repair/<model
+    dir>, written by eval run --repair) and print, for each invalid candidate of the first run,
+    what its one repair turn gave (valid, invalid, without an answer, not sent, missing), and the
+    recall after one repair (ADR-0008 D7): the matched count of each repair that is valid
+    replaces the 0 of its first candidate. It is never the gate. Offline: no model call, no
+    credentials.
+
+    Exit code 0: report printed; 1: missing runs or corpus directory, or the model's first run
+    not complete; 2: usage error (also an unregistered model id).
+    """
+    try:
+        check_registered(model)
+    except UnknownModelError as error:
+        _stop(EXIT_USAGE, str(error))
+    try:
+        report = repairs_report(model, runs, corpus)
+    except (ValueError, RunStopped) as error:
+        _stop(1, str(error))
+    typer.echo(report.to_json() if as_json else report.to_text(), nl=False)
+
+
 def _rescored(run: Path, corpus: Path, model: str) -> str | None:
     """What rescoring did to one run; ``None`` if it is not a (loadable) corpus scenario."""
     try:
@@ -657,14 +712,16 @@ def _eval_run(
         _stop(1, str(error))
     except KeyboardInterrupt:
         _stop(1, INTERRUPTED)
-    if kind == REPAIR_DIR:
-        return  # TASK-005e5 decision 6: the closing report of a repair run is eval repairs's
     model_dir = run_directory(runs, model, kind)
     if not model_dir.is_dir():
         return
     try:
-        text = summarize(model_dir, corpus).to_text()
-    except ValueError as error:  # the records are kept; only the summary could not be shown
+        # TASK-005e5 decision 7: a repair run closes with eval repairs's text, not the summary.
+        if kind == REPAIR_DIR:
+            text = repairs_report(model, runs, corpus).to_text()
+        else:
+            text = summarize(model_dir, corpus).to_text()
+    except (ValueError, RunStopped) as error:  # the records are kept; only the report is not
         typer.echo(f"cannot summarize {model_dir}: {error}", err=True)
         return
     except OSError as error:  # TASK-005c3e J5: likewise; never the error's text

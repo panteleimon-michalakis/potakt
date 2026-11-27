@@ -1,0 +1,14 @@
+Repairs: claude-haiku-5-5 (ADR-0008 D7, not the gate)
+First run: 10 scored, 3 valid, 7 invalid
+Repair run: 3 recorded, 1 without an answer, 2 not sent, 1 missing
+Complete: no (missing: 09-care-home)
+Recall: 0.253 (20/79)
+Recall after one repair (not the gate): 0.506 (40/79); 2 of 7 invalid candidates valid after one repair (04-restaurant, 05-supermarket-checkouts)
+Per invalid candidate:
+  03-call-centre: first invalid (schema), repair invalid (JSON or fence)
+  04-restaurant: first invalid (stop reason), repair valid, matched 12 of 12
+  05-supermarket-checkouts: first invalid (data-level id or attribute), repair valid, matched 8 of 8
+  06-ambulance-crews: first invalid (JSON or fence), not sent (empty answer)
+  07-security-guards: first invalid (stop reason), not sent (no answer, ADR-0008 D6)
+  08-warehouse: first invalid (JSON or fence), repair without an answer (ADR-0008 D6)
+  09-care-home: first invalid (JSON or fence), missing
