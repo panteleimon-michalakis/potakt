@@ -1194,7 +1194,14 @@ class _AnthropicRun:
         again. ``write_unanswered`` records it (``comparison.json``, then ``unanswered.json``
         with the ids of those entries in the order of ``batches.json``), ``UNANSWERED_LINE`` is
         printed, and the run goes on with the others, which are returned. A failure of either
-        write is raised: the scenario stays pending and the next run writes both again."""
+        write is raised: the scenario stays pending and the next run writes both again.
+
+        First, as before every create, ``_check_kept_answers`` (TASK-005c3h H6): a scenario whose
+        answer is in the kept results of a done batch while its records are lost stops the run
+        for a restore, never counted unanswered (TASK-005e5 self-review)."""
+        self._check_kept_answers(
+            [name for name in pending if len(_sent_in(name, batches)) >= LAST_BATCH]
+        )
         left: list[str] = []
         for name in pending:
             sent = _sent_in(name, batches)

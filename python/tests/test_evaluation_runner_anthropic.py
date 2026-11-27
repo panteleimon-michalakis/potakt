@@ -981,6 +981,25 @@ def test_a_released_fifth_batch_makes_the_scenario_unanswered(tmp_path: Path) ->
     assert run.server.creates() == []
 
 
+def test_a_lost_answer_of_a_fifth_batch_stops_instead_of_counting_it_unanswered(
+    tmp_path: Path,
+) -> None:
+    # Self-review (Important): the fifth batch answered 02, its records were lost (the runbook's
+    # restore case), and the answer is in that batch's kept results. Counting 02 unanswered
+    # would be final and wrong; the lost-records stop of TASK-005c3h H6 must come first.
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[1:2])
+    write_state(run.model_dir, *batches_of(HOTEL, 5, "2026-11-01T09:00:00Z"))
+    kept = json.dumps({"custom_id": HOTEL, "result": succeeded()}) + "\n"
+    (run.model_dir / "batch-msgbatch_94.results.jsonl").write_bytes(kept.encode("utf-8"))
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == lost_answer_stop(HOTEL, "msgbatch_94")
+    assert not (run.model_dir / HOTEL).exists()  # no comparison.json, no unanswered.json
+    assert run.server.creates() == []
+
+
 def test_a_marker_that_could_not_be_written_is_completed_by_the_next_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pauses: list[float]
 ) -> None:
