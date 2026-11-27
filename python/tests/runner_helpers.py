@@ -267,6 +267,34 @@ def write_repairs_fixture(runs: Path, corpus: Path = CORPUS_PATH) -> None:
     unanswered_records(repair / "08-warehouse", corpus / "08-warehouse", BATCH_IDS)
 
 
+STRONG = "claude-opus-5-5"
+DRAW_DIRS = ("claude-opus-5-5", "repeat-2/claude-opus-5-5", "repeat-3/claude-opus-5-5")
+# The fixture answer of 03 that matches 5 of its 8 truth constraints (test_evaluation_summary.py).
+FIXTURE_RUNS = Path(__file__).resolve().parent / "fixtures" / "test_a_runs"
+IMPERFECT_03 = FIXTURE_RUNS / STRONG / "03-call-centre"
+
+
+def write_draws_fixture(runs: Path, corpus: Path = CORPUS_PATH) -> None:
+    """TASK-005e5 decision 9: three complete draws of the strong model over the whole corpus that
+    differ: every scenario answers its truth, except 02 (junk in draw 2: invalid), 03 (the
+    imperfect fixture answer in draws 1 and 2, unanswered in draw 3). Written with
+    ``write_answer`` (and ``unanswered_records``), no model and no runner."""
+    imperfect = json.loads((IMPERFECT_03 / "response.json").read_bytes())
+    for number, folder in enumerate(DRAW_DIRS, start=1):
+        draw = runs / folder
+        for name in ALL_SCENARIOS:
+            scenario_dir = corpus / name
+            if name == "03-call-centre" and number == 3:
+                unanswered_records(draw / name, scenario_dir, BATCH_IDS)
+                continue
+            response: object = anthropic_message(STRONG, truth_text(name))
+            if name == "02-hotel-reception" and number == 2:
+                response = anthropic_message(STRONG, "Sorry.")
+            elif name == "03-call-centre":
+                response = imperfect
+            write_answer(draw / name, load_scenario(scenario_dir), STRONG, response)
+
+
 def files_containing(root: Path, needle: str) -> list[str]:
     """The files under ``root`` whose bytes contain ``needle`` (UTF-8)."""
     data = needle.encode("utf-8")

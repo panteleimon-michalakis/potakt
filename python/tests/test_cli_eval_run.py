@@ -2361,7 +2361,7 @@ def test_the_run_help_states_the_exit_codes_and_files() -> None:
 
 
 @pytest.mark.parametrize(
-    "name", ["prompt", "compare", "summary", "rescore", "run", "preflight", "repairs"]
+    "name", ["prompt", "compare", "summary", "rescore", "run", "preflight", "repairs", "draws"]
 )
 def test_each_eval_command_has_a_one_line_summary(name: str) -> None:
     # TASK-005c3g G12 (n7): Typer lists the first paragraph of the docstring with its own line

@@ -7,12 +7,21 @@ from pathlib import Path
 import pytest
 from evaluation_helpers import scenario_metadata, write_scenario_dir
 from helpers import constraint, minimal_dm
-from runner_helpers import anthropic_message, truth_text, write_repairs_fixture
+from hypothesis import example, given, settings
+from hypothesis import strategies as st
+from runner_helpers import (
+    ALL_SCENARIOS,
+    anthropic_message,
+    truth_text,
+    write_draws_fixture,
+    write_repairs_fixture,
+)
 from typer.testing import CliRunner, Result
 
 import potakt.evaluation.test_a as test_a_module
 from potakt.cli import app
 from potakt.evaluation import CORPUS_PATH, load_scenario, write_answer
+from potakt.evaluation.draws import draws_report, scenario_draws
 from potakt.evaluation.repairs_report import repairs_report
 
 REPO = Path(__file__).resolve().parents[2]
@@ -508,6 +517,131 @@ def test_repairs_of_an_unregistered_model_are_a_usage_error(tmp_path: Path) -> N
 
     assert result.exit_code == 2
     assert "claude-sonnet-5-5" in result.stderr
+
+
+# --- eval draws (TASK-005e5 decision 9, ADR-0008 D8) ------------------------------------------
+
+
+def draws(runs: Path, *extra: str, corpus: Path = CORPUS) -> Result:
+    args = ["eval", "draws", "--runs", str(runs), "--corpus", str(corpus)]
+    return runner.invoke(app, [*args, *extra])
+
+
+def test_the_draws_report_matches_the_goldens_through_the_api(tmp_path: Path) -> None:
+    write_draws_fixture(tmp_path)
+
+    report = draws_report(tmp_path, CORPUS)
+
+    assert report.to_text() == (GOLDEN / "test-a-draws.txt").read_text(encoding="utf-8")
+    assert report.to_json() == (GOLDEN / "test-a-draws.json").read_text(encoding="utf-8")
+
+
+def test_the_draws_command_prints_the_goldens(tmp_path: Path) -> None:
+    write_draws_fixture(tmp_path)
+
+    text, as_json = draws(tmp_path), draws(tmp_path, "--json")
+
+    assert (text.exit_code, as_json.exit_code) == (0, 0), text.stderr + as_json.stderr
+    assert (text.stderr, as_json.stderr) == ("", "")
+    assert text.stdout_bytes == (GOLDEN / "test-a-draws.txt").read_bytes()
+    assert as_json.stdout_bytes == (GOLDEN / "test-a-draws.json").read_bytes()
+
+
+def test_the_draws_golden_numbers_are_the_fixtures_counts(tmp_path: Path) -> None:
+    # 79 truth constraints; 03 matches 5 of 8 in draws 1 and 2 and is unanswered in draw 3; 02
+    # (8) is invalid in draw 2. Draw 1: 79 - 3 = 76; draw 2: 76 - 8 = 68; draw 3: 79 - 8 = 71.
+    write_draws_fixture(tmp_path)
+
+    document = json.loads(draws_report(tmp_path, CORPUS).to_json())
+
+    assert [(d["matched"], d["truth"]) for d in document["draws"]] == [(76, 79), (68, 79), (71, 79)]
+    by_name = {row["scenario"]: row for row in document["scenarios"]}
+    assert by_name["02-hotel-reception"]["recalls"] == [1.0, 0.0, 1.0]
+    assert by_name["03-call-centre"]["recalls"] == [5 / 8, 5 / 8, 0.0]
+    assert by_name["03-call-centre"]["mean"] == (5 / 8 + 5 / 8 + 0) / 3
+
+
+recall_counts = st.integers(min_value=1, max_value=60).flatmap(
+    lambda truth: st.tuples(st.integers(min_value=0, max_value=truth), st.just(truth))
+)
+
+
+@settings(deadline=None, max_examples=300)
+@given(st.lists(recall_counts, min_size=3, max_size=3))
+@example([(1, 10), (1, 10), (1, 10)])  # 0.1 three times: a float sum would exceed the maximum
+@example([(0, 1), (1, 2), (3, 3)])
+def test_the_mean_of_a_scenario_is_the_mean_of_its_three_recalls(
+    counts: list[tuple[int, int]],
+) -> None:
+    recalls = [matched / truth for matched, truth in counts]
+
+    row = scenario_draws("x", counts)
+
+    assert row.recalls == tuple(recalls)
+    assert row.min is not None and row.mean is not None and row.max is not None
+    assert row.min <= row.mean <= row.max
+    assert (row.min, row.max) == (min(recalls), max(recalls))
+    assert row.mean == pytest.approx(sum(recalls) / 3, rel=1e-12, abs=1e-15)
+
+
+@pytest.mark.parametrize("counts", [[(0, 0), (1, 1), (1, 2)], []])
+def test_a_draw_without_truth_constraints_has_no_mean(counts: list[tuple[int, int]]) -> None:
+    row = scenario_draws("x", counts)
+
+    assert (row.mean, row.min, row.max) == (None, None, None)
+    if counts:
+        assert row.recalls == (None, 1.0, 0.5)
+        assert row.to_text() == "x: n/a, 1.000, 0.500; mean n/a, min n/a, max n/a"
+
+
+def test_the_mean_is_not_the_pooled_recall() -> None:
+    row = scenario_draws("x", [(0, 1), (1, 2), (3, 3)])
+
+    assert row.mean == pytest.approx(0.5)  # (0 + 0.5 + 1) / 3, while 4 of 6 would be 0.667
+
+
+def test_a_draw_without_its_directory_is_not_complete(tmp_path: Path) -> None:
+    write_draws_fixture(tmp_path)
+    shutil.rmtree(tmp_path / "repeat-3")
+
+    result = draws(tmp_path)
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert result.stderr == f"draw 3 is not complete (missing: {', '.join(ALL_SCENARIOS)})\n"
+
+
+def test_the_first_incomplete_draw_is_named(tmp_path: Path) -> None:
+    write_draws_fixture(tmp_path)
+    draw_2 = tmp_path / "repeat-2" / "claude-opus-5-5"
+    (draw_2 / "05-supermarket-checkouts" / "comparison.json").unlink()
+    shutil.rmtree(tmp_path / "repeat-3")
+
+    result = draws(tmp_path)
+
+    assert result.exit_code == 1
+    assert result.stderr == "draw 2 is not complete (missing: 05-supermarket-checkouts)\n"
+
+
+@pytest.mark.parametrize("which", ["runs", "corpus"])
+def test_draws_report_a_missing_directory_and_exit_1(tmp_path: Path, which: str) -> None:
+    missing = tmp_path / "nope"
+    runs, corpus = (missing, CORPUS) if which == "runs" else (tmp_path, missing)
+
+    result = draws(runs, corpus=corpus)
+
+    assert result.exit_code == 1
+    assert result.stderr == f"{missing} is not a directory\n"
+
+
+def test_draws_help_states_the_exit_codes() -> None:
+    text = help_text("eval", "draws")
+
+    assert "never the gate" in text
+    assert (
+        "Exit code 0: report printed; 1: missing runs or corpus directory, or a draw not "
+        "complete; 2: usage error"
+    ) in text
 
 
 def test_repairs_help_states_the_exit_codes() -> None:

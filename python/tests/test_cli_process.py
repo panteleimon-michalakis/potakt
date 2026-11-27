@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from runner_helpers import write_repairs_fixture
+from runner_helpers import write_draws_fixture, write_repairs_fixture
 
 REPO = Path(__file__).resolve().parents[2]
 GOLDEN = Path(__file__).resolve().parent / "golden"
@@ -258,6 +258,11 @@ def test_eval_rescore_matches_the_golden_byte_for_byte(tmp_path: Path) -> None:
         ("repairs-missing-directory", 1),
         ("repairs-incomplete-run", 1),
         ("repairs-unregistered-model", 2),
+        # TASK-005e5 decision 9: eval draws (it has no --model: one is a usage error).
+        ("draws-help", 0),
+        ("draws-missing-directory", 1),
+        ("draws-incomplete-run", 1),
+        ("draws-with-a-model", 2),
         # eval run (TASK-005c3 F5): the key variables are absent (conftest), so nothing is sent.
         ("run-dry", 0),
         ("run-missing-key", 1),
@@ -299,6 +304,10 @@ def test_eval_exit_codes(case: str, expected: int, tmp_path: Path) -> None:
         "repairs-missing-directory": ("repairs", "--model", HAIKU, "--runs", tmp_path / "nope"),
         "repairs-incomplete-run": ("repairs", "--model", HAIKU, "--runs", tmp_path),
         "repairs-unregistered-model": ("repairs", "--model", "claude-sonnet-5-5"),
+        "draws-help": ("draws", "--help"),
+        "draws-missing-directory": ("draws", "--runs", tmp_path / "nope"),
+        "draws-incomplete-run": ("draws", "--runs", tmp_path),
+        "draws-with-a-model": ("draws", "--model", "claude-sonnet-5-5"),
         "run-dry": ("run", "--model", "claude-haiku-5-5", *test_a),
         "run-missing-key": ("run", "--model", "gemini-3.8-flash", *test_a, "--yes"),
         # The dry run: without the order rule it would print the plan and exit 0 (TASK-005c3b
@@ -327,6 +336,9 @@ def test_eval_exit_codes(case: str, expected: int, tmp_path: Path) -> None:
         )
     if case == "repairs-incomplete-run":
         assert result.stderr.startswith(b"claude-haiku-5-5 has no complete run (missing: ")
+    if case == "draws-incomplete-run":
+        # The runs directory holds the Opus fixture (01, 03, 04): draw 1 misses the others.
+        assert result.stderr.startswith(b"draw 1 is not complete (missing: 02-hotel-reception, ")
     if case == "run-repeat-haiku":
         assert result.stderr == b"--repeat is only for claude-opus-5-5 (ADR-0008 D8)\n"
     if case == "run-repair-and-repeat":
@@ -352,3 +364,17 @@ def test_eval_repairs_matches_the_goldens_byte_for_byte(
     assert result.returncode == 0, result.stderr
     assert result.stderr == b""
     assert result.stdout == (GOLDEN / f"test-a-repairs.{golden}").read_bytes()
+
+
+@pytest.mark.parametrize(("extra", "golden"), [((), "txt"), (("--json",), "json")])
+def test_eval_draws_matches_the_goldens_byte_for_byte(
+    tmp_path: Path, extra: tuple[str, ...], golden: str
+) -> None:
+    # TASK-005e5 decision 9: the three draws are written here; the corpus is the repository's.
+    write_draws_fixture(tmp_path, SCENARIOS)
+
+    result = potakt("eval", "draws", "--runs", tmp_path, "--corpus", SCENARIOS, *extra)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == b""
+    assert result.stdout == (GOLDEN / f"test-a-draws.{golden}").read_bytes()

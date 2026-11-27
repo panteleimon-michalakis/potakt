@@ -1,0 +1,15 @@
+Draws: claude-opus-5-5 (ADR-0008 D8, not the gate)
+Draw 1 (claude-opus-5-5): recall 0.962 (76/79)
+Draw 2 (repeat-2/claude-opus-5-5): recall 0.861 (68/79)
+Draw 3 (repeat-3/claude-opus-5-5): recall 0.899 (71/79)
+Per scenario (recall in draws 1, 2, 3; mean, min, max):
+  01-pharmacy: 1.000, 1.000, 1.000; mean 1.000, min 1.000, max 1.000
+  02-hotel-reception: 1.000, 0.000, 1.000; mean 0.667, min 0.000, max 1.000
+  03-call-centre: 0.625, 0.625, 0.000; mean 0.417, min 0.000, max 0.625
+  04-restaurant: 1.000, 1.000, 1.000; mean 1.000, min 1.000, max 1.000
+  05-supermarket-checkouts: 1.000, 1.000, 1.000; mean 1.000, min 1.000, max 1.000
+  06-ambulance-crews: 1.000, 1.000, 1.000; mean 1.000, min 1.000, max 1.000
+  07-security-guards: 1.000, 1.000, 1.000; mean 1.000, min 1.000, max 1.000
+  08-warehouse: 1.000, 1.000, 1.000; mean 1.000, min 1.000, max 1.000
+  09-care-home: 1.000, 1.000, 1.000; mean 1.000, min 1.000, max 1.000
+  10-municipal-nursery: 1.000, 1.000, 1.000; mean 1.000, min 1.000, max 1.000

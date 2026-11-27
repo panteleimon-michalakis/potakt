@@ -175,9 +175,15 @@ def _shown(ratio: float | None) -> str:
     return "n/a" if ratio is None else f"{ratio:.3f}"
 
 
+def shown(ratio: float | None) -> str:
+    """A ratio as the summary shows it: three decimals, ``n/a`` for none (TASK-005e5: shared by
+    ``eval draws``)."""
+    return _shown(ratio)
+
+
 def fraction(matched: int, truth: int) -> str:
     """A recall and its counts as the summary shows them, ``0.400 (40/100)`` (TASK-005e5:
-    shared by ``eval repairs``)."""
+    shared by ``eval repairs`` and ``eval draws``)."""
     return f"{_shown(_ratio(matched, truth))} ({matched}/{truth})"
 
 

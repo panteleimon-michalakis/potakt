@@ -29,6 +29,7 @@ from potakt.evaluation import (
     rescore_run,
     summarize,
 )
+from potakt.evaluation.draws import draws_report
 from potakt.evaluation.records import RESPONSE_FILE
 from potakt.evaluation.repairs_report import repairs_report
 from potakt.evaluation.runner import (
@@ -435,6 +436,47 @@ def eval_repairs(
     try:
         report = repairs_report(model, runs, corpus)
     except (ValueError, RunStopped) as error:
+        _stop(1, str(error))
+    typer.echo(report.to_json() if as_json else report.to_text(), nl=False)
+
+
+@eval_app.command("draws")
+def eval_draws(
+    runs: Annotated[
+        Path,
+        typer.Option(
+            "--runs",
+            help=(
+                "Test A runs directory of all models (default: the repository's "
+                "docs/validation/runs/test-a)."
+            ),
+            show_default=False,
+        ),
+    ] = RUNS_PATH,
+    corpus: Annotated[
+        Path,
+        typer.Option(
+            "--corpus",
+            help="Scenario corpus directory (default: the repository's docs/validation/scenarios).",
+            show_default=False,
+        ),
+    ] = CORPUS_PATH,
+    as_json: Annotated[bool, typer.Option("--json", help="Print the report as JSON.")] = False,
+) -> None:
+    """Report the draw-to-draw variation of claude-opus-5-5's three draws; nothing is sent.
+
+    Read the three draws of claude-opus-5-5 (<runs>/claude-opus-5-5, then
+    <runs>/repeat-2/claude-opus-5-5 and <runs>/repeat-3/claude-opus-5-5, written by eval run
+    --repeat 2 and --repeat 3) and print each draw's micro recall and, per scenario, its recall
+    in each draw with their arithmetic mean, minimum and maximum (ADR-0008 D8). It is never the
+    gate. Offline: no model call, no credentials.
+
+    Exit code 0: report printed; 1: missing runs or corpus directory, or a draw not complete;
+    2: usage error.
+    """
+    try:
+        report = draws_report(runs, corpus)
+    except ValueError as error:
         _stop(1, str(error))
     typer.echo(report.to_json() if as_json else report.to_text(), nl=False)
 

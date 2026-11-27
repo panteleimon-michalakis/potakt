@@ -1,0 +1,138 @@
+{
+  "draws": [
+    {
+      "directory": "claude-opus-5-5",
+      "draw": 1,
+      "matched": 76,
+      "recall": 0.9620253164556962,
+      "truth": 79
+    },
+    {
+      "directory": "repeat-2/claude-opus-5-5",
+      "draw": 2,
+      "matched": 68,
+      "recall": 0.8607594936708861,
+      "truth": 79
+    },
+    {
+      "directory": "repeat-3/claude-opus-5-5",
+      "draw": 3,
+      "matched": 71,
+      "recall": 0.8987341772151899,
+      "truth": 79
+    }
+  ],
+  "model": "claude-opus-5-5",
+  "scenarios": [
+    {
+      "max": 1.0,
+      "mean": 1.0,
+      "min": 1.0,
+      "recalls": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "scenario": "01-pharmacy"
+    },
+    {
+      "max": 1.0,
+      "mean": 0.6666666666666666,
+      "min": 0.0,
+      "recalls": [
+        1.0,
+        0.0,
+        1.0
+      ],
+      "scenario": "02-hotel-reception"
+    },
+    {
+      "max": 0.625,
+      "mean": 0.4166666666666667,
+      "min": 0.0,
+      "recalls": [
+        0.625,
+        0.625,
+        0.0
+      ],
+      "scenario": "03-call-centre"
+    },
+    {
+      "max": 1.0,
+      "mean": 1.0,
+      "min": 1.0,
+      "recalls": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "scenario": "04-restaurant"
+    },
+    {
+      "max": 1.0,
+      "mean": 1.0,
+      "min": 1.0,
+      "recalls": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "scenario": "05-supermarket-checkouts"
+    },
+    {
+      "max": 1.0,
+      "mean": 1.0,
+      "min": 1.0,
+      "recalls": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "scenario": "06-ambulance-crews"
+    },
+    {
+      "max": 1.0,
+      "mean": 1.0,
+      "min": 1.0,
+      "recalls": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "scenario": "07-security-guards"
+    },
+    {
+      "max": 1.0,
+      "mean": 1.0,
+      "min": 1.0,
+      "recalls": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "scenario": "08-warehouse"
+    },
+    {
+      "max": 1.0,
+      "mean": 1.0,
+      "min": 1.0,
+      "recalls": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "scenario": "09-care-home"
+    },
+    {
+      "max": 1.0,
+      "mean": 1.0,
+      "min": 1.0,
+      "recalls": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "scenario": "10-municipal-nursery"
+    }
+  ]
+}
