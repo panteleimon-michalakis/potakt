@@ -168,7 +168,8 @@ def evaluate_candidate(scenario: LoadedScenario, text: str) -> Comparison:
 
 def replace_lookalike_ids(scenario: LoadedScenario, text: str) -> str | None:
     """The candidate ``text`` with its look-alike ids replaced (ADR-0008 D9, second point), or
-    ``None`` if nothing was replaced; never raises.
+    ``None`` if nothing was replaced. Raises ``OSError`` only when the scenario's files cannot
+    be copied (for example a full disk; TASK-005e5 decision 2); nothing else raises.
 
     Only a candidate that reaches data-level validation can change: it parses, every ``source``
     is one of the scenario's files (``source_issues``) and a copy of those files loads, as in

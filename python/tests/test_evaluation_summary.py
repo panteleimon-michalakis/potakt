@@ -19,7 +19,9 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 from runner_helpers import anthropic_message, truth_text
 from test_evaluation_lookalike_recall import written
+from typer.testing import CliRunner
 
+from potakt.cli import app
 from potakt.evaluation import (
     LONG_PROMPT_PRICES_USD_PER_MILLION,
     PRICES_USD_PER_MILLION,
@@ -1393,3 +1395,61 @@ def test_a_candidate_that_is_not_utf8_is_not_replaced(tmp_path: Path) -> None:
 
     assert summary.lookalike_valid == ()
     assert summary.notes == ()
+
+
+# TASK-005e5 decision 2 (TASK-005e4 review): the look-alike step copies the scenario's files.
+COPY_NOTE = f"{SUPERMARKET}: the scenario's files cannot be copied; look-alike ids not replaced"
+
+
+def one_lookalike_run(tmp_path: Path) -> Path:
+    """Three recorded runs with one data-level invalid candidate: 01's truth, 05 with ``T2``
+    (Latin T, a look-alike of its Greek Tau) and 06 answering ``I cannot.`` (JSON stage)."""
+    runs = tmp_path / OPUS
+    answers = {
+        "01-pharmacy": truth_text("01-pharmacy"),
+        SUPERMARKET: written(SUPERMARKET, ("/constraints/6/params/resource_ids/1", "T2")),
+        "06-ambulance-crews": "I cannot.",
+    }
+    for name, text in answers.items():
+        scenario = load_scenario(CORPUS / name)
+        write_answer(runs / name, scenario, OPUS, anthropic_message(OPUS, text))
+    return runs
+
+
+def no_space(source: object, destination: object) -> None:
+    raise OSError(28, "No space left on device")
+
+
+def test_the_summary_command_notes_files_that_cannot_be_copied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs = one_lookalike_run(tmp_path)
+    monkeypatch.setattr(shutil, "copyfile", no_space)  # only the look-alike step copies now
+
+    result = CliRunner().invoke(app, ["eval", "summary", str(runs), "--corpus", str(CORPUS)])
+
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert result.exit_code == 0, result.output
+    assert result.stdout.count(COPY_NOTE) == 1
+    assert f"Note: {COPY_NOTE}\n" in result.stdout
+    assert "No space left" not in result.output  # never the error's text
+
+
+def test_files_that_cannot_be_copied_change_no_gate_number(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs = one_lookalike_run(tmp_path)
+    replaced = summarize(runs, CORPUS)
+    assert replaced.lookalike_valid == ((SUPERMARKET, 8),)  # without the failure: made valid
+
+    with monkeypatch.context() as patch:
+        patch.setattr(shutil, "copyfile", no_space)
+        failed = summarize(runs, CORPUS)
+
+    assert failed.notes == (COPY_NOTE,)
+    assert failed.lookalike_valid == ()
+    # The gate's numbers: 01's 5 of 5, 05's 0 of 8 and 06's 0 of 11, with or without the failure.
+    assert (failed.matched_count, failed.truth_count) == (5, 24)
+    assert (replaced.matched_count, replaced.truth_count) == (5, 24)
+    unchanged = dataclasses.replace(replaced, lookalike_valid=())
+    assert dataclasses.replace(failed, notes=()) == unchanged  # everything else is the same

@@ -643,25 +643,35 @@ def summarize(runs_dir: Path, corpus_dir: Path) -> Summary:
     )
 
 
+# TASK-005e5 decision 2: the problem of a look-alike step whose files cannot be copied.
+COPY_FAILED = "the scenario's files cannot be copied"
+
+
 def _lookalike_matched(run: Path, corpus_dir: Path) -> tuple[int | None, str]:
     """ADR-0008 D9: the matched count of one run's data-level invalid candidate once its
     look-alike ids are replaced, if that makes it valid, and ``""``; or ``None`` and the problem.
 
     A ``candidate.txt`` that is missing or not UTF-8 gives nothing and no problem (the
     assumptions already note a missing one); a scenario that cannot be loaded gives the problem.
+    TASK-005e5 decision 2: an ``OSError`` anywhere in the step (loading the scenario, replacing
+    the ids, evaluating the changed candidate: each copies or reads the scenario's files, and a
+    full disk refuses the copy) gives ``COPY_FAILED``, never the error's text.
     """
     try:
         text = (run / CANDIDATE_FILE).read_bytes().decode("utf-8")
     except (OSError, UnicodeDecodeError):
         return None, ""
     try:
-        scenario = load_scenario(corpus_dir / run.name)
-    except ScenarioError:
-        return None, "the scenario cannot be loaded"
-    replaced = replace_lookalike_ids(scenario, text)
-    if replaced is None:
-        return None, ""
-    comparison = evaluate_candidate(scenario, replaced)
+        try:
+            scenario = load_scenario(corpus_dir / run.name)
+        except ScenarioError:
+            return None, "the scenario cannot be loaded"
+        replaced = replace_lookalike_ids(scenario, text)
+        if replaced is None:
+            return None, ""
+        comparison = evaluate_candidate(scenario, replaced)
+    except OSError:
+        return None, COPY_FAILED
     return (comparison.matched_count if comparison.valid else None), ""
 
 
