@@ -249,6 +249,23 @@ def test_the_dry_run_names_the_last_batches_and_the_unanswered_scenarios(tmp_pat
     assert "Cost upper bound: $" in result.stdout
 
 
+def test_the_last_batch_line_names_the_latest_of_the_fourth_batches(tmp_path: Path) -> None:
+    # TASK-005e6 decision 9 (the TASK-005e5 review's X8): two scenarios whose fourth batches
+    # started at different times; the fake clock (2026-11-02T10:00:00Z) is before both waits end.
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:3])
+    runs = tmp_path / "runs"
+    hotel = batches_of("02-hotel-reception", 4, "2026-11-01T22:00:00Z")
+    call_centre = batches_of("03-call-centre", 4, "2026-11-01T20:00:00Z", first_number=80)
+    write_state(runs / HAIKU, *call_centre, *hotel)
+
+    result = eval_run(runs, HAIKU, corpus=corpus)
+
+    assert result.exit_code == 0, result.stderr
+    assert (
+        "Last batch (ADR-0008 D6) from 2026-11-02T22:00:00Z: 02-hotel-reception, 03-call-centre"
+    ) in result.stdout.splitlines()
+
+
 GIVEN_UP = "No answer after 5 batches (ADR-0008 D6), recorded as unanswered by --yes: {names}"
 
 
@@ -716,6 +733,33 @@ def test_a_repairs_report_that_cannot_be_built_is_reported_and_the_run_exits_0(
 
     assert result.exit_code == 0, result.stderr
     assert result.stderr == f"cannot summarize {runs / 'repair' / HAIKU}: {shown}\n"
+
+
+def test_an_unanswered_repair_is_neither_pending_nor_sent_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # TASK-005e6 decision 9 (the TASK-005e5 review's X6): a repair given up after five batches has
+    # unanswered.json and no response.json in the repair run; it is never sent again.
+    corpus, runs, _ = repair_setup(tmp_path)
+    repair_dir = runs / "repair" / HAIKU
+    unanswered_records(repair_dir / "04-restaurant", corpus / "04-restaurant", ("m",) * 5)
+
+    dry = eval_run(runs, HAIKU, "--repair", corpus=corpus)
+
+    assert dry.exit_code == 0, dry.stderr
+    lines = dry.stdout.splitlines()
+    assert "Pending (2): 03-call-centre, 05-supermarket-checkouts" in lines
+    assert "Unanswered (ADR-0008 D6): 04-restaurant" in lines
+
+    monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
+    server = FakeBatches()
+    monkeypatch.setattr(cli, "make_transport", lambda: server)
+
+    result = eval_run(runs, HAIKU, "--repair", "--yes", "--poll-seconds", "10", corpus=corpus)
+
+    assert result.exit_code == 0, result.stderr
+    assert server.creates() == [["03-call-centre", "05-supermarket-checkouts"]]
+    assert not (repair_dir / "04-restaurant" / "request.json").exists()
 
 
 @pytest.mark.parametrize("model", [HAIKU, GEMINI])
