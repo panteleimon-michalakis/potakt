@@ -376,10 +376,13 @@ class Run:
     # so after that wait the clock reads what the test states (``NOW``, ``STARTED_AT``); the
     # wait itself stays visible in ``sleeps``, ``echo`` and the calls.
     rewind: bool = True
+    # TASK-005e5 decision 3: the run kind (``repair``, ``repeat-2``, ``repeat-3``); ``None`` is
+    # the first run. Its directory is spelled out here, not taken from the runner.
+    kind: str | None = None
 
     @property
     def model_dir(self) -> Path:
-        return self.runs / self.model
+        return self.runs / self.model if self.kind is None else self.runs / self.kind / self.model
 
     def now(self) -> datetime:
         """The runner's clock: the API's, plus ``skew``."""
@@ -400,6 +403,7 @@ class Run:
     def __call__(self, release: str | None = None) -> None:
         if self.rewind and self.first_batch_ahead():
             self.sleeps.advance(-runner_module.RECONCILE_DELAY_SECONDS)
+        kind: dict[str, Any] = {} if self.kind is None else {"kind": self.kind}
         run_anthropic(
             self.model,
             self.corpus,
@@ -411,6 +415,7 @@ class Run:
             poll_seconds=60,
             echo=self.echo,
             release=release,
+            **kind,
         )
 
     def state(self) -> dict[str, Any]:
@@ -1650,6 +1655,7 @@ def test_the_run_state_repr_never_shows_the_key(tmp_path: Path) -> None:
         model=HAIKU,
         corpus_dir=tmp_path,
         model_dir=tmp_path,
+        runs_dir=tmp_path,
         headers=runner_module.anthropic_headers(KEY),
         transport=FakeBatches(),
         sleep=Sleeps(),
@@ -2173,7 +2179,7 @@ def test_the_attempt_cap_counts_held_batches(tmp_path: Path) -> None:
         for n in range(4)
     ]
     state = runner_module._AnthropicRun(
-        model=HAIKU, corpus_dir=run.corpus, model_dir=run.model_dir,
+        model=HAIKU, corpus_dir=run.corpus, model_dir=run.model_dir, runs_dir=run.runs,
         headers=runner_module.anthropic_headers(KEY), transport=FakeBatches(), sleep=Sleeps(),
         now=lambda: NOW, poll_seconds=60, echo=Echo(),
     )  # fmt: skip
@@ -4512,3 +4518,203 @@ def test_a_recorded_answer_that_cannot_be_stat_ed_stops_the_run_before_any_creat
         run()
 
     assert server.creates() == []
+
+
+# --- TASK-005e5 decision 3: repair and repeat runs under the Test A runs directory -----------
+
+
+@pytest.mark.parametrize(
+    ("kind", "parts"),
+    [
+        (None, ("claude-opus-5-5",)),
+        ("repair", ("repair", "claude-opus-5-5")),
+        ("repeat-2", ("repeat-2", "claude-opus-5-5")),
+        ("repeat-3", ("repeat-3", "claude-opus-5-5")),
+    ],
+)
+def test_the_run_directory_of_each_kind(kind: str | None, parts: tuple[str, ...]) -> None:
+    runs = Path("runs") / "test-a"
+
+    assert runner_module.run_directory(runs, OPUS, kind) == runs.joinpath(*parts)
+
+
+def test_the_run_directory_uses_the_model_directory_name() -> None:
+    assert runner_module.run_directory(Path("r"), "a/b", "repair") == Path("r", "repair", "a-b")
+
+
+@pytest.mark.parametrize("kind", ["", "repeat-1", "repeat-4", "Repair", "repair/x", "first", "."])
+def test_any_other_kind_is_refused(kind: str) -> None:
+    with pytest.raises(ValueError, match="is not a run kind"):
+        runner_module.run_directory(Path("runs"), OPUS, kind)
+
+
+def test_the_kind_directories_are_named_as_the_task_names_them() -> None:
+    assert runner_module.REPAIR_DIR == "repair"
+    assert runner_module.REPEAT_DIRS == ("repeat-2", "repeat-3")
+
+
+def kind_run(tmp_path: Path, server: FakeBatches, kind: str | None = "repeat-2") -> Run:
+    """An Opus run of ``kind`` over the first two scenarios."""
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:2])
+    run.model = OPUS
+    run.kind = kind
+    server.outcome = lambda n, s: succeeded(model=OPUS)
+    return run
+
+
+def audit_of(run: Run) -> None:
+    """The check after a run, for the run's own model and kind."""
+    runner_module.audit_batches(
+        run.model,
+        run.runs,
+        KEY,
+        run.server,
+        sleep=run.sleeps,
+        now=run.sleeps.now,
+        echo=run.echo,
+        **({} if run.kind is None else {"kind": run.kind}),
+    )
+
+
+@pytest.mark.parametrize("recorded_in", ["repair/claude-haiku-5-5", "repeat-2/claude-opus-5-5"])
+def test_a_batch_recorded_in_a_kind_directory_does_not_stop_the_workspace_check(
+    tmp_path: Path, recorded_in: str
+) -> None:
+    server = FakeBatches(newest=[other_batch("msgbatch_77", 2, iso(-timedelta(hours=1)))])
+    run = kind_run(tmp_path, server, kind=None)  # another model's (Opus's) first batch
+    write_state(run.runs / recorded_in, batch_entry("msgbatch_77", ALL_SCENARIOS[:2], "done"))
+
+    run()
+
+    assert server.creates() == [list(ALL_SCENARIOS[:2])]
+
+
+@pytest.mark.parametrize(
+    ("recorded_in", "named"),
+    [
+        ("repair/claude-haiku-5-5", False),
+        ("repeat-2/claude-opus-5-5", False),
+        ("repeat-3/claude-opus-5-5", False),
+        ("elsewhere/claude-opus-5-5", True),  # two levels down outside a kind: never read
+    ],
+)
+def test_a_batch_recorded_in_a_kind_directory_is_not_named_by_the_audit(
+    tmp_path: Path, recorded_in: str, named: bool
+) -> None:
+    server = FakeBatches(newest=[other_batch("msgbatch_77", 2, iso(-timedelta(minutes=5)))])
+    run = kind_run(tmp_path, server, kind=None)
+    write_state(run.model_dir, batch_entry("msgbatch_91", ALL_SCENARIOS[:2], "done"))
+    write_state(run.runs / recorded_in, batch_entry("msgbatch_77", ALL_SCENARIOS[:2], "done"))
+
+    audit_of(run)
+
+    warnings = [line for line in run.echo if line.startswith("warning:")]
+    assert warnings == ([unrecorded("msgbatch_77", 2, iso(-timedelta(minutes=5)))] if named else [])
+
+
+def test_a_batch_recorded_two_levels_down_elsewhere_still_stops_the_workspace_check(
+    tmp_path: Path,
+) -> None:
+    server = FakeBatches(newest=[other_batch("msgbatch_77", 2, iso(-timedelta(hours=1)))])
+    run = kind_run(tmp_path, server, kind=None)
+    elsewhere = run.runs / "elsewhere" / OPUS
+    write_state(elsewhere, batch_entry("msgbatch_77", ALL_SCENARIOS[:2], "done"))
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == workspace_stop(run, "msgbatch_77")
+    assert server.creates() == []
+
+
+def test_a_kind_run_records_in_its_own_directory_only(tmp_path: Path) -> None:
+    run = kind_run(tmp_path, FakeBatches())
+
+    run()
+
+    assert files_under(run.runs) == sorted(
+        [
+            "repeat-2/claude-opus-5-5/batch-msgbatch_01.results.jsonl",
+            "repeat-2/claude-opus-5-5/batches.json",
+            *(
+                f"repeat-2/claude-opus-5-5/{name}/{file}"
+                for name in ALL_SCENARIOS[:2]
+                for file in ("request.json", "response.json", "candidate.txt", "comparison.json")
+            ),
+        ]
+    )
+
+
+@pytest.mark.parametrize("kind", ["repeat-2", "repeat-3"])
+def test_a_creating_entry_in_a_kind_directory_is_reconciled_by_the_next_run_of_that_kind(
+    tmp_path: Path, kind: str
+) -> None:
+    server = FakeBatches(create_script=["interrupt-created"])
+    run = kind_run(tmp_path, server, kind)
+    with pytest.raises(KeyboardInterrupt):
+        run()
+    assert run.state()["batches"] == [batch_entry(None, ALL_SCENARIOS[:2], "creating")]
+
+    run()
+
+    assert run.echo[1:3] == [
+        waiting(180),
+        "adopted batch msgbatch_01 created by an earlier create request",
+    ]
+    assert len(server.creates()) == 1
+    assert run.recorded() == list(ALL_SCENARIOS[:2])
+    assert run.states() == ["done"]
+    assert not (run.runs / OPUS).exists()
+
+
+def test_an_acknowledged_batch_is_accepted_by_the_workspace_check_and_audit_of_a_kind_run(
+    tmp_path: Path,
+) -> None:
+    server = FakeBatches(newest=[other_batch("msgbatch_dup", 2, iso(-timedelta(minutes=5)))])
+    run = kind_run(tmp_path, server)
+    acknowledge(run, b"msgbatch_dup  # the reviewer: a paid duplicate\n")  # <runs>/, as always
+
+    run()
+    run.echo.clear()
+    audit_of(run)
+
+    assert server.creates() == [list(ALL_SCENARIOS[:2])]
+    assert not any(line.startswith("warning:") for line in run.echo)
+
+
+def test_an_acknowledged_batch_is_not_adopted_by_a_kind_run(tmp_path: Path) -> None:
+    server = FakeBatches(create_script=["duplicated"], polls_in_progress=-1)  # always ended
+    run = kind_run(tmp_path, server)
+    with pytest.raises(RunStopped, match="2 recent batches could be the one created"):
+        run()
+    acknowledge(run, b"msgbatch_02  # the reviewer: a paid duplicate of msgbatch_01\n")
+    run.echo.clear()
+
+    run()
+
+    assert "adopted batch msgbatch_01 created by an earlier create request" in run.echo
+    assert run.batch_ids() == ["msgbatch_01"]
+    assert run.recorded() == list(ALL_SCENARIOS[:2])
+
+
+@pytest.mark.parametrize("folder", ["repair", "repeat-2", "repeat-2/claude-opus-5-5"])
+def test_an_acknowledgement_file_outside_the_runs_directory_is_ignored(
+    tmp_path: Path, folder: str
+) -> None:
+    server = FakeBatches(newest=[other_batch("msgbatch_dup", 2, iso(-timedelta(minutes=5)))])
+    run = kind_run(tmp_path, server)  # a repeat-2 run: <runs>/repeat-2 is its directory's parent
+    misplaced = run.runs / folder / ACKNOWLEDGED
+    misplaced.parent.mkdir(parents=True, exist_ok=True)
+    misplaced.write_bytes(b"msgbatch_dup  # in the wrong folder\n")
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == workspace_stop(run, "msgbatch_dup")
+    assert server.creates() == []
+
+
+def test_no_code_derives_the_runs_directory_from_a_model_directory() -> None:
+    source = Path(runner_module.__file__).read_text(encoding="utf-8")
+
+    assert "model_dir.parent" not in source

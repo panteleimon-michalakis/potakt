@@ -103,7 +103,10 @@ __all__ = [
     "GEMINI_URL",
     "LOCK_FILE",
     "MODELS_URL",
+    "REPAIR_DIR",
+    "REPEAT_DIRS",
     "RUNS_PATH",
+    "RUN_KINDS",
     "USER_AGENT",
     "RunLock",
     "audit_batches",
@@ -116,6 +119,7 @@ __all__ = [
     "preflight",
     "recorded_scenarios",
     "run_anthropic",
+    "run_directory",
     "run_gemini",
     "run_plan",
     "take_lock",
@@ -397,17 +401,48 @@ def _load_state(model_dir: Path) -> list[_Batch]:
     return batches
 
 
-def _all_batch_ids(runs_dir: Path) -> set[str]:
-    """The batch ids in the ``batches.json`` of every model directory under ``runs_dir``; none
-    if ``runs_dir`` does not exist yet (TASK-005c3h H6: the workspace check of a first run may
-    come before anything was written)."""
+# TASK-005e5 decision 3: the run kinds besides the first run, each a directory of the runs
+# directory that holds one directory per model, like the runs directory itself.
+REPAIR_DIR = "repair"
+REPEAT_DIRS = ("repeat-2", "repeat-3")
+RUN_KINDS = (REPAIR_DIR, *REPEAT_DIRS)
+
+
+def run_directory(runs_dir: Path, model: str, kind: str | None) -> Path:
+    """The run directory of ``model`` for a run of ``kind``: ``runs_dir / <model dir>`` for the
+    first run (``None``), ``runs_dir / <kind> / <model dir>`` for ``repair``, ``repeat-2`` and
+    ``repeat-3``; ``ValueError`` for any other kind. The lock and ``acknowledged-batches.txt``
+    stay in ``runs_dir`` for every kind."""
+    if kind is None:
+        return runs_dir / model_directory_name(model)
+    if kind not in RUN_KINDS:
+        raise ValueError(f"{kind!r} is not a run kind (use {', '.join(RUN_KINDS)} or None)")
+    return runs_dir / kind / model_directory_name(model)
+
+
+def _model_directories(runs_dir: Path) -> list[Path]:
+    """Every entry directly under ``runs_dir`` and directly under ``runs_dir / <kind>`` for each
+    kind directory that exists (TASK-005e5 decision 3); none if ``runs_dir`` does not exist yet
+    (TASK-005c3h H6: the workspace check of a first run may come before anything was written).
+    Nothing deeper is listed, and a ``batches.json`` anywhere else is never read."""
     try:
-        model_dirs = list(runs_dir.iterdir())
+        entries = list(runs_dir.iterdir())
     except FileNotFoundError:
-        return set()
+        return []
+    for kind in RUN_KINDS:
+        try:
+            entries += list((runs_dir / kind).iterdir())
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+    return entries
+
+
+def _all_batch_ids(runs_dir: Path) -> set[str]:
+    """The batch ids in the ``batches.json`` of every model directory of ``runs_dir``, of every
+    run kind (``_model_directories``)."""
     return {
         batch.id
-        for model_dir in model_dirs
+        for model_dir in _model_directories(runs_dir)
         if present(model_dir / BATCH_STATE_FILE)
         for batch in _load_state(model_dir)
         if batch.id is not None
@@ -828,6 +863,9 @@ class _AnthropicRun:
     model: str
     corpus_dir: Path
     model_dir: Path
+    # TASK-005e5 decision 3: the runs directory of every kind, given to the run (never derived
+    # from ``model_dir``, whose parent is ``<runs>/<kind>`` for a repair or repeat run).
+    runs_dir: Path
     headers: dict[str, str] = field(repr=False)  # carries the key: never in a repr
     transport: Transport
     sleep: Sleep
@@ -920,7 +958,7 @@ class _AnthropicRun:
         is listed (TASK-005c3s S3-1); then it lists every page (``_list_back_to`` with no lower
         bound), and fails closed beyond ``LIST_PAGES``. The ids are named in list order, newest
         first, through ``server_text``."""
-        runs_dir = self.model_dir.parent
+        runs_dir = self.runs_dir  # TASK-005e5 decision 3: every kind's records are known
         # Read before the wait, as the audit does: an invalid file stops at once, with no call.
         known = _all_batch_ids(runs_dir) | _acknowledged(runs_dir, self.sleep)
         target = started + timedelta(seconds=RECONCILE_DELAY_SECONDS)
@@ -1171,8 +1209,7 @@ class _AnthropicRun:
         # Every batch any model recorded: another model's batch of the same size is never this one;
         # TASK-005c3h H6 (S3-7): nor an acknowledged one, so acknowledging all but one of several
         # ended candidates lets the same command adopt the one left.
-        runs_dir = self.model_dir.parent
-        known = _all_batch_ids(runs_dir) | _acknowledged(runs_dir, self.sleep)
+        known = _all_batch_ids(self.runs_dir) | _acknowledged(self.runs_dir, self.sleep)
         candidates = [item.status for item in listed if _is_candidate(item, entry, t0, known)]
         if len(candidates) > 1:
             ids = ", ".join(sorted(candidate.id for candidate in candidates))
@@ -1220,8 +1257,8 @@ class _AnthropicRun:
             return
         # Every model's entries, read before the wait: an invalid state stops the audit at once;
         # TASK-005c3h H11 review: the acknowledgements too (never named, H6).
-        every = _every_entry(self.model_dir.parent)
-        acknowledged = _acknowledged(self.model_dir.parent, self.sleep)
+        every = _every_entry(self.runs_dir)
+        acknowledged = _acknowledged(self.runs_dir, self.sleep)
         started = [cast(datetime, _started(batch.started_at)) for batch in batches]
         target = max(started) + timedelta(seconds=AUDIT_DELAY_SECONDS)
         wait = min((target - self.now()).total_seconds(), AUDIT_DELAY_SECONDS)
@@ -1430,10 +1467,13 @@ def run_anthropic(
     echo: Echo,
     release: str | None = None,
     clock_transport: Transport | None = None,
+    kind: str | None = None,
 ) -> None:
     """Run every pending scenario of ``corpus_dir`` on a Claude model through the Message
     Batches API (TASK-005c3 F2, F3) and record the answers under
-    ``runs_dir / model_directory_name(model)``.
+    ``run_directory(runs_dir, model, kind)`` (TASK-005e5 decision 3: ``runs_dir / <model dir>``
+    for the first run, ``runs_dir / <kind> / <model dir>`` for a repair or repeat run; the
+    batch checks read every kind's ``batches.json`` and ``runs_dir / acknowledged-batches.txt``).
 
     Returns once every corpus scenario is recorded. Raises ``RunStopped`` (its message is safe to
     print and never contains ``key``) when the run must stop; running the same call again
@@ -1450,7 +1490,8 @@ def run_anthropic(
     run = _AnthropicRun(
         model=model,
         corpus_dir=corpus_dir,
-        model_dir=runs_dir / model_directory_name(model),
+        model_dir=run_directory(runs_dir, model, kind),
+        runs_dir=runs_dir,
         headers=anthropic_headers(key),
         transport=transport,
         sleep=sleep,
@@ -1483,12 +1524,13 @@ AUDIT_INTERRUPTED = "audit interrupted: look in the Claude Console (Batches)"
 
 
 def _every_entry(runs_dir: Path) -> list[_Batch]:
-    """The entries of the ``batches.json`` of every model directory under ``runs_dir``
-    (``RunStopped`` if one is invalid). Its ``creating`` entries are the pending creates: the
-    next run of that model reconciles each of them and may adopt one of its candidates."""
+    """The entries of the ``batches.json`` of every model directory of ``runs_dir``, of every run
+    kind (``_model_directories``; ``RunStopped`` if one is invalid). Its ``creating`` entries are
+    the pending creates: the next run of that model and kind reconciles each of them and may
+    adopt one of its candidates."""
     return [
         batch
-        for model_dir in runs_dir.iterdir()
+        for model_dir in _model_directories(runs_dir)
         if present(model_dir / BATCH_STATE_FILE)
         for batch in _load_state(model_dir)
     ]
@@ -1503,11 +1545,14 @@ def audit_batches(
     sleep: Sleep,
     now: Callable[[], datetime],
     echo: Echo,
+    kind: str | None = None,
 ) -> None:
     """TASK-005c3d H13 (ADR-0007 §7 amendment of TASK-005c3d): after a run of a Claude model
     that called the API and was not interrupted, name every listed batch that no run recorded.
 
-    Nothing if the model's ``batches.json`` has no entry. Otherwise it reads the ``batches.json``
+    Nothing if the ``batches.json`` of the run's directory (``run_directory(runs_dir, model,
+    kind)``, TASK-005e5 decision 3) has no entry; "every model" below means every model
+    directory of every kind. Otherwise it reads the ``batches.json``
     of every model, waits until ``AUDIT_DELAY_SECONDS`` after this model's latest ``started_at``
     (at most that long, announced), lists the batches back to the earliest ``started_at`` of any
     model, or the earliest ``created_at`` of a recorded batch if that is earlier (TASK-005c3g G2),
@@ -1523,7 +1568,8 @@ def audit_batches(
     run = _AnthropicRun(
         model=model,
         corpus_dir=runs_dir,  # unused: the audit reads no scenario
-        model_dir=runs_dir / model_directory_name(model),
+        model_dir=run_directory(runs_dir, model, kind),
+        runs_dir=runs_dir,
         headers=anthropic_headers(key),
         transport=transport,
         sleep=sleep,
