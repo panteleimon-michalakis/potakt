@@ -2272,17 +2272,28 @@ def _missing(run_dir: Path, corpus_dir: Path) -> list[str]:
 
 
 REPAIR_ORDER = "{model} repairs run only after {model} has a complete run (missing: {names})"
+# TASK-005e5 decision 8 (ADR-0008 D8): the repeats of the strong model, one after the other.
+REPEAT_2_ORDER = "repeat 2 of {model} runs only after {model} has a complete run (missing: {names})"
+REPEAT_3_ORDER = "repeat 3 of {model} runs only after repeat 2 is complete (missing: {names})"
 
 
 def check_order(model: str, runs_dir: Path, corpus_dir: Path, kind: str | None = None) -> None:
     """ADR-0007 §7 amendment «Order»: ``RunStopped`` for a first run of ``claude-opus-5-5``
     unless ``claude-haiku-5-5`` has a complete run in ``runs_dir``; every other model's first run
     may run. TASK-005e5 decision 6 (ADR-0008 D7): a repair run of a model needs that model's own
-    first run complete (``REPAIR_ORDER``), and no other model's run."""
-    if kind == REPAIR_DIR:
-        missing = _missing(run_directory(runs_dir, model, None), corpus_dir)
+    first run complete (``REPAIR_ORDER``), and no other model's run. Decision 8 (ADR-0008 D8):
+    repeat 2 needs the first run complete (``REPEAT_2_ORDER``), repeat 3 needs repeat 2
+    complete (``REPEAT_3_ORDER``)."""
+    orders = {
+        REPAIR_DIR: (None, REPAIR_ORDER),
+        REPEAT_DIRS[0]: (None, REPEAT_2_ORDER),
+        REPEAT_DIRS[1]: (REPEAT_DIRS[0], REPEAT_3_ORDER),
+    }
+    if kind is not None:
+        needed, message = orders[kind]
+        missing = _missing(run_directory(runs_dir, model, needed), corpus_dir)
         if missing:
-            raise RunStopped(REPAIR_ORDER.format(model=model, names=", ".join(missing)))
+            raise RunStopped(message.format(model=model, names=", ".join(missing)))
         return
     if model != STRONG_MODEL:
         return
@@ -2362,6 +2373,11 @@ GEMINI_COST_LINE = (
 )
 
 
+def _kind_label(kind: str) -> str:
+    """The run kind in the dry run's first line: ``repair``, ``repeat 2``, ``repeat 3``."""
+    return kind.replace("-", " ")
+
+
 def _not_sent_plan(corpus_dir: Path, model: str, first_dir: Path | None) -> list[str]:
     """TASK-005e5 decision 6, the dry run of a repair run: the invalid candidates of the first
     run that get no repair request, by reason; each line only when it names a scenario."""
@@ -2399,7 +2415,7 @@ def run_plan(model: str, corpus_dir: Path, runs_dir: Path, kind: str | None = No
     _check_requests(corpus_dir, pending, model, first_dir)
     recorded = recorded_scenarios(corpus_dir, model_dir)
     lines = [
-        f"Test A run plan: {model}" + ("" if kind is None else f" ({kind})"),
+        f"Test A run plan: {model}" + ("" if kind is None else f" ({_kind_label(kind)})"),
         f"Runs directory: {model_dir}",
         f"Pending ({len(pending)}): {', '.join(pending) or 'none'}",
         f"Recorded ({len(recorded)}): {', '.join(recorded) or 'none'}",

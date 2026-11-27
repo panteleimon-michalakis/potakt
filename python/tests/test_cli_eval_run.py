@@ -404,6 +404,121 @@ def test_a_repairs_report_that_cannot_be_built_is_reported_and_the_run_exits_0(
     assert result.stderr == f"cannot summarize {runs / 'repair' / HAIKU}: {shown}\n"
 
 
+# --- TASK-005e5 decision 8: eval run --repeat K (ADR-0008 D8) ---------------------------------
+
+
+def complete_run(runs: Path, model: str, kind_dir: str | None = None) -> None:
+    """A complete run of ``model`` over the whole corpus, recorded with ``write_answer``."""
+    model_dir = runs / model if kind_dir is None else runs / kind_dir / model
+    for name in ALL_SCENARIOS:
+        scenario = load_scenario(CORPUS_PATH / name)
+        write_answer(model_dir / name, scenario, model, anthropic_message(model))
+
+
+def test_repeat_2_before_a_complete_first_opus_run_is_refused(tmp_path: Path) -> None:
+    complete_run(tmp_path, HAIKU)
+    complete_run(tmp_path, OPUS)
+    shutil.rmtree(tmp_path / OPUS / "03-call-centre")
+
+    for extra in ((), ("--yes",)):
+        result = eval_run(tmp_path, OPUS, "--repeat", "2", *extra)
+
+        assert result.exit_code == 1
+        assert result.stdout == ""
+        assert result.stderr == (
+            "repeat 2 of claude-opus-5-5 runs only after claude-opus-5-5 has a complete run "
+            "(missing: 03-call-centre)\n"
+        )
+
+
+def test_repeat_3_before_repeat_2_is_complete_is_refused(tmp_path: Path) -> None:
+    complete_run(tmp_path, HAIKU)
+    complete_run(tmp_path, OPUS)
+
+    result = eval_run(tmp_path, OPUS, "--repeat", "3")
+
+    assert result.exit_code == 1
+    assert result.stderr == (
+        "repeat 3 of claude-opus-5-5 runs only after repeat 2 is complete "
+        f"(missing: {', '.join(ALL_SCENARIOS)})\n"
+    )
+    complete_run(tmp_path, OPUS, "repeat-2")
+    (tmp_path / "repeat-2" / OPUS / "07-security-guards" / "comparison.json").unlink()
+    again = eval_run(tmp_path, OPUS, "--repeat", "3")
+    assert again.exit_code == 1
+    assert again.stderr.endswith("after repeat 2 is complete (missing: 07-security-guards)\n")
+
+
+def test_the_repeat_dry_runs_name_their_draw_and_directory(tmp_path: Path) -> None:
+    complete_run(tmp_path, HAIKU)
+    complete_run(tmp_path, OPUS)
+    complete_run(tmp_path, OPUS, "repeat-2")
+
+    for k in ("2", "3"):
+        result = eval_run(tmp_path, OPUS, "--repeat", k)
+
+        assert result.exit_code == 0, result.stderr
+        lines = shown(result.stdout, tmp_path).splitlines()
+        assert lines[:2] == [
+            f"Test A run plan: claude-opus-5-5 (repeat {k})",
+            f"Runs directory: <runs>/repeat-{k}/claude-opus-5-5",
+        ]
+    # Repeat 3 is pending everywhere; its cost upper bound equals the first Opus run's.
+    assert "Cost upper bound: $7.6301 (10 requests; input: the UTF-8 bytes of the prompt" in (
+        result.stdout
+    )
+
+
+def test_yes_repeat_2_sends_the_first_requests_and_prints_the_repeats_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_real_transport: Sleeps
+) -> None:
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:2])
+    runs = tmp_path / "runs"
+    monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
+    # The API's clock is the run's (two runs: the first one's waits would skew a fixed one).
+    server = FakeBatches(outcome=lambda n, s: succeeded(model=OPUS), clock=no_real_transport)
+    monkeypatch.setattr(cli, "make_transport", lambda: server)
+    for name in ALL_SCENARIOS[:2]:
+        message = anthropic_message(HAIKU)
+        write_answer(runs / HAIKU / name, load_scenario(corpus / name), HAIKU, message)
+    first = eval_run(runs, OPUS, "--yes", "--poll-seconds", "10", corpus=corpus)
+    assert first.exit_code == 0, first.stderr
+
+    result = eval_run(runs, OPUS, "--repeat", "2", "--yes", "--poll-seconds", "10", corpus=corpus)
+
+    assert result.exit_code == 0, result.stderr
+    assert server.creates() == [list(ALL_SCENARIOS[:2])] * 2
+    for name in ALL_SCENARIOS[:2]:
+        repeat = (runs / "repeat-2" / OPUS / name / "request.json").read_bytes()
+        assert repeat == (runs / OPUS / name / "request.json").read_bytes()
+    summary = summarize(runs / "repeat-2" / OPUS, corpus)
+    assert summary.model == OPUS  # the repeat summarizes as claude-opus-5-5
+    assert result.stdout.endswith(summary.to_text())
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (("--model", OPUS, "--repeat", "1"), "--repeat"),
+        (("--model", OPUS, "--repeat", "4"), "--repeat"),
+        (("--model", HAIKU, "--repeat", "2"), "--repeat is only for claude-opus-5-5 (ADR-0008 D8)"),
+        (("--model", GEMINI, "--repeat", "3", "--yes"), "--repeat is only for claude-opus-5-5"),
+        (
+            ("--model", OPUS, "--repair", "--repeat", "2"),
+            "--repair and --repeat cannot be used together",
+        ),
+    ],
+)
+def test_the_usage_errors_of_repeat_exit_2(
+    tmp_path: Path, args: tuple[str, ...], message: str
+) -> None:
+    result = runner.invoke(app, ["eval", "run", *args, "--runs", str(tmp_path)])
+
+    assert result.exit_code == 2
+    assert message in result.stderr
+    assert result.stdout == ""
+
+
 def test_the_dry_run_has_no_d6_line_without_such_a_scenario(tmp_path: Path) -> None:
     corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:2])
     runs = tmp_path / "runs"

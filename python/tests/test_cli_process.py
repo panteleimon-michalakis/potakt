@@ -263,6 +263,11 @@ def test_eval_rescore_matches_the_golden_byte_for_byte(tmp_path: Path) -> None:
         ("run-missing-key", 1),
         ("run-opus-before-haiku", 1),
         ("run-unregistered-model", 2),
+        # TASK-005e5 decision 8: the usage errors of --repeat.
+        ("run-repeat-1", 2),
+        ("run-repeat-4", 2),
+        ("run-repeat-haiku", 2),
+        ("run-repair-and-repeat", 2),
     ],
 )
 def test_eval_exit_codes(case: str, expected: int, tmp_path: Path) -> None:
@@ -300,6 +305,10 @@ def test_eval_exit_codes(case: str, expected: int, tmp_path: Path) -> None:
         # D6); with --yes, the missing key would exit 1 even without the rule.
         "run-opus-before-haiku": ("run", "--model", "claude-opus-5-5", *test_a),
         "run-unregistered-model": ("run", "--model", "claude-sonnet-5-5", "--yes"),
+        "run-repeat-1": ("run", "--model", OPUS, "--repeat", "1", *test_a),
+        "run-repeat-4": ("run", "--model", OPUS, "--repeat", "4", *test_a),
+        "run-repeat-haiku": ("run", "--model", HAIKU, "--repeat", "2", *test_a),
+        "run-repair-and-repeat": ("run", "--model", OPUS, "--repair", "--repeat", "2", *test_a),
     }
 
     result = potakt("eval", *args[case])
@@ -318,9 +327,15 @@ def test_eval_exit_codes(case: str, expected: int, tmp_path: Path) -> None:
         )
     if case == "repairs-incomplete-run":
         assert result.stderr.startswith(b"claude-haiku-5-5 has no complete run (missing: ")
+    if case == "run-repeat-haiku":
+        assert result.stderr == b"--repeat is only for claude-opus-5-5 (ADR-0008 D8)\n"
+    if case == "run-repair-and-repeat":
+        assert result.stderr == b"--repair and --repeat cannot be used together\n"
+    assert not (tmp_path / "test-a").exists()  # no usage error and no refusal writes anything
 
 
 HAIKU = "claude-haiku-5-5"
+OPUS = "claude-opus-5-5"
 
 
 @pytest.mark.parametrize(("extra", "golden"), [((), "txt"), (("--json",), "json")])

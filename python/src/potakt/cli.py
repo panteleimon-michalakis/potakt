@@ -559,6 +559,20 @@ def eval_run(
             ),
         ),
     ] = False,
+    repeat: Annotated[
+        int | None,
+        typer.Option(
+            "--repeat",
+            min=2,
+            max=3,
+            metavar="K",
+            help=(
+                "claude-opus-5-5 only: send the pinned first requests again as draw K (2 or 3, "
+                "ADR-0008 D8), recorded under <runs>/repeat-<K>/claude-opus-5-5; never the gate."
+            ),
+            show_default=False,
+        ),
+    ] = None,
 ) -> None:
     """Run Test A for one model; without --yes, print the plan and send nothing.
 
@@ -589,7 +603,10 @@ def eval_run(
     With --repair (ADR-0008 D7), only after the model's first run is complete: each invalid
     candidate of that run whose answer holds text gets one repair request (the first request,
     the answer and the issues), recorded under <runs>/repair/<model dir> with the same files,
-    lock, batch rules and checks; it never changes the gate.
+    lock, batch rules and checks; it never changes the gate. With --repeat K (ADR-0008 D8;
+    claude-opus-5-5 only, K = 2 or 3): the pinned first requests again, recorded under
+    <runs>/repeat-<K>/claude-opus-5-5; repeat 2 only after the first claude-opus-5-5 run is
+    complete, repeat 3 only after repeat 2 is; it never changes the gate.
 
     Files: <runs>/<model dir>/<scenario id>/ with request.json, response.json, candidate.txt,
     comparison.json; for Claude models also <runs>/<model dir>/ batches.json and
@@ -604,7 +621,7 @@ def eval_run(
     without --yes).
     """
     try:
-        _eval_run(model, runs, corpus, poll_seconds, yes, release, REPAIR_DIR if repair else None)
+        _eval_run(model, runs, corpus, poll_seconds, yes, release, _run_kind(model, repair, repeat))
     except (typer.Exit, typer.Abort):  # RuntimeError subclasses in Typer 0.27.3: not unexpected
         raise
     except KeyboardInterrupt:  # TASK-005c3h H8: also outside the run (Typer: exit 130, silent)
@@ -617,6 +634,23 @@ UNEXPECTED = (
     "eval run stopped by an unexpected error ({kind}): run the dry run and send its output and "
     "this message to the reviewer"
 )
+# TASK-005e5 decision 8 (ADR-0008 D8): the usage errors of --repeat.
+REPEAT_WITH_REPAIR = "--repair and --repeat cannot be used together"
+REPEAT_MODEL_ONLY = f"--repeat is only for {STRONG_MODEL} (ADR-0008 D8)"
+
+
+def _run_kind(model: str, repair: bool, repeat: int | None) -> str | None:
+    """The run kind of ``eval run``'s options (TASK-005e5 decisions 6 and 8): ``repair``,
+    ``repeat-<K>`` or ``None`` (the first run); a usage error (exit 2) for ``--repair`` with
+    ``--repeat`` and for ``--repeat`` with another model than the strong one (an unregistered
+    model id is the usage error of ``_eval_run``)."""
+    if repeat is None:
+        return REPAIR_DIR if repair else None
+    if repair:
+        _stop(EXIT_USAGE, REPEAT_WITH_REPAIR)
+    if model in REGISTERED_MODELS and model != STRONG_MODEL:
+        _stop(EXIT_USAGE, REPEAT_MODEL_ONLY)
+    return f"repeat-{repeat}"
 
 
 def _eval_run(

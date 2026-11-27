@@ -5160,3 +5160,48 @@ def test_adr_0008_d6_holds_in_the_repair_directory(tmp_path: Path) -> None:
     assert run.echo[0] == unanswered_line("04-restaurant")
     assert (run.model_dir / "04-restaurant" / "unanswered.json").is_file()
     assert run.server.creates() == [["03-call-centre", "05-supermarket-checkouts"]]
+
+
+# --- TASK-005e5 decision 8: the repeats of the strong model (ADR-0008 D8) ------------------------
+
+
+def test_a_repeat_sends_exactly_the_first_runs_requests(tmp_path: Path) -> None:
+    server = FakeBatches(outcome=lambda n, s: succeeded(model=OPUS))
+    run = kind_run(tmp_path, server, kind=None)
+    run()  # the first Opus run
+    first_bodies = {
+        name: (run.model_dir / name / "request.json").read_bytes() for name in run.recorded()
+    }
+    for kind in ("repeat-2", "repeat-3"):
+        run.kind = kind
+        run.echo.clear()
+
+        run()
+
+        create = [call for call in server.calls if call.method == "POST"][-1]
+        sent = json.loads(create.body or b"")["requests"]
+        assert [request["custom_id"] for request in sent] == list(ALL_SCENARIOS[:2])
+        for request in sent:
+            name = request["custom_id"]
+            recorded = (run.model_dir / name / "request.json").read_bytes()
+            assert recorded == first_bodies[name]
+            assert render_payload(request["params"]).encode("utf-8") == first_bodies[name]
+        assert run.recorded() == list(ALL_SCENARIOS[:2])
+
+
+def test_the_workspace_check_before_repeat_2_knows_the_first_runs_batches(
+    tmp_path: Path,
+) -> None:
+    server = FakeBatches(outcome=lambda n, s: succeeded(model=OPUS))
+    run = kind_run(tmp_path, server, kind=None)
+    run()  # msgbatch_01, recorded in <runs>/claude-opus-5-5/batches.json and listed by the API
+    run.kind = "repeat-2"
+    run.echo.clear()
+
+    run()
+
+    assert run.echo[:2] == [
+        WORKSPACE_WAIT.format(seconds=120),
+        "batch msgbatch_02 created for 2 scenarios",
+    ]
+    assert run.batch_ids() == ["msgbatch_02"]
