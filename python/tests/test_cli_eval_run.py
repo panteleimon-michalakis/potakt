@@ -24,10 +24,12 @@ from runner_helpers import (
     REPAIR_CORPUS,
     REPAIRED,
     Sleeps,
+    answer_response,
     anthropic_message,
     batch_entry,
     corpus_copy,
     expected_repair,
+    truth_text,
     unanswered_records,
     write_first_run,
     write_state,
@@ -38,6 +40,7 @@ from test_evaluation_runner_anthropic import (
     CreateStep,
     FakeBatches,
     batch_object,
+    batches_of,
     other_batch,
     succeeded,
 )
@@ -244,6 +247,68 @@ def test_the_dry_run_names_the_last_batches_and_the_unanswered_scenarios(tmp_pat
         "Unanswered (ADR-0008 D6): 04-restaurant",
     ]
     assert "Cost upper bound: $" in result.stdout
+
+
+GIVEN_UP = "No answer after 5 batches (ADR-0008 D6), recorded as unanswered by --yes: {names}"
+
+
+def test_the_dry_run_plans_a_scenario_given_up_after_five_batches_apart(tmp_path: Path) -> None:
+    # TASK-005e6 decision 7b: --yes only records it as unanswered, so it is neither pending nor
+    # priced.
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:3])
+    runs = tmp_path / "runs"
+    write_state(runs / HAIKU, *batches_of("02-hotel-reception", 5, "2026-11-01T09:00:00Z"))
+
+    result = eval_run(runs, HAIKU, corpus=corpus)
+
+    assert result.exit_code == 0, result.stderr
+    lines = result.stdout.splitlines()
+    assert "Pending (2): 01-pharmacy, 03-call-centre" in lines
+    assert GIVEN_UP.format(names="02-hotel-reception") in lines
+    cost = cost_upper_bound(HAIKU, corpus, ["01-pharmacy", "03-call-centre"])
+    assert f"Cost upper bound: ${cost:.4f} (2 requests; " in result.stdout
+
+
+def test_the_given_up_line_comes_between_the_last_batch_and_the_unanswered_lines(
+    tmp_path: Path,
+) -> None:
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:5])
+    runs = tmp_path / "runs"
+    given_up = batches_of("02-hotel-reception", 5, "2026-11-01T09:00:00Z")
+    last = batches_of("03-call-centre", 4, "2026-11-01T08:00:00Z", first_number=80)
+    write_state(runs / HAIKU, *given_up, *last)
+    unanswered_records(runs / HAIKU / "04-restaurant", corpus / "04-restaurant", ("m1",) * 5)
+
+    result = eval_run(runs, HAIKU, corpus=corpus)
+
+    lines = result.stdout.splitlines()
+    recorded = lines.index("Recorded (0): none")
+    assert lines[recorded - 1] == (
+        "Pending (3): 01-pharmacy, 03-call-centre, 05-supermarket-checkouts"
+    )
+    assert lines[recorded + 1 : recorded + 4] == [
+        "Last batch (ADR-0008 D6) from 2026-11-02T08:00:00Z: 03-call-centre",
+        GIVEN_UP.format(names="02-hotel-reception"),
+        "Unanswered (ADR-0008 D6): 04-restaurant",
+    ]
+
+
+def test_a_given_up_scenario_is_not_checked_against_its_pin(tmp_path: Path) -> None:
+    # Its request is never built again (--yes records it as unanswered), so a changed file of it
+    # does not stop the dry run.
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:2])
+    runs = tmp_path / "runs"
+    write_state(runs / HAIKU, *batches_of("02-hotel-reception", 5, "2026-11-01T09:00:00Z"))
+    request = corpus / "02-hotel-reception" / "request.md"
+    request.write_bytes(b"Hello.\n" + request.read_bytes())
+    changed = eval_run(runs / "elsewhere", HAIKU, corpus=corpus)  # the same files, no batches
+
+    result = eval_run(runs, HAIKU, corpus=corpus)
+
+    assert changed.exit_code == 1  # the change is one the pin check sees
+    assert changed.stderr.startswith("02-hotel-reception: the request for claude-haiku-5-5 differs")
+    assert result.exit_code == 0, result.stderr
+    assert "Pending (1): 01-pharmacy" in result.stdout.splitlines()
 
 
 # --- TASK-005e6 decision 3: the development set and eval run --dev (ADR-0008 D1) ---------------
@@ -651,6 +716,41 @@ def test_a_repairs_report_that_cannot_be_built_is_reported_and_the_run_exits_0(
 
     assert result.exit_code == 0, result.stderr
     assert result.stderr == f"cannot summarize {runs / 'repair' / HAIKU}: {shown}\n"
+
+
+@pytest.mark.parametrize("model", [HAIKU, GEMINI])
+def test_a_repair_run_with_nothing_to_repair_closes_with_its_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, model: str
+) -> None:
+    # TASK-005e6 decision 7a: the repair directory is never created, the report is still printed.
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:3])
+    runs = tmp_path / "runs"
+    first = runs / model
+    answers = {"01-pharmacy": truth_text("01-pharmacy"), "02-hotel-reception": " \n\t "}
+    if model == GEMINI:  # ADR-0008 D6 gives up on Claude scenarios only
+        answers["03-call-centre"] = truth_text("03-call-centre")
+    else:
+        unanswered_records(first / "03-call-centre", corpus / "03-call-centre", ("m",) * 5)
+    for name, text in answers.items():
+        write_answer(
+            first / name, load_scenario(corpus / name), model, answer_response(model, text)
+        )
+    monkeypatch.setenv(GEMINI_VARIABLE if model == GEMINI else ANTHROPIC_VARIABLE, KEY)
+    server = FakeGemini() if model == GEMINI else FakeBatches()
+    monkeypatch.setattr(cli, "make_transport", lambda: server)
+
+    result = eval_run(runs, model, "--repair", "--yes", corpus=corpus)
+
+    assert result.exit_code == 0, result.stderr
+    report = repairs_report(model, runs, corpus).to_text()
+    assert report.startswith(f"Repairs: {model} (ADR-0008 D7, not the gate)\n")
+    assert "\nPer invalid candidate:\n  02-hotel-reception: " in report
+    assert result.stdout == "nothing to run\n" + report
+    assert not (runs / "repair").exists()
+    if model == GEMINI:
+        assert cast(FakeGemini, server).calls == []
+    else:  # only the free clock call
+        assert [call.url for call in cast(FakeBatches, server).calls] == [CLOCK_URL]
 
 
 # --- TASK-005e5 decision 8: eval run --repeat K (ADR-0008 D8) ---------------------------------

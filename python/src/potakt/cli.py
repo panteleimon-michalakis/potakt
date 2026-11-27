@@ -822,7 +822,9 @@ def _eval_run(
     except KeyboardInterrupt:
         _stop(1, INTERRUPTED)
     model_dir = run_directory(runs, model, kind)
-    if not model_dir.is_dir():
+    # TASK-005e6 decision 7a: a repair run closes with its report even if it repaired nothing (no
+    # repair directory: repairs_report handles that); every other run only after a record.
+    if kind != REPAIR_DIR and not model_dir.is_dir():
         return
     try:
         # TASK-005e5 decision 7: a repair run closes with eval repairs's text, not the summary.

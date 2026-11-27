@@ -881,6 +881,21 @@ def test_the_last_batch_is_sent_from_24_hours_after_the_fourth_exactly(offset: i
             assert run.recorded() == [HOTEL]
 
 
+def test_the_pause_before_a_fifth_batch_is_capped_at_300_s(tmp_path: Path) -> None:
+    # TASK-005e6 decision 7c: base_delay(5) is 405 s, above MAX_DELAY_SECONDS, the cap of every
+    # other pause. The fourth batch's create call takes 24 hours on the fake clock, so it ends
+    # after its wait and the same run creates the fifth.
+    server = FakeBatches(outcome=lambda n, s: {"type": "expired"}, create_seconds=86400)
+    run = make_run(tmp_path, server, (HOTEL,))
+    write_state(run.model_dir, *batches_of(HOTEL, 3, "2026-11-01T09:00:00Z"))
+
+    run()
+
+    assert server.creates() == [[HOTEL], [HOTEL]]
+    assert run.sleeps == [60, 300, 60]  # poll, the pause before the fifth batch, poll
+    assert run.echo[-1] == unanswered_line(HOTEL)
+
+
 def test_the_fifth_batch_carries_every_pending_scenario(tmp_path: Path) -> None:
     run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:3])
     write_state(run.model_dir, *batches_of(HOTEL, 4, "2026-11-01T09:00:00Z"))

@@ -81,6 +81,7 @@ from potakt.evaluation.test_a import (
 )
 from potakt.evaluation.transport import (
     ATTEMPTS,
+    MAX_DELAY_SECONDS,
     RETRIED_STATUSES,
     HttpResponse,
     RunStopped,
@@ -1041,7 +1042,9 @@ class _AnthropicRun:
             pending = self._settle_unanswered(pending, batches)  # TASK-005e5: ADR-0008 D6
             if not pending:
                 return
-            self.sleep(base_delay(self._next_attempt(pending, batches)))
+            # TASK-005e6 decision 7c: capped like every other pause (base_delay(5) is 405 s).
+            attempt = self._next_attempt(pending, batches)
+            self.sleep(min(base_delay(attempt), MAX_DELAY_SECONDS))
             batch = self._create(pending, batches)
 
     def _check_clock(self) -> None:
@@ -2477,8 +2480,10 @@ def _unanswered_plan(
 ) -> list[str]:
     """TASK-005e5 decision 4 (ADR-0008 D6), the dry run's lines after ``Recorded``: the pending
     scenarios sent in ``ATTEMPTS`` batches, whose next batch is their last, from the latest of
-    their times (``_last_batch_from``, as the stop names it), and the scenarios recorded as
-    unanswered; each line only when it names a scenario."""
+    their times (``_last_batch_from``, as the stop names it), TASK-005e6 decision 7b the pending
+    scenarios already sent in ``LAST_BATCH`` batches (``_given_up``), which ``--yes`` records as
+    unanswered, and the scenarios recorded as unanswered; each line only when it names a
+    scenario."""
     waiting = {
         name: _last_batch_from(sent)
         for name in pending
@@ -2488,6 +2493,9 @@ def _unanswered_plan(
     if waiting:
         time = _stamp(max(waiting.values()))
         lines.append(LAST_BATCH_PLAN.format(time=time, names=", ".join(waiting)))
+    given_up = _given_up(pending, batches)
+    if given_up:
+        lines.append(GIVEN_UP_PLAN.format(count=LAST_BATCH, names=", ".join(given_up)))
     unanswered = unanswered_scenarios(corpus_dir, model_dir)
     if unanswered:
         lines.append(UNANSWERED_PLAN.format(names=", ".join(unanswered)))
@@ -2496,7 +2504,20 @@ def _unanswered_plan(
 
 # TASK-005e5 decisions 4 and 6: the dry run's lines for ADR-0008 D6 and for a repair run.
 LAST_BATCH_PLAN = "Last batch (ADR-0008 D6) from {time}: {names}"
+# TASK-005e6 decision 7b: pending, but sent in LAST_BATCH batches already: never sent again.
+GIVEN_UP_PLAN = (
+    "No answer after {count} batches (ADR-0008 D6), recorded as unanswered by --yes: {names}"
+)
 UNANSWERED_PLAN = "Unanswered (ADR-0008 D6): {names}"
+
+
+def _given_up(pending: list[str], batches: list[_Batch]) -> list[str]:
+    """TASK-005e6 decision 7b: the scenarios of ``pending`` (in its order) already sent in
+    ``LAST_BATCH`` batches or more (``_sent_in``): ``--yes`` records them as unanswered
+    (``_settle_unanswered``) and sends nothing for them."""
+    return [name for name in pending if len(_sent_in(name, batches)) >= LAST_BATCH]
+
+
 NOT_SENT_PLAN = "Not sent ({reason}): {names}"
 NOT_SENT_REASONS = (("empty answer", "empty answer"), ("no answer", "no answer, ADR-0008 D6"))
 
@@ -2548,14 +2569,17 @@ def run_plan(
     if not any(batch.state == "held" for batch in batches):
         opened = next((batch for batch in batches if batch.state == "open"), None)
         replaced = _check_unsaved(pending, model_dir, opened)
+    # TASK-005e6 decision 7b: what --yes sends; a given-up scenario is only recorded unanswered.
+    given_up = _given_up(pending, batches)
+    sent = [name for name in pending if name not in given_up]
     # TASK-005c3h H7: as --yes checks them
-    _check_requests(corpus_dir, pending, model, first_dir)
+    _check_requests(corpus_dir, sent, model, first_dir)
     recorded = recorded_scenarios(corpus_dir, model_dir)
     parts = [*(["development set"] if dev else []), *([] if kind is None else [_kind_label(kind)])]
     lines = [
         f"Test A run plan: {model}" + (f" ({', '.join(parts)})" if parts else ""),
         f"Runs directory: {model_dir}",
-        f"Pending ({len(pending)}): {', '.join(pending) or 'none'}",
+        f"Pending ({len(sent)}): {', '.join(sent) or 'none'}",
         f"Recorded ({len(recorded)}): {', '.join(recorded) or 'none'}",
         *_not_sent_plan(corpus_dir, model, first_dir),
         *_unanswered_plan(corpus_dir, model_dir, pending, batches),
@@ -2578,13 +2602,13 @@ def run_plan(
                 )
         lines += replaced
         if first_dir is None:
-            cost = cost_upper_bound(model, corpus_dir, pending)
+            cost = cost_upper_bound(model, corpus_dir, sent)
             counted = "the prompt"
         else:  # TASK-005e5 decision 6: the answer and the issues are input too
-            cost = repair_cost_upper_bound(model, corpus_dir, pending, first_dir)
+            cost = repair_cost_upper_bound(model, corpus_dir, sent, first_dir)
             counted = "every message"
         lines.append(
-            f"Cost upper bound: ${cost:.4f} ({len(pending)} requests; input: the UTF-8 bytes of "
+            f"Cost upper bound: ${cost:.4f} ({len(sent)} requests; input: the UTF-8 bytes of "
             f"{counted}, output: max_tokens {ANTHROPIC_MAX_TOKENS[model]}; batch prices pinned "
             "on 2026-11-02)"
         )
