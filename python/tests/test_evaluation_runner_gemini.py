@@ -13,21 +13,26 @@ from typing import Any
 import pytest
 from runner_helpers import (
     ALL_SCENARIOS,
+    EMPTY,
     KEY,
+    REPAIR_CORPUS,
+    REPAIRED,
     Echo,
     RefusedReplace,
     Sleeps,
     corpus_copy,
+    expected_repair,
     files_containing,
     gemini_response,
     truth_text,
+    write_first_run,
 )
 from typer.testing import CliRunner
 
 import potakt.evaluation.records as records_module
 import potakt.evaluation.runner as runner_module
 from potakt.cli import app
-from potakt.evaluation import CORPUS_PATH, load_scenario, write_answer
+from potakt.evaluation import CORPUS_PATH, load_scenario, render_payload, write_answer
 from potakt.evaluation.runner import GEMINI_URL, USER_AGENT, run_gemini
 from potakt.evaluation.transport import HttpResponse, RunStopped, TransportError
 
@@ -669,6 +674,44 @@ def test_rescore_leaves_received_json_byte_for_byte(tmp_path: Path) -> None:
 
     assert rescored.exit_code == 0, rescored.stderr
     assert {name: received(run, name) for name in ALL_SCENARIOS[:2]} == before
+
+
+def test_a_gemini_repair_run_sends_the_repair_requests_and_records_them(tmp_path: Path) -> None:
+    # TASK-005e5 decision 6 (ADR-0008 D7): the first request plus the answer as the model's turn.
+    server = FakeGemini(script={REPAIRED[2]: [ok(gemini_response(truth_text(REPAIRED[2])))]})
+    run = make_run(tmp_path, server, REPAIR_CORPUS)
+    first_dir = write_first_run(run.runs, run.corpus, GEMINI)
+    repair_dir = run.runs / "repair" / GEMINI
+
+    run_gemini(
+        GEMINI,
+        run.corpus,
+        run.runs,
+        KEY,
+        server,
+        sleep=run.sleeps,
+        now=run.now,
+        echo=run.echo,
+        kind="repair",
+    )
+
+    assert server.sent() == list(REPAIRED)
+    for call, name in zip(server.calls, REPAIRED, strict=True):
+        expected = render_payload(expected_repair(run.corpus, first_dir, GEMINI, name))
+        assert call.body == expected.encode("utf-8")
+        assert (repair_dir / name / "request.json").read_bytes() == call.body
+        roles = [turn["role"] for turn in json.loads(call.body)["contents"]]
+        assert roles == ["user", "model", "user"]
+        assert sorted(path.name for path in (repair_dir / name).iterdir()) == [
+            "candidate.txt",
+            "comparison.json",
+            "received.json",
+            "request.json",
+            "response.json",
+        ]
+    assert run.echo[-1] == "05-supermarket-checkouts: recorded (STOP, valid, recall 1.000)"
+    assert not (repair_dir / EMPTY).exists()
+    assert sorted(path.name for path in first_dir.iterdir()) == list(REPAIR_CORPUS)
 
 
 def test_a_gemini_scenario_without_an_answer_is_sent_again_by_every_run(tmp_path: Path) -> None:

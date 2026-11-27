@@ -31,6 +31,7 @@ from potakt.evaluation import (
 )
 from potakt.evaluation.records import RESPONSE_FILE
 from potakt.evaluation.runner import (
+    REPAIR_DIR,
     RUNS_PATH,
     audit_batches,
     check_order,
@@ -38,11 +39,11 @@ from potakt.evaluation.runner import (
     corpus_scenarios,
     preflight,
     run_anthropic,
+    run_directory,
     run_gemini,
     run_plan,
     take_lock,
 )
-from potakt.evaluation.summary import model_directory_name
 from potakt.evaluation.test_a import ANTHROPIC_PREFIX, check_registered
 from potakt.evaluation.transport import (
     HttpResponse,
@@ -493,6 +494,16 @@ def eval_run(
             show_default=False,
         ),
     ] = None,
+    repair: Annotated[
+        bool,
+        typer.Option(
+            "--repair",
+            help=(
+                "Send one repair request per invalid candidate of the model's complete first "
+                "run (ADR-0008 D7), recorded under <runs>/repair/<model dir>; never the gate."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Run Test A for one model; without --yes, print the plan and send nothing.
 
@@ -520,6 +531,11 @@ def eval_run(
     about a paid duplicate (only a batch still in progress can be cancelled); this check never
     changes the exit code.
 
+    With --repair (ADR-0008 D7), only after the model's first run is complete: each invalid
+    candidate of that run whose answer holds text gets one repair request (the first request,
+    the answer and the issues), recorded under <runs>/repair/<model dir> with the same files,
+    lock, batch rules and checks; it never changes the gate.
+
     Files: <runs>/<model dir>/<scenario id>/ with request.json, response.json, candidate.txt,
     comparison.json; for Claude models also <runs>/<model dir>/ batches.json and
     batch-<id>.results.jsonl.
@@ -533,7 +549,7 @@ def eval_run(
     without --yes).
     """
     try:
-        _eval_run(model, runs, corpus, poll_seconds, yes, release)
+        _eval_run(model, runs, corpus, poll_seconds, yes, release, REPAIR_DIR if repair else None)
     except (typer.Exit, typer.Abort):  # RuntimeError subclasses in Typer 0.27.3: not unexpected
         raise
     except KeyboardInterrupt:  # TASK-005c3h H8: also outside the run (Typer: exit 130, silent)
@@ -549,7 +565,13 @@ UNEXPECTED = (
 
 
 def _eval_run(
-    model: str, runs: Path, corpus: Path, poll_seconds: int, yes: bool, release: str | None
+    model: str,
+    runs: Path,
+    corpus: Path,
+    poll_seconds: int,
+    yes: bool,
+    release: str | None,
+    kind: str | None,
 ) -> None:
     try:
         check_registered(model)
@@ -566,9 +588,9 @@ def _eval_run(
     anthropic = model.startswith(ANTHROPIC_PREFIX)
     try:
         check_pins()  # TASK-005c3g G8: before anything is rendered, read or sent
-        check_order(model, runs, corpus)
+        check_order(model, runs, corpus, kind)
         if not yes:
-            typer.echo(run_plan(model, corpus, runs), nl=False)
+            typer.echo(run_plan(model, corpus, runs, kind), nl=False)
             return
         if release is not None and not anthropic:
             raise RunStopped(f"{server_text(release)} is not a held batch of {model}")
@@ -594,6 +616,7 @@ def _eval_run(
                         echo=typer.echo,
                         release=release,
                         clock_transport=raw,
+                        kind=kind,
                     )
                 except Exception as error:  # a stop, or an unexpected error (H16 review)
                     stopped = error
@@ -603,7 +626,14 @@ def _eval_run(
                 # it.
                 if transport.calls:
                     audit_batches(
-                        model, runs, key, transport, sleep=time.sleep, now=utc_now, echo=typer.echo
+                        model,
+                        runs,
+                        key,
+                        transport,
+                        sleep=time.sleep,
+                        now=utc_now,
+                        echo=typer.echo,
+                        kind=kind,
                     )
                 if stopped is not None:
                     raise stopped
@@ -617,6 +647,7 @@ def _eval_run(
                     sleep=time.sleep,
                     now=utc_now,
                     echo=typer.echo,
+                    kind=kind,
                 )
         finally:
             warning = lock.release()  # however the run ends; only a crash leaves it
@@ -626,7 +657,9 @@ def _eval_run(
         _stop(1, str(error))
     except KeyboardInterrupt:
         _stop(1, INTERRUPTED)
-    model_dir = runs / model_directory_name(model)
+    if kind == REPAIR_DIR:
+        return  # TASK-005e5 decision 6: the closing report of a repair run is eval repairs's
+    model_dir = run_directory(runs, model, kind)
     if not model_dir.is_dir():
         return
     try:

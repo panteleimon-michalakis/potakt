@@ -21,11 +21,15 @@ from runner_helpers import (
     ALL_SCENARIOS,
     KEY,
     NOW,
+    REPAIR_CORPUS,
+    REPAIRED,
     Sleeps,
     anthropic_message,
     batch_entry,
     corpus_copy,
+    expected_repair,
     unanswered_records,
+    write_first_run,
     write_state,
 )
 from test_evaluation_runner_anthropic import (
@@ -48,7 +52,7 @@ import potakt.evaluation.test_a as test_a_module
 from potakt.cli import app, eval_app
 from potakt.evaluation import CORPUS_PATH, load_scenario, render_test_a, summarize, write_answer
 from potakt.evaluation.runner import RUNS_PATH, cost_upper_bound
-from potakt.evaluation.transport import HttpResponse, TransportError, UrllibTransport
+from potakt.evaluation.transport import HttpResponse, RunStopped, TransportError, UrllibTransport
 
 GOLDEN = Path(__file__).resolve().parent / "golden"
 SOURCE = Path(__file__).resolve().parents[1] / "src" / "potakt"
@@ -222,6 +226,150 @@ def test_the_dry_run_names_the_last_batches_and_the_unanswered_scenarios(tmp_pat
         "Unanswered (ADR-0008 D6): 04-restaurant",
     ]
     assert "Cost upper bound: $" in result.stdout
+
+
+# --- TASK-005e5 decision 6: eval run --repair (ADR-0008 D7) ------------------------------------
+
+
+def repair_setup(tmp_path: Path, model: str = HAIKU) -> tuple[Path, Path, Path]:
+    """The corpus, the runs directory and the complete first run of decision 6's fixture."""
+    corpus = corpus_copy(tmp_path, REPAIR_CORPUS)
+    runs = tmp_path / "runs"
+    first_dir = write_first_run(runs, corpus, model)
+    return corpus, runs, first_dir
+
+
+def repair_cost(corpus: Path, first_dir: Path, model: str, names: tuple[str, ...]) -> str:
+    """The cost upper bound recomputed here: per request, the UTF-8 bytes of the system text and
+    of every message's text as input tokens, max_tokens 64000 as output, at the batch prices."""
+    price_in, price_out = {HAIKU: (0.05, 0.25), OPUS: (2.0, 10.0)}[model]
+    total = 0.0
+    for name in names:
+        payload = expected_repair(corpus, first_dir, model, name)
+        size = len(payload["system"].encode("utf-8"))
+        size += sum(len(turn["content"].encode("utf-8")) for turn in payload["messages"])
+        total += size * price_in + 64000 * price_out
+    return f"{total / 1e6:.4f}"
+
+
+def test_the_repair_dry_run_shows_pending_not_sent_and_the_repair_cost(tmp_path: Path) -> None:
+    corpus, runs, first_dir = repair_setup(tmp_path)
+    shutil.rmtree(first_dir / "02-hotel-reception")  # given up after five batches: no answer
+    unanswered_records(first_dir / "02-hotel-reception", corpus / "02-hotel-reception", ("m",))
+
+    result = eval_run(runs, HAIKU, "--repair", corpus=corpus)
+
+    assert result.exit_code == 0, result.stderr
+    assert shown(result.stdout, runs) == (
+        "Test A run plan: claude-haiku-5-5 (repair)\n"
+        "Runs directory: <runs>/repair/claude-haiku-5-5\n"
+        "Pending (3): 03-call-centre, 04-restaurant, 05-supermarket-checkouts\n"
+        "Recorded (0): none\n"
+        "Not sent (empty answer): 06-ambulance-crews\n"
+        "Not sent (no answer, ADR-0008 D6): 02-hotel-reception\n"
+        f"Cost upper bound: ${repair_cost(corpus, first_dir, HAIKU, REPAIRED)} (3 requests; input: "
+        "the UTF-8 bytes of every message, output: max_tokens 64000; batch prices pinned on "
+        "2026-11-02)\n"
+        "Run again with --yes to send.\n"
+    )
+    assert not (runs / "repair").exists()  # a dry run writes nothing
+
+
+def test_a_long_repair_request_is_priced_at_the_long_prompt_tier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    corpus, _, first_dir = repair_setup(tmp_path)
+    name = REPAIRED[0]
+    payload = expected_repair(corpus, first_dir, HAIKU, name)
+    size = len(payload["system"].encode("utf-8"))
+    size += sum(len(turn["content"].encode("utf-8")) for turn in payload["messages"])
+    bound = runner_module.repair_cost_upper_bound
+    tiers = "LONG_PROMPT_PRICES_USD_PER_MILLION"
+
+    monkeypatch.setattr(runner_module, tiers, {HAIKU: (size - 1, (1.0, 2.0))})
+    long = (size * 1.0 + 64000 * 2.0) / 1e6
+    assert bound(HAIKU, corpus, [name], first_dir) == pytest.approx(long)
+    monkeypatch.setattr(runner_module, tiers, {HAIKU: (size, (1.0, 2.0))})
+    short = (size * 0.05 + 64000 * 0.25) / 1e6
+    assert bound(HAIKU, corpus, [name], first_dir) == pytest.approx(short)
+
+
+def test_a_scenario_that_needs_no_repair_has_no_repair_request(tmp_path: Path) -> None:
+    corpus, _, first_dir = repair_setup(tmp_path)
+
+    for name in ("01-pharmacy", "06-ambulance-crews"):  # valid; an empty answer
+        with pytest.raises(RunStopped, match=f"^{name}: needs no repair request$"):
+            runner_module._payload(corpus, HAIKU, name, first_dir)
+
+
+def test_the_repair_dry_run_of_gemini_is_free(tmp_path: Path) -> None:
+    corpus, runs, _ = repair_setup(tmp_path, GEMINI)
+
+    result = eval_run(runs, GEMINI, "--repair", corpus=corpus)
+
+    assert result.exit_code == 0, result.stderr
+    lines = result.stdout.splitlines()
+    assert lines[:3] == [
+        "Test A run plan: gemini-3.8-flash (repair)",
+        f"Runs directory: {runs / 'repair' / GEMINI}",
+        "Pending (3): 03-call-centre, 04-restaurant, 05-supermarket-checkouts",
+    ]
+    assert "Not sent (empty answer): 06-ambulance-crews" in lines
+    assert runner_module.GEMINI_COST_LINE in lines
+
+
+def test_a_repair_before_its_models_first_run_is_complete_is_refused(tmp_path: Path) -> None:
+    corpus, runs, first_dir = repair_setup(tmp_path)
+    (first_dir / "05-supermarket-checkouts" / "comparison.json").unlink()
+
+    for extra in ((), ("--yes",)):
+        result = eval_run(runs, HAIKU, "--repair", *extra, corpus=corpus)
+
+        assert result.exit_code == 1
+        assert result.stdout == ""
+        assert result.stderr == (
+            "claude-haiku-5-5 repairs run only after claude-haiku-5-5 has a complete run "
+            "(missing: 05-supermarket-checkouts)\n"
+        )
+    assert not (runs / "repair").exists()
+
+
+def test_the_repair_dry_run_checks_the_first_requests_against_their_pins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    corpus, runs, _ = repair_setup(tmp_path)
+    pins = dict(runner_module.PAYLOAD_SHA256)
+    pins[(HAIKU, "03-call-centre")] = "0" * 64
+    monkeypatch.setattr(runner_module, "PAYLOAD_SHA256", pins)
+
+    result = eval_run(runs, HAIKU, "--repair", corpus=corpus)
+
+    assert result.exit_code == 1
+    assert result.stderr.startswith(
+        "03-call-centre: the request for claude-haiku-5-5 differs from the one the harness pins"
+    )
+
+
+def test_yes_repair_runs_the_repairs_in_the_repair_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    corpus, runs, first_dir = repair_setup(tmp_path)
+    monkeypatch.setenv(ANTHROPIC_VARIABLE, KEY)
+    server = FakeBatches()
+    monkeypatch.setattr(cli, "make_transport", lambda: server)
+
+    result = eval_run(runs, HAIKU, "--repair", "--yes", "--poll-seconds", "10", corpus=corpus)
+
+    assert result.exit_code == 0, result.stderr
+    assert "batch msgbatch_01 created for 3 scenarios\n" in result.stdout
+    assert server.creates() == [list(REPAIRED)]
+    sent = json.loads(next(c.body for c in server.calls if c.method == "POST") or b"")["requests"]
+    assert [r["params"] for r in sent] == [
+        expected_repair(corpus, first_dir, HAIKU, name) for name in REPAIRED
+    ]
+    recorded = sorted(p.parent.name for p in (runs / "repair" / HAIKU).glob("*/response.json"))
+    assert recorded == list(REPAIRED)
+    assert not (runs / ".eval-run.lock").exists()
 
 
 def test_the_dry_run_has_no_d6_line_without_such_a_scenario(tmp_path: Path) -> None:

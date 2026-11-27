@@ -27,8 +27,11 @@ from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from runner_helpers import (
     ALL_SCENARIOS,
+    EMPTY,
     KEY,
     NOW,
+    REPAIR_CORPUS,
+    REPAIRED,
     STARTED_AT,
     UNANSWERED_ISSUE,
     Echo,
@@ -37,8 +40,10 @@ from runner_helpers import (
     anthropic_message,
     batch_entry,
     corpus_copy,
+    expected_repair,
     files_containing,
     truth_text,
+    write_first_run,
     write_state,
 )
 from typer.testing import CliRunner
@@ -54,6 +59,7 @@ from potakt.evaluation import (
     LoadedModel,
     compare_models,
     load_scenario,
+    render_payload,
     render_test_a,
     request_payload,
     summarize,
@@ -4969,3 +4975,188 @@ def test_no_code_derives_the_runs_directory_from_a_model_directory() -> None:
     source = Path(runner_module.__file__).read_text(encoding="utf-8")
 
     assert "model_dir.parent" not in source
+
+
+# --- TASK-005e5 decision 6: the repair run (ADR-0008 D7) -----------------------------------------
+
+
+def repair_outcome(number: int, scenario: str) -> dict[str, Any]:
+    """The repair batch: 03 answers junk again, 04 and 05 answer their truth."""
+    text = "Sorry." if scenario == "03-call-centre" else truth_text(scenario)
+    return succeeded(text)
+
+
+def repair_run(tmp_path: Path, server: FakeBatches | None = None) -> Run:
+    """A Haiku repair run over ``REPAIR_CORPUS``, after a complete first run."""
+    server = FakeBatches(outcome=repair_outcome) if server is None else server
+    run = make_run(tmp_path, server, REPAIR_CORPUS)
+    run.kind = "repair"
+    write_first_run(run.runs, run.corpus, HAIKU)
+    return run
+
+
+def test_a_repair_run_sends_the_repair_requests_of_the_invalid_candidates(tmp_path: Path) -> None:
+    run = repair_run(tmp_path)
+    first_dir = run.runs / HAIKU
+
+    run()
+
+    [create] = [call for call in run.server.calls if call.method == "POST"]
+    requests = json.loads(create.body or b"")["requests"]
+    assert [request["custom_id"] for request in requests] == list(REPAIRED)
+    for request in requests:
+        name = request["custom_id"]
+        expected = expected_repair(run.corpus, first_dir, HAIKU, name)
+        assert request["params"] == expected
+        recorded = (run.model_dir / name / "request.json").read_bytes()
+        assert recorded == render_payload(expected).encode("utf-8")
+    restaurant = requests[1]["params"]["messages"]
+    assert restaurant[1:] == [
+        {"role": "assistant", "content": '{"title": '},
+        {
+            "role": "user",
+            "content": "The Decision Model is not valid:\n"
+            "/: the answer did not end normally (stop: max_tokens)\n"
+            "Answer with the corrected JSON object only.",
+        },
+    ]
+
+
+def test_a_repair_run_records_and_scores_the_repaired_answers(tmp_path: Path) -> None:
+    run = repair_run(tmp_path)
+    first_before = files_under(run.runs / HAIKU)
+
+    run()
+
+    assert run.recorded() == list(REPAIRED)
+    assert files_under(run.model_dir) == sorted(
+        [
+            "batch-msgbatch_01.results.jsonl",
+            "batches.json",
+            *(
+                f"{name}/{file}"
+                for name in REPAIRED
+                for file in ("request.json", "response.json", "candidate.txt", "comparison.json")
+            ),
+        ]
+    )
+    assert files_under(run.runs / HAIKU) == first_before  # the first run is never touched
+    for name, valid in zip(REPAIRED, (False, True, True), strict=True):
+        comparison = json.loads((run.model_dir / name / "comparison.json").read_bytes())
+        assert comparison["valid"] is valid
+    assert "05-supermarket-checkouts: recorded (end_turn, valid, recall 1.000)" in run.echo
+
+
+def test_a_repair_run_sends_nothing_for_valid_or_empty_candidates(tmp_path: Path) -> None:
+    run = repair_run(tmp_path)
+
+    run()
+    run.echo.clear()
+    run()
+
+    assert run.server.creates() == [list(REPAIRED)]
+    assert run.echo == ["nothing to run"]
+    assert not (run.model_dir / EMPTY).exists()
+    assert not (run.model_dir / "01-pharmacy").exists()
+
+
+def test_the_repair_order_needs_a_complete_first_run_of_the_same_model(tmp_path: Path) -> None:
+    run = repair_run(tmp_path)
+    (run.runs / HAIKU / "04-restaurant" / "comparison.json").unlink()
+
+    with pytest.raises(RunStopped) as raised:
+        runner_module.check_order(HAIKU, run.runs, run.corpus, "repair")
+
+    assert str(raised.value) == (
+        "claude-haiku-5-5 repairs run only after claude-haiku-5-5 has a complete run "
+        "(missing: 04-restaurant)"
+    )
+    shutil.rmtree(run.runs / HAIKU)
+    with pytest.raises(RunStopped) as raised:
+        runner_module.check_order(HAIKU, run.runs, run.corpus, "repair")
+    assert str(raised.value).endswith(f"(missing: {', '.join(REPAIR_CORPUS)})")
+
+
+def test_an_opus_repair_needs_no_other_models_run(tmp_path: Path) -> None:
+    corpus = corpus_copy(tmp_path, REPAIR_CORPUS)
+    runs = tmp_path / "runs"
+    write_first_run(runs, corpus, OPUS)  # no Haiku run at all
+
+    runner_module.check_order(OPUS, runs, corpus, "repair")  # no stop
+    with pytest.raises(RunStopped, match="runs only after claude-haiku-5-5"):
+        runner_module.check_order(OPUS, runs, corpus, None)  # the first run's rule is unchanged
+
+
+def test_an_interrupted_repair_batch_creation_is_adopted_by_the_next_repair_run(
+    tmp_path: Path,
+) -> None:
+    server = FakeBatches(outcome=repair_outcome, create_script=["interrupt-created"])
+    run = repair_run(tmp_path, server)
+    with pytest.raises(KeyboardInterrupt):
+        run()
+    assert run.state()["batches"] == [batch_entry(None, list(REPAIRED), "creating")]
+
+    run()
+
+    assert "adopted batch msgbatch_01 created by an earlier create request" in run.echo
+    assert len(run.server.creates()) == 1
+    assert run.recorded() == list(REPAIRED)
+
+
+def test_a_held_repair_batch_is_released_in_the_repair_directory(tmp_path: Path) -> None:
+    server = FakeBatches(outcome=repair_outcome)
+    run = repair_run(tmp_path, server)
+    kept = [
+        json.dumps({"custom_id": name, "result": repair_outcome(1, name)})
+        for name in REPAIRED
+        if name != "04-restaurant"
+    ]
+    server.raw_results["msgbatch_01"] = ("\n".join(kept) + "\n").encode("utf-8")
+    with pytest.raises(RunStopped, match="no result for 04-restaurant; batch msgbatch_01 is held"):
+        run()
+    assert run.states() == ["held"]
+    assert (run.model_dir / "batch-msgbatch_01.results.jsonl").is_file()
+
+    run(release="msgbatch_01")
+
+    assert "batch msgbatch_01 released after review" in run.echo
+    assert server.creates() == [list(REPAIRED), ["04-restaurant"]]
+    assert run.recorded() == list(REPAIRED)
+    assert run.states() == ["done", "done"]
+    assert not (run.runs / HAIKU / "batches.json").exists()  # nothing written next to the first run
+
+
+def test_a_changed_first_request_stops_a_repair_run_before_anything_is_sent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = repair_run(tmp_path)
+    pins = dict(runner_module.PAYLOAD_SHA256)
+    pins[(HAIKU, "04-restaurant")] = "0" * 64
+    monkeypatch.setattr(runner_module, "PAYLOAD_SHA256", pins)
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == (
+        f"04-restaurant: the request for {HAIKU} differs from the one the harness pins (SHA256 "
+        f"{'0' * 64}); nothing was sent"
+    )
+    assert run.server.creates() == []
+    assert not (run.model_dir / "03-call-centre" / "request.json").exists()
+
+
+def test_adr_0008_d6_holds_in_the_repair_directory(tmp_path: Path) -> None:
+    run = repair_run(tmp_path)
+    write_state(run.model_dir, *batches_of("04-restaurant", 4, "2026-11-01T10:00:01Z"))
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+    assert str(raised.value) == last_batch_stop("04-restaurant", "2026-11-02T10:00:01Z")
+    assert run.server.creates() == []
+
+    write_state(run.model_dir, *batches_of("04-restaurant", 5, "2026-11-01T10:00:01Z"))
+    run()
+
+    assert run.echo[0] == unanswered_line("04-restaurant")
+    assert (run.model_dir / "04-restaurant" / "unanswered.json").is_file()
+    assert run.server.creates() == [["03-call-centre", "05-supermarket-checkouts"]]

@@ -15,6 +15,11 @@ from potakt.evaluation import (
     LoadedModel,
     compare_models,
     load_scenario,
+    model_directory_name,
+    render_test_a,
+    repair_payload,
+    request_payload,
+    write_answer,
 )
 from potakt.model import ValidationIssue
 
@@ -164,6 +169,63 @@ def unanswered_records(run_dir: Path, scenario_dir: Path, batch_ids: tuple[str, 
     (run_dir / "comparison.json").write_bytes(comparison.to_json().encode("utf-8"))
     marker = json.dumps({"batches": list(batch_ids)}, indent=2) + "\n"
     (run_dir / "unanswered.json").write_bytes(marker.encode("utf-8"))
+
+
+def changed_truth(name: str, path: tuple[str | int, ...], value: object) -> str:
+    """The truth of a corpus scenario as answer text, with the value at ``path`` replaced."""
+    document: Any = json.loads(truth_text(name))
+    node = document
+    for part in path[:-1]:
+        node = node[part]
+    node[path[-1]] = value
+    return json.dumps(document, ensure_ascii=False)
+
+
+# TASK-005e5 decision 6: a first run with every kind of candidate a repair run meets, over the
+# first six corpus scenarios: two valid, one schema-invalid, one stopped by the output limit (with
+# text), one data-level invalid (a Latin T where the truth has a Greek Tau) and one empty answer.
+REPAIR_CORPUS = ALL_SCENARIOS[:6]
+REPAIRED = ("03-call-centre", "04-restaurant", "05-supermarket-checkouts")  # the repair's pending
+EMPTY = "06-ambulance-crews"
+
+
+def first_answers() -> dict[str, tuple[str, bool]]:
+    """Each scenario's first answer text and whether it ended normally (read when needed)."""
+    look_alike = ("constraints", 6, "params", "resource_ids", 1)
+    return {
+        "01-pharmacy": (truth_text("01-pharmacy"), True),
+        "02-hotel-reception": (truth_text("02-hotel-reception"), True),
+        "03-call-centre": ('{"schema_version": "0.2"}', True),
+        "04-restaurant": ('{"title": ', False),
+        "05-supermarket-checkouts": (changed_truth(REPAIRED[2], look_alike, "T2"), True),
+        EMPTY: (" \n\t ", True),
+    }
+
+
+def answer_response(model: str, text: str, normal: bool = True) -> dict[str, Any]:
+    """An answer of ``model`` (Claude or Gemini) with ``text``, ended normally or by the limit."""
+    if model.startswith("claude-"):
+        return anthropic_message(model, text, "end_turn" if normal else "max_tokens")
+    return gemini_response(text, "STOP" if normal else "MAX_TOKENS")
+
+
+def write_first_run(runs: Path, corpus: Path, model: str) -> Path:
+    """The complete first run of ``model`` over ``REPAIR_CORPUS`` (``corpus`` holds exactly those
+    scenarios), recorded with ``write_answer``; returns its directory."""
+    first_dir = runs / model_directory_name(model)
+    for name, (text, normal) in first_answers().items():
+        scenario = load_scenario(corpus / name)
+        write_answer(first_dir / name, scenario, model, answer_response(model, text, normal))
+    return first_dir
+
+
+def expected_repair(corpus: Path, first_dir: Path, model: str, name: str) -> dict[str, Any]:
+    """The repair request of ``name``: the first request (as ``eval prompt`` builds it) with the
+    first answer's text and the issues of its ``comparison.json``."""
+    first = request_payload(render_test_a(load_scenario(corpus / name)), model)
+    document = json.loads((first_dir / name / "comparison.json").read_bytes())
+    issues = tuple((issue["path"], issue["message"]) for issue in document["issues"])
+    return repair_payload(first, model, first_answers()[name][0], issues)
 
 
 def files_containing(root: Path, needle: str) -> list[str]:

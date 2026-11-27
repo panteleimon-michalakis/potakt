@@ -59,6 +59,7 @@ from potakt.evaluation.records import (
     write_request,
     write_unanswered,
 )
+from potakt.evaluation.repair import RepairNeed, repair_need, repair_payload
 from potakt.evaluation.scenario import METADATA_FILE, LoadedScenario, ScenarioError, load_scenario
 from potakt.evaluation.summary import (
     LONG_PROMPT_PRICES_USD_PER_MILLION,
@@ -120,6 +121,7 @@ __all__ = [
     "pending_scenarios",
     "preflight",
     "recorded_scenarios",
+    "repair_cost_upper_bound",
     "run_anthropic",
     "run_directory",
     "run_gemini",
@@ -580,6 +582,56 @@ def unanswered_scenarios(corpus_dir: Path, model_dir: Path) -> list[str]:
     return [name for name in _corpus_names(corpus_dir) if _unanswered(model_dir / name)]
 
 
+# --- what a run sends (TASK-005e5 decision 6) --------------------------------------------------
+
+
+def _first_dir(runs_dir: Path, model: str, kind: str | None) -> Path | None:
+    """The first run's directory that a repair run reads (ADR-0008 D7); ``None`` for every
+    other kind, whose requests are the pinned first requests themselves."""
+    return run_directory(runs_dir, model, None) if kind == REPAIR_DIR else None
+
+
+def _repair_needs(corpus_dir: Path, model: str, first_dir: Path) -> dict[str, RepairNeed | str]:
+    """``repair_need`` of every corpus scenario of the first run in ``first_dir`` that is not
+    valid there, in UTF-8 byte order (an answer and issues, ``no answer`` or ``empty answer``)."""
+    needs: dict[str, RepairNeed | str] = {}
+    for name in _corpus_names(corpus_dir):
+        need = repair_need(model, first_dir / name)
+        if need is not None:
+            needs[name] = need
+    return needs
+
+
+def _pending(corpus_dir: Path, model: str, model_dir: Path, first_dir: Path | None) -> list[str]:
+    """The scenarios a run still sends, in UTF-8 byte order. A first or repeat run
+    (``first_dir`` ``None``): ``pending_scenarios``. A repair run: the scenarios of the first run
+    whose ``repair_need`` is an answer and its issues, and whose repair run directory has neither
+    ``response.json`` nor ``unanswered.json`` (TASK-005e5 decision 6)."""
+    if first_dir is None:
+        return pending_scenarios(corpus_dir, model_dir)
+    return [
+        name
+        for name, need in _repair_needs(corpus_dir, model, first_dir).items()
+        if isinstance(need, RepairNeed)
+        and not present(model_dir / name / RESPONSE_FILE)
+        and not _unanswered(model_dir / name)
+    ]
+
+
+def _payload(corpus_dir: Path, model: str, name: str, first_dir: Path | None) -> dict[str, object]:
+    """The request of scenario ``name``: the first request, rendered and checked against its pin
+    (``_pinned_payload``: a changed prompt, schema or data file still stops the run); for a
+    repair run, ``repair_payload`` of it with the first answer's text and issues (no pin exists
+    for a repair request). ``RunStopped`` for a scenario that needs no repair."""
+    first = _pinned_payload(corpus_dir, name, model)
+    if first_dir is None:
+        return first
+    need = repair_need(model, first_dir / name)
+    if not isinstance(need, RepairNeed):
+        raise RunStopped(f"{name}: needs no repair request")
+    return repair_payload(first, model, need.answer, need.issues)
+
+
 def corpus_scenarios(corpus_dir: Path) -> list[str]:
     """The corpus scenarios (subdirectories with a ``scenario.json``) in UTF-8 byte order."""
     return _corpus_names(corpus_dir)
@@ -641,17 +693,18 @@ UNSAVED = (
 REPLACED = "{name}: a leftover {file} will be replaced by the answer of batch {id}"
 
 
-def _check_unsaved(corpus_dir: Path, model_dir: Path, open_batch: _Batch | None) -> list[str]:
-    """TASK-005c3g G5: ``RunStopped`` before anything is sent if a pending scenario keeps an
-    answer that could not be saved (``response.json.tmp``): sending it again would pay twice and
-    lose the first answer. A recorded scenario's leftover temporary file is ignored.
+def _check_unsaved(pending: list[str], model_dir: Path, open_batch: _Batch | None) -> list[str]:
+    """TASK-005c3g G5: ``RunStopped`` before anything is sent if a pending scenario (of
+    ``pending``, what the run sends: ``_pending``) keeps an answer that could not be saved
+    (``response.json.tmp``): sending it again would pay twice and lose the first answer. A
+    recorded scenario's leftover temporary file is ignored.
 
     TASK-005c3h H5: a pending scenario of ``open_batch`` (the ``open`` entry of a Claude model;
     ``None`` for Gemini) is no stop: the batch's results are downloaded again and ``write_answer``
     overwrites the file. Returns the ``REPLACED`` line of each such scenario."""
     exempt = () if open_batch is None else open_batch.scenarios
     lines: list[str] = []
-    for name in pending_scenarios(corpus_dir, model_dir):
+    for name in pending:
         path = model_dir / name / UNSAVED_RESPONSE_FILE
         if not present(path):
             continue
@@ -721,11 +774,13 @@ def _render(corpus_dir: Path, name: str) -> Prompt:
         raise RunStopped(f"{name}: {error}") from None
 
 
-def _prepare(corpus_dir: Path, model_dir: Path, model: str, name: str) -> dict[str, object]:
-    """Write ``request.json`` of one scenario (the ``eval prompt`` payload) and return it.
-    TASK-005c3h H7: the payload is checked against its pin first (``_pinned_payload``), so a
-    request that differs is never written or sent."""
-    payload = _pinned_payload(corpus_dir, name, model)
+def _prepare(
+    corpus_dir: Path, model_dir: Path, model: str, name: str, first_dir: Path | None
+) -> dict[str, object]:
+    """Write ``request.json`` of one scenario (``_payload``: the ``eval prompt`` payload, or its
+    repair request) and return it. TASK-005c3h H7: the first payload is checked against its pin
+    first (``_pinned_payload``), so a request that differs is never written or sent."""
+    payload = _payload(corpus_dir, model, name, first_dir)
     path = model_dir / name / REQUEST_FILE
     try:
         write_request(model_dir / name, payload)
@@ -925,6 +980,11 @@ class _AnthropicRun:
     echo: Echo
     release: str | None = None
     clock_transport: Transport | None = None  # G2: the clock call's, ``transport`` if None
+    # TASK-005e5 decision 6: the first run's directory of a repair run (``_first_dir``).
+    first_dir: Path | None = None
+
+    def _pending(self) -> list[str]:
+        return _pending(self.corpus_dir, self.model, self.model_dir, self.first_dir)
 
     def run(self) -> None:
         started = self.now()  # TASK-005c3h H6: the workspace is listed 120 s after this
@@ -939,11 +999,11 @@ class _AnthropicRun:
         self._check_clock()
         self._check_started_at()
         opened = next((b for b in _load_state(self.model_dir) if b.state == "open"), None)
-        for line in _check_unsaved(self.corpus_dir, self.model_dir, opened):  # G5, H5
+        for line in _check_unsaved(self._pending(), self.model_dir, opened):  # G5, H5
             self.echo(line)
         _complete_records(self.corpus_dir, self.model_dir, self.model, self.echo)
         adopted = self._reconcile_earlier()
-        pending = pending_scenarios(self.corpus_dir, self.model_dir)
+        pending = self._pending()
         batches = _load_state(self.model_dir)
         batch = next((batch for batch in batches if batch.state == "open"), None)
         if not pending and batch is None:
@@ -966,7 +1026,7 @@ class _AnthropicRun:
             return
         while True:
             self._complete(batch)
-            pending = pending_scenarios(self.corpus_dir, self.model_dir)
+            pending = self._pending()
             if not pending:
                 return
             batches = _load_state(self.model_dir)
@@ -1193,11 +1253,13 @@ class _AnthropicRun:
                 raise RunStopped(f"{name}: not a valid custom_id for a batch request")
         self._check_kept_answers(pending)  # TASK-005c3h H6 (S3-8): before every create
         # TASK-005c3h H7: every request against its pin before any request.json is written.
-        _check_requests(self.corpus_dir, pending, self.model)
+        _check_requests(self.corpus_dir, pending, self.model, self.first_dir)
         requests = [
             {
                 "custom_id": name,
-                "params": _prepare(self.corpus_dir, self.model_dir, self.model, name),
+                "params": _prepare(
+                    self.corpus_dir, self.model_dir, self.model, name, self.first_dir
+                ),
             }
             for name in pending
         ]
@@ -1561,6 +1623,9 @@ def run_anthropic(
     ``run_directory(runs_dir, model, kind)`` (TASK-005e5 decision 3: ``runs_dir / <model dir>``
     for the first run, ``runs_dir / <kind> / <model dir>`` for a repair or repeat run; the
     batch checks read every kind's ``batches.json`` and ``runs_dir / acknowledged-batches.txt``).
+    A repair run (TASK-005e5 decision 6, ADR-0008 D7) sends the repair request of each invalid
+    candidate of the first run that has an answer (``_pending``, ``_payload``); every other rule
+    of a run is the same.
 
     Returns once every corpus scenario is recorded. Raises ``RunStopped`` (its message is safe to
     print and never contains ``key``) when the run must stop; running the same call again
@@ -1587,6 +1652,7 @@ def run_anthropic(
         echo=echo,
         release=release,
         clock_transport=clock_transport,
+        first_dir=_first_dir(runs_dir, model, kind),
     )
     try:
         run.run()
@@ -1707,20 +1773,21 @@ def _run_gemini(
     sleep: Sleep,
     now: Callable[[], datetime],
     echo: Echo,
+    first_dir: Path | None,
 ) -> None:
     _complete_records(corpus_dir, model_dir, model, echo)
-    pending = pending_scenarios(corpus_dir, model_dir)
+    pending = _pending(corpus_dir, model, model_dir, first_dir)  # TASK-005e5 decision 6
     if not pending:
         echo("nothing to run")
         return
-    _check_unsaved(corpus_dir, model_dir, None)  # TASK-005c3g G5: before the first request
+    _check_unsaved(pending, model_dir, None)  # TASK-005c3g G5: before the first request
     # TASK-005c3h H7 (S3-4): every request against its pin before the first is sent; _prepare
     # checks each one again when it is built.
-    _check_requests(corpus_dir, pending, model)
+    _check_requests(corpus_dir, pending, model, first_dir)
     url = GEMINI_URL.format(model=model)
     checked = _JsonObjectOnly(transport)
     for name in pending:
-        _prepare(corpus_dir, model_dir, model, name)
+        _prepare(corpus_dir, model_dir, model, name, first_dir)
         body = (model_dir / name / REQUEST_FILE).read_bytes()  # exactly the recorded request
         try:
             response = send_with_retries(
@@ -1756,10 +1823,12 @@ def run_gemini(
     sleep: Sleep,
     now: Callable[[], datetime],
     echo: Echo,
+    kind: str | None = None,
 ) -> None:
     """Run every pending scenario of ``corpus_dir`` on a Gemini model, one ``generateContent``
     call at a time in UTF-8 byte order (TASK-005c3 F4), and record each answer under
-    ``runs_dir / model_directory_name(model)``.
+    ``run_directory(runs_dir, model, kind)`` (TASK-005e5 decisions 3 and 6: a repair run sends
+    the repair request of each invalid candidate of the first run that has an answer).
 
     A 200 with a JSON object is recorded, a blocked prompt included (an invalid answer). ADR-0008
     D5: once such an answer arrived, ``now()`` is read once and ``received.json``
@@ -1774,10 +1843,11 @@ def run_gemini(
     check_registered(model)
     if model.startswith(ANTHROPIC_PREFIX):
         raise ValueError(f"{model} is not a Gemini model")
-    model_dir = runs_dir / model_directory_name(model)
+    model_dir = run_directory(runs_dir, model, kind)
+    first_dir = _first_dir(runs_dir, model, kind)
     try:
         headers = gemini_headers(key)
-        _run_gemini(model, corpus_dir, model_dir, headers, transport, sleep, now, echo)
+        _run_gemini(model, corpus_dir, model_dir, headers, transport, sleep, now, echo, first_dir)
     except RunStopped as error:
         raise RunStopped(redact(str(error), [key])) from None
 
@@ -2162,11 +2232,14 @@ def _pinned_payload(corpus_dir: Path, name: str, model: str) -> dict[str, object
     return payload
 
 
-def _check_requests(corpus_dir: Path, names: list[str], model: str) -> None:
+def _check_requests(
+    corpus_dir: Path, names: list[str], model: str, first_dir: Path | None = None
+) -> None:
     """TASK-005c3h H7 (TASK-005c3s S3-4): every request of ``names`` checked against its pin
-    before the first is sent (Gemini, the dry run); nothing is written."""
+    before the first is sent (Gemini, the dry run); for a repair run (``first_dir``) the first
+    request under each repair request (``_payload``). Nothing is written."""
     for name in names:
-        _pinned_payload(corpus_dir, name, model)
+        _payload(corpus_dir, model, name, first_dir)
 
 
 def check_pins() -> None:
@@ -2190,17 +2263,31 @@ def check_pins() -> None:
         raise RunStopped(PIN_DIFFERS.format(what="schema section", pinned=SCHEMA_SHA256))
 
 
-def check_order(model: str, runs_dir: Path, corpus_dir: Path) -> None:
-    """ADR-0007 §7 amendment «Order»: ``RunStopped`` for ``claude-opus-5-5`` unless
-    ``claude-haiku-5-5`` has a complete run in ``runs_dir``; every other model may run."""
+def _missing(run_dir: Path, corpus_dir: Path) -> list[str]:
+    """The corpus scenarios without a scored run in ``run_dir`` (a summary's missing and not
+    scored ones); every corpus scenario if ``run_dir`` does not exist."""
+    if not run_dir.is_dir():
+        return _corpus_names(corpus_dir)
+    summary = summarize(run_dir, corpus_dir)
+    return list(dict.fromkeys([*summary.missing, *summary.not_scored]))
+
+
+REPAIR_ORDER = "{model} repairs run only after {model} has a complete run (missing: {names})"
+
+
+def check_order(model: str, runs_dir: Path, corpus_dir: Path, kind: str | None = None) -> None:
+    """ADR-0007 §7 amendment «Order»: ``RunStopped`` for a first run of ``claude-opus-5-5``
+    unless ``claude-haiku-5-5`` has a complete run in ``runs_dir``; every other model's first run
+    may run. TASK-005e5 decision 6 (ADR-0008 D7): a repair run of a model needs that model's own
+    first run complete (``REPAIR_ORDER``), and no other model's run."""
+    if kind == REPAIR_DIR:
+        missing = _missing(run_directory(runs_dir, model, None), corpus_dir)
+        if missing:
+            raise RunStopped(REPAIR_ORDER.format(model=model, names=", ".join(missing)))
+        return
     if model != STRONG_MODEL:
         return
-    first_dir = runs_dir / model_directory_name(FIRST_MODEL)
-    if first_dir.is_dir():
-        summary = summarize(first_dir, corpus_dir)
-        missing = list(dict.fromkeys([*summary.missing, *summary.not_scored]))
-    else:
-        missing = _corpus_names(corpus_dir)
+    missing = _missing(runs_dir / model_directory_name(FIRST_MODEL), corpus_dir)
     if missing:
         raise RunStopped(
             f"{model} runs only after {FIRST_MODEL} has a complete run "
@@ -2221,6 +2308,27 @@ def cost_upper_bound(model: str, corpus_dir: Path, scenarios: list[str]) -> floa
     for name in scenarios:
         prompt = _render(corpus_dir, name)
         input_bytes = len(prompt.system.encode("utf-8")) + len(prompt.user.encode("utf-8"))
+        prices = (price_in, price_out)
+        if long_prompt is not None and input_bytes > long_prompt[0]:
+            prices = long_prompt[1]
+        total += input_bytes * prices[0] + ANTHROPIC_MAX_TOKENS[model] * prices[1]
+    return total / 1_000_000
+
+
+def repair_cost_upper_bound(
+    model: str, corpus_dir: Path, scenarios: list[str], first_dir: Path
+) -> float:
+    """USD, TASK-005e5 decision 6: like ``cost_upper_bound``, but the input of each request is the
+    UTF-8 bytes of the system text and of the text of every message of its repair request
+    (``_payload``), so the answer and the issues count too."""
+    price_in, price_out = PRICES_USD_PER_MILLION[model]
+    long_prompt = LONG_PROMPT_PRICES_USD_PER_MILLION.get(model)
+    total = 0.0
+    for name in scenarios:
+        payload = _payload(corpus_dir, model, name, first_dir)
+        messages = cast(list[dict[str, str]], payload["messages"])
+        input_bytes = len(cast(str, payload["system"]).encode("utf-8"))
+        input_bytes += sum(len(message["content"].encode("utf-8")) for message in messages)
         prices = (price_in, price_out)
         if long_prompt is not None and input_bytes > long_prompt[0]:
             prices = long_prompt[1]
@@ -2255,30 +2363,48 @@ GEMINI_COST_LINE = (
 )
 
 
-def run_plan(model: str, corpus_dir: Path, runs_dir: Path) -> str:
-    """What ``eval run`` would do for ``model``, one fact per line, ending with ``\\n``. Reads
-    no key and sends nothing.
+def _not_sent_plan(corpus_dir: Path, model: str, first_dir: Path | None) -> list[str]:
+    """TASK-005e5 decision 6, the dry run of a repair run: the invalid candidates of the first
+    run that get no repair request, by reason; each line only when it names a scenario."""
+    if first_dir is None:
+        return []
+    needs = _repair_needs(corpus_dir, model, first_dir)
+    lines: list[str] = []
+    for need, label in (("empty answer", "empty answer"), ("no answer", "no answer, ADR-0008 D6")):
+        names = [name for name, found in needs.items() if found == need]
+        if names:
+            lines.append(f"Not sent ({label}): {', '.join(names)}")
+    return lines
+
+
+def run_plan(model: str, corpus_dir: Path, runs_dir: Path, kind: str | None = None) -> str:
+    """What ``eval run`` would do for ``model`` and a run of ``kind`` (TASK-005e5 decisions 3
+    and 6), one fact per line, ending with ``\\n``. Reads no key and sends nothing.
 
     TASK-005c3h H5: ``RunStopped`` (the ``--yes`` message) for a leftover ``response.json.tmp``
     that ``--yes`` would stop on; a leftover of the open batch adds its ``REPLACED`` line. While
     a batch is held the leftovers are not checked: ``--yes`` stops on the held batch first, and
     ``--release`` first records what the kept results hold. H7: ``RunStopped`` for a pending
-    request that differs from its pin or has none (``_check_requests``)."""
-    model_dir = runs_dir / model_directory_name(model)
+    request that differs from its pin or has none (``_check_requests``; for a repair run, the
+    first request under each repair request)."""
+    model_dir = run_directory(runs_dir, model, kind)
+    first_dir = _first_dir(runs_dir, model, kind)
     anthropic = model.startswith(ANTHROPIC_PREFIX)
     batches = _load_state(model_dir) if anthropic else []
+    pending = _pending(corpus_dir, model, model_dir, first_dir)
     replaced: list[str] = []
     if not any(batch.state == "held" for batch in batches):
         opened = next((batch for batch in batches if batch.state == "open"), None)
-        replaced = _check_unsaved(corpus_dir, model_dir, opened)
-    pending = pending_scenarios(corpus_dir, model_dir)
-    _check_requests(corpus_dir, pending, model)  # TASK-005c3h H7: as --yes checks them
+        replaced = _check_unsaved(pending, model_dir, opened)
+    # TASK-005c3h H7: as --yes checks them
+    _check_requests(corpus_dir, pending, model, first_dir)
     recorded = recorded_scenarios(corpus_dir, model_dir)
     lines = [
-        f"Test A run plan: {model}",
+        f"Test A run plan: {model}" + ("" if kind is None else f" ({kind})"),
         f"Runs directory: {model_dir}",
         f"Pending ({len(pending)}): {', '.join(pending) or 'none'}",
         f"Recorded ({len(recorded)}): {', '.join(recorded) or 'none'}",
+        *_not_sent_plan(corpus_dir, model, first_dir),
         *_unanswered_plan(corpus_dir, model_dir, pending, batches),
     ]
     if anthropic:
@@ -2298,10 +2424,15 @@ def run_plan(model: str, corpus_dir: Path, runs_dir: Path) -> str:
                     "--yes checks for its batch before sending anything"
                 )
         lines += replaced
-        cost = cost_upper_bound(model, corpus_dir, pending)
+        if first_dir is None:
+            cost = cost_upper_bound(model, corpus_dir, pending)
+            counted = "the prompt"
+        else:  # TASK-005e5 decision 6: the answer and the issues are input too
+            cost = repair_cost_upper_bound(model, corpus_dir, pending, first_dir)
+            counted = "every message"
         lines.append(
             f"Cost upper bound: ${cost:.4f} ({len(pending)} requests; input: the UTF-8 bytes of "
-            f"the prompt, output: max_tokens {ANTHROPIC_MAX_TOKENS[model]}; batch prices pinned "
+            f"{counted}, output: max_tokens {ANTHROPIC_MAX_TOKENS[model]}; batch prices pinned "
             "on 2026-11-02)"
         )
     else:
