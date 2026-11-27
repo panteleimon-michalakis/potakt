@@ -32,6 +32,9 @@ truth; if a task seems to contradict it, **stop and ask** instead of improvising
    Run the preflight (Definition of done, item 1), open the work log and write both as its first entry.
 2. Work test-first where code is involved (red → green → refactor). Use the superpowers TDD and
    verification skills; skip brainstorming/planning skills when the task is already fully specified.
+   A statement of the task about existing behaviour (where a validation issue points, what a file or
+   a field holds, what a function returns) is checked with a probe before code relies on it. If the
+   probe contradicts it, implement the task's rule as stated, log the probe, and report the premise.
 3. Run all six gates before reporting (from `python/`), equivalent to CI. CI runs `uv sync --locked`
    and a separate Python 3.12 job; locally `uv lock --check` and `--isolated` give the same checks.
    ```
@@ -46,7 +49,9 @@ truth; if a task seems to contradict it, **stop and ask** instead of improvising
    tests) to make it pass — if you think a rule is wrong, say so in the report.
    The one accepted per-line exception is `# noqa: RUF001` or `# noqa: RUF003` on a line that
    quotes Greek text verbatim, because ruff confuses some Greek letters with Latin ones; a comment
-   on the same line or directly above the quoted block says so. A narrow type-checker ignore with
+   on the same line or directly above the quoted block says so. Any other non-ASCII character that
+   ruff flags (a digit or letter of another script) is written as a `\N{NAME}` escape, never raw and
+   never as `\uXXXX` (an editor may turn that into the character). A narrow type-checker ignore with
    its code, on one test line, is accepted when the test needs it on purpose
    (`# pyright: ignore[reportPrivateUsage]` to call a private helper, `# type: ignore[misc]` to
    prove that a frozen model rejects an assignment); files under `src/` never carry one.
