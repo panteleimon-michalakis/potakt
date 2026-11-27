@@ -9,26 +9,34 @@ reasons») and Gemini ``generateContent`` (``candidates[].content.parts[]`` with
 import functools
 import json
 import os
+import re
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 from runner_helpers import RefusedReplace
 
 import potakt.evaluation.records as records_module
 from potakt.evaluation import (
     REGISTERED_MODELS,
+    REPAIR_FOOTER,
+    REPAIR_HEADER,
     Answer,
     Comparison,
     LoadedScenario,
+    RepairNeed,
     UnknownModelError,
     answer_of,
     evaluate_candidate,
     load_scenario,
     render_payload,
     render_test_a,
+    repair_need,
+    repair_text,
     request_payload,
     rescore_run,
     score_answer,
@@ -37,6 +45,7 @@ from potakt.evaluation import (
     write_request,
 )
 from potakt.evaluation.records import write_atomic
+from potakt.evaluation.transport import RunStopped
 
 REPO = Path(__file__).resolve().parents[2]
 CORPUS = REPO / "docs" / "validation" / "scenarios"
@@ -843,3 +852,207 @@ def test_write_answer_never_replaces_an_answer_it_cannot_stat(
         write_answer(tmp_path, scenario, "claude-haiku-5-5", {"content": []})
 
     assert target.read_bytes() == b'{"first": "answer"}\n'
+
+
+# --- TASK-005e5 decision 5: the repair request of an invalid candidate (ADR-0008 D7) -----------
+
+HEADER = "The Decision Model is not valid:"
+FOOTER = "Answer with the corrected JSON object only."
+STOP_ISSUE = ("/", "the answer did not end normally (stop: max_tokens)")
+
+
+def test_the_repair_lines_are_the_words_of_adr_0008_d7() -> None:
+    assert (REPAIR_HEADER, REPAIR_FOOTER) == (HEADER, FOOTER)
+
+
+def test_the_repair_text_of_the_stop_reason_issue() -> None:
+    assert repair_text([STOP_ISSUE]) == (
+        "The Decision Model is not valid:\n"
+        "/: the answer did not end normally (stop: max_tokens)\n"
+        "Answer with the corrected JSON object only."
+    )
+
+
+def test_the_repair_text_of_three_issues_keeps_their_order() -> None:
+    issues = [
+        ("/horizon/start", "'x' is not a date written as YYYY-MM-DD"),
+        ("/constraints/0/hardness", "template 'coverage' allows only hard rules"),
+        ("/constraints/1/weight", "Input should be a valid integer"),
+    ]
+
+    assert repair_text(issues) == (
+        "The Decision Model is not valid:\n"
+        "/horizon/start: 'x' is not a date written as YYYY-MM-DD\n"
+        "/constraints/0/hardness: template 'coverage' allows only hard rules\n"
+        "/constraints/1/weight: Input should be a valid integer\n"
+        "Answer with the corrected JSON object only."
+    )
+
+
+def test_the_repair_text_of_one_data_level_issue() -> None:
+    issue = ("/constraints/6/params/resource_ids/1", "unknown resource id 'T2'")
+
+    assert repair_text([issue]) == (
+        f"{HEADER}\n/constraints/6/params/resource_ids/1: unknown resource id 'T2'\n{FOOTER}"
+    )
+
+
+def test_a_line_break_inside_an_issue_becomes_one_space() -> None:
+    assert repair_text([("/a\r\nb", "x\ny\rz\r\n\n")]) == f"{HEADER}\n/a b: x y z  \n{FOOTER}"
+
+
+line_pieces = st.lists(st.one_of(st.text(), st.sampled_from(["\r\n", "\r", "\n"])), max_size=5)
+issue_texts = line_pieces.map("".join)
+
+
+@settings(deadline=None, max_examples=200)
+@given(issues=st.lists(st.tuples(issue_texts, issue_texts), max_size=8))
+def test_each_issue_is_one_line_between_the_header_and_the_footer(
+    issues: list[tuple[str, str]],
+) -> None:
+    def flat(text: str) -> str:
+        return re.sub(r"\r\n|\r|\n", " ", text)
+
+    lines = repair_text(issues).split("\n")
+
+    assert len(lines) == len(issues) + 2
+    assert (lines[0], lines[-1]) == (HEADER, FOOTER)
+    for number, (path, message) in enumerate(issues, start=1):
+        assert lines[number] == f"{flat(path)}: {flat(message)}"
+    assert "\r" not in repair_text(issues)
+
+
+def test_a_valid_candidate_needs_no_repair(tmp_path: Path, pharmacy: LoadedScenario) -> None:
+    run_dir = tmp_path / "01-pharmacy"
+    write_answer(run_dir, pharmacy, HAIKU, anthropic(text_block(fenced_01())))
+
+    assert repair_need(HAIKU, run_dir) is None
+
+
+def test_an_invalid_candidate_needs_its_answer_text_and_its_issues(
+    tmp_path: Path, pharmacy: LoadedScenario
+) -> None:
+    # The answer text, fence and all: not candidate.txt, which is the inside of the fence.
+    text = '```json\n{"schema_version": "0.2"}\n```'
+    run_dir = tmp_path / "01-pharmacy"
+    comparison = write_answer(run_dir, pharmacy, HAIKU, anthropic(text_block(text)))
+    assert (run_dir / "candidate.txt").read_text(encoding="utf-8") != text
+    assert len(comparison.issues) > 1
+
+    need = repair_need(HAIKU, run_dir)
+
+    assert need == RepairNeed(text, tuple((i.path, i.message) for i in comparison.issues))
+
+
+def test_a_stopped_answer_with_text_needs_a_repair(
+    tmp_path: Path, pharmacy: LoadedScenario
+) -> None:
+    run_dir = tmp_path / "01-pharmacy"
+    write_answer(run_dir, pharmacy, HAIKU, anthropic(text_block('{"title": '), stop="max_tokens"))
+
+    assert repair_need(HAIKU, run_dir) == RepairNeed('{"title": ', (STOP_ISSUE,))
+
+
+def test_a_gemini_answer_without_its_thoughts_is_the_repair_answer(
+    tmp_path: Path, pharmacy: LoadedScenario
+) -> None:
+    run_dir = tmp_path / "01-pharmacy"
+    response = gemini({"text": "thinking", "thought": True}, {"text": "Sorry."})
+    write_answer(run_dir, pharmacy, GEMINI, response)
+
+    need = repair_need(GEMINI, run_dir)
+
+    assert isinstance(need, RepairNeed)
+    assert need.answer == "Sorry."
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        anthropic(text_block("  \n\t ")),  # white space only
+        anthropic(),  # no text block
+        anthropic(text_block(" "), stop="max_tokens"),
+        {"content": "not a list", "stop_reason": "end_turn"},  # malformed
+        anthropic(text_block(SURROGATE)),  # not valid Unicode: malformed
+    ],
+)
+def test_an_answer_without_text_is_not_sent(
+    tmp_path: Path, pharmacy: LoadedScenario, response: object
+) -> None:
+    run_dir = tmp_path / "01-pharmacy"
+    write_answer(run_dir, pharmacy, HAIKU, response)
+
+    assert repair_need(HAIKU, run_dir) == "empty answer"
+
+
+def test_a_response_that_is_not_json_is_a_malformed_answer(
+    tmp_path: Path, pharmacy: LoadedScenario
+) -> None:
+    run_dir = tmp_path / "01-pharmacy"
+    write_answer(run_dir, pharmacy, HAIKU, anthropic(text_block("Sorry.")))
+    (run_dir / "response.json").write_bytes(b"{not json")
+
+    assert repair_need(HAIKU, run_dir) == "empty answer"
+
+
+def test_an_unanswered_scenario_is_not_sent(tmp_path: Path, pharmacy: LoadedScenario) -> None:
+    run_dir = tmp_path / "01-pharmacy"
+    records_module.write_unanswered(run_dir, pharmacy, ["msgbatch_01"] * 5)
+
+    assert repair_need(HAIKU, run_dir) == "no answer"
+
+
+@pytest.mark.parametrize(
+    ("data", "problem"),
+    [
+        (None, "cannot read"),
+        (b"{not json", "is not a valid comparison"),
+        (b"\xff", "is not a valid comparison"),
+        (b"[]", "is not a valid comparison"),
+        (b'{"valid": "no", "issues": []}', "is not a valid comparison"),
+        (b'{"valid": false, "issues": [{"path": "/"}]}', "is not a valid comparison"),
+        (b'{"valid": false, "issues": ["/: x"]}', "is not a valid comparison"),
+        # Deeper than json.loads can go on any interpreter: our code refuses it first.
+        (b"[" * 100_000 + b"]" * 100_000, "is not a valid comparison"),
+    ],
+)
+def test_a_comparison_that_cannot_be_used_stops_naming_the_scenario_and_the_file(
+    tmp_path: Path, pharmacy: LoadedScenario, data: bytes | None, problem: str
+) -> None:
+    run_dir = tmp_path / "01-pharmacy"
+    write_answer(run_dir, pharmacy, HAIKU, anthropic(text_block("Sorry.")))
+    path = run_dir / "comparison.json"
+    if data is None:
+        path.unlink()
+    else:
+        path.write_bytes(data)
+
+    with pytest.raises(RunStopped) as raised:
+        repair_need(HAIKU, run_dir)
+
+    assert str(raised.value) in (
+        f"01-pharmacy: cannot read {path}",
+        f"01-pharmacy: {path} is not a valid comparison",
+    )
+    assert problem in str(raised.value)
+
+
+def test_a_response_that_cannot_be_read_stops_naming_the_scenario_and_the_file(
+    tmp_path: Path, pharmacy: LoadedScenario, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir = tmp_path / "01-pharmacy"
+    write_answer(run_dir, pharmacy, HAIKU, anthropic(text_block("Sorry.")))
+    target = run_dir / "response.json"
+    real = Path.read_bytes
+
+    def read_bytes(path: Path) -> bytes:
+        if path == target:
+            raise PermissionError(13, "Permission denied: secret detail")
+        return real(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+
+    with pytest.raises(RunStopped) as raised:
+        repair_need(HAIKU, run_dir)
+
+    assert str(raised.value) == f"01-pharmacy: cannot read {target}"

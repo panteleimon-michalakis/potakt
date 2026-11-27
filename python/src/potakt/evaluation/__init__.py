@@ -1,5 +1,5 @@
 """Phase 0 evaluation (ADR-0007): the scenario corpus, the Test A comparison metric, answers,
-run records and their summary.
+run records, their summary and the repair requests of ADR-0008 D7.
 
 The names below are library code only: no LLM, no network. Depends on ``potakt.model``,
 ``potakt.checker``, Pydantic and the standard library; neither of those core packages imports this
@@ -32,6 +32,15 @@ from potakt.evaluation.records import (
     score_answer,
     write_answer,
     write_request,
+)
+from potakt.evaluation.repair import (
+    REPAIR_FOOTER,
+    REPAIR_HEADER,
+    NotSent,
+    RepairNeed,
+    repair_need,
+    repair_payload,
+    repair_text,
 )
 from potakt.evaluation.scenario import (
     SCENARIO_TAGS,
@@ -76,6 +85,8 @@ __all__ = [
     "LONG_PROMPT_PRICES_USD_PER_MILLION",
     "PRICES_USD_PER_MILLION",
     "REGISTERED_MODELS",
+    "REPAIR_FOOTER",
+    "REPAIR_HEADER",
     "SCENARIO_TAGS",
     "STRONG_MODEL",
     "UNKNOWN_ID_MESSAGES",
@@ -91,8 +102,10 @@ __all__ = [
     "LoadedModel",
     "LoadedScenario",
     "MatchedPair",
+    "NotSent",
     "Prompt",
     "ReferenceScore",
+    "RepairNeed",
     "Scenario",
     "ScenarioError",
     "ScenarioIssue",
@@ -116,6 +129,9 @@ __all__ = [
     "render_bundle",
     "render_payload",
     "render_test_a",
+    "repair_need",
+    "repair_payload",
+    "repair_text",
     "replace_lookalike_ids",
     "request_payload",
     "rescore_run",

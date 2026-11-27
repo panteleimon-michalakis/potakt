@@ -48,6 +48,7 @@ __all__ = [
     "UNSAVED_RESPONSE_FILE",
     "Answer",
     "answer_of",
+    "parse_response",
     "present",
     "refused_pause",
     "rescore_run",
@@ -277,11 +278,7 @@ def rescore_run(run_dir: Path, scenario: LoadedScenario, model: str) -> tuple[st
     there is no ``response.json``.
     """
     raw = (run_dir / RESPONSE_FILE).read_bytes()
-    try:
-        response: object = json.loads(raw)
-    except (ValueError, RecursionError):
-        response = None  # not JSON: a malformed answer
-    candidate, comparison = score_answer(scenario, answer_of(model, response))
+    candidate, comparison = score_answer(scenario, answer_of(model, parse_response(raw)))
     written: list[str] = []
     for name, data in (
         (CANDIDATE_FILE, candidate.encode("utf-8")),
@@ -292,6 +289,15 @@ def rescore_run(run_dir: Path, scenario: LoadedScenario, model: str) -> tuple[st
             write_atomic(path, data)
             written.append(name)
     return tuple(written)
+
+
+def parse_response(raw: bytes) -> object:
+    """The response object of the bytes of a ``response.json``; ``None`` (a malformed answer for
+    ``answer_of``) if they are not JSON. ``rescore_run`` and ``repair_need`` read it this way."""
+    try:
+        return json.loads(raw)
+    except (ValueError, RecursionError):
+        return None  # not JSON: a malformed answer
 
 
 def _response_bytes(response: object) -> bytes:

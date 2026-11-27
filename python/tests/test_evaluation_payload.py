@@ -5,12 +5,16 @@ Field names from the official API references, looked up on 2026-11-02: Anthropic
 ``generateContent`` (``systemInstruction``, ``contents``, ``generationConfig.maxOutputTokens``).
 """
 
+import functools
 import hashlib
 import json
 import shutil
 from pathlib import Path
+from typing import cast
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 import potakt.evaluation.runner as runner_module
 import potakt.evaluation.test_a as test_a_module
@@ -24,6 +28,8 @@ from potakt.evaluation import (
     load_scenario,
     render_payload,
     render_test_a,
+    repair_payload,
+    repair_text,
     request_payload,
 )
 from potakt.evaluation.test_a import ANTHROPIC_MAX_TOKENS, GEMINI_MAX_OUTPUT_TOKENS
@@ -219,3 +225,81 @@ def test_a_changed_byte_in_the_prompt_changes_the_pinned_payload(
             payload_sha256(CORPUS_PATH, "01-pharmacy", model)
             != PINNED_PAYLOADS[(model, "01-pharmacy")]
         )
+
+
+# --- TASK-005e5 decision 5: the repair request is the pinned first request plus two turns ------
+
+SCENARIO_NAMES = sorted({name for _, name in PINNED_PAYLOADS}, key=lambda n: n.encode("utf-8"))
+ANSWER = '```json\n{"schema_version": "0.2", "title": "Μαρία"}\n```'
+ISSUES = (("/", "the answer did not end normally (stop: max_tokens)"), ("/id", "x\ny"))
+
+
+@functools.cache
+def first_payload_text(model: str, name: str) -> str:
+    """The rendered first request of a corpus scenario (its pin is checked by the test)."""
+    return render_payload(request_payload(render_test_a(load_scenario(CORPUS_PATH / name)), model))
+
+
+def turns_key(model: str) -> str:
+    return "messages" if model.startswith("claude-") else "contents"
+
+
+def expected_turns(model: str, answer: str, issues: tuple[tuple[str, str], ...]) -> list[object]:
+    """The two turns that ADR-0008 D7 appends, as the API references name the roles."""
+    text = repair_text(issues)
+    if model.startswith("claude-"):
+        return [{"role": "assistant", "content": answer}, {"role": "user", "content": text}]
+    return [
+        {"role": "model", "parts": [{"text": answer}]},
+        {"role": "user", "parts": [{"text": text}]},
+    ]
+
+
+def check_repair_payload(
+    model: str, name: str, answer: str, issues: tuple[tuple[str, str], ...]
+) -> None:
+    text = first_payload_text(model, name)
+    assert hashlib.sha256(text.encode("utf-8")).hexdigest() == PINNED_PAYLOADS[(model, name)]
+    first = json.loads(text)
+
+    payload = repair_payload(first, model, answer, issues)
+
+    key = turns_key(model)
+    turns = cast(list[object], payload[key])
+    assert {**payload, key: turns[:-2]} == first  # nothing else changes
+    assert turns[-2:] == expected_turns(model, answer, issues)
+    assert json.loads(render_payload(payload)) == payload
+    assert render_payload(first) == text  # the first payload itself is untouched (a deep copy)
+
+
+@pytest.mark.parametrize(("model", "name"), sorted(PINNED_PAYLOADS))
+def test_a_repair_request_is_the_pinned_first_request_plus_two_turns(model: str, name: str) -> None:
+    check_repair_payload(model, name, ANSWER, ISSUES)
+
+
+@settings(deadline=None, max_examples=60)
+@given(
+    model=st.sampled_from(REGISTERED_MODELS),
+    name=st.sampled_from(SCENARIO_NAMES),
+    answer=st.text(min_size=1).filter(str.strip),
+    issues=st.lists(st.tuples(st.text(), st.text()), max_size=8).map(tuple),
+)
+def test_any_repair_request_keeps_the_first_request_and_appends_two_turns(
+    model: str, name: str, answer: str, issues: tuple[tuple[str, str], ...]
+) -> None:
+    check_repair_payload(model, name, answer, issues)
+
+
+def test_the_gemini_turn_of_the_answer_has_the_role_model() -> None:
+    first = json.loads(first_payload_text("gemini-3.8-flash", "01-pharmacy"))
+
+    payload = repair_payload(first, "gemini-3.8-flash", ANSWER, ISSUES)
+
+    turns = cast(list[dict[str, object]], payload["contents"])
+    assert [turn["role"] for turn in turns] == ["user", "model", "user"]
+    assert "thoughtSignature" not in render_payload(payload)
+
+
+def test_a_repair_request_of_an_unregistered_model_is_refused() -> None:
+    with pytest.raises(UnknownModelError):
+        repair_payload({"messages": []}, "claude-sonnet-5-5", ANSWER, ISSUES)
