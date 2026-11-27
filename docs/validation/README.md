@@ -49,10 +49,11 @@ per invalid candidate whose answer holds text (ADR-0008 D7), and
 requests again (ADR-0008 D8), each with the files, lock and checks of a first run. Exit code 0:
 all recorded or the plan printed; 1: the run stopped (the reason on stderr), a held batch, a
 missing or invalid key, the order refused, another run active, a `--release` of a batch that is
-not held, an unknown batch in the workspace, a request that differs from its pin, a missing
-directory, a corpus without a scenario, an unexpected error (its type only, never its text) or an
-interruption; 2: usage error, also for an unregistered model id, `--release` without `--yes`,
-`--repeat` for another model than `claude-opus-5-5`, or `--repair` with `--repeat`.
+not held, an unknown batch in the workspace, a request that differs from its pin, a corpus `--yes`
+run before the freeze, a scenario or runs directory of the other set (`--dev`, see below), a
+missing directory, a corpus without a scenario, an unexpected error (its type only, never its
+text) or an interruption; 2: usage error, also for an unregistered model id, `--release` without
+`--yes`, `--repeat` for another model than `claude-opus-5-5`, or `--repair` with `--repeat`.
 
 Test A records go to `runs/test-a/<model>/<scenario id>/` (ADR-0007 §7 and its amendment):
 `request.json`, `response.json` (the raw answer, written first and never overwritten; UTF-8,
@@ -70,7 +71,8 @@ files. `candidate.txt` and `comparison.json` are derived from `response.json` al
 `uv run potakt eval rescore ../docs/validation/runs/test-a/<model>` recomputes them offline after
 a harness fix, without a new request; it prints `unchanged`, `updated (<files>)` or
 `skipped (no response.json)` per scenario and exits 1 for a missing directory, a directory not
-named after a registered model or a scenario not in the corpus. `potakt eval summary` reports a
+named after a registered model, a scenario not in the corpus or a scenario that cannot be
+rescored; its line says so and processing continues. `potakt eval summary` reports a
 model's results; the Test A gate is read only from a complete summary of `claude-opus-5-5`.
 The summary's cost counts every answer's tokens at the pinned prices. A refusal outside the
 billed categories is not billed, so the summary may overstate the cost. Its per-scenario rows,
@@ -88,11 +90,24 @@ its fifth batch (ADR-0008 D6) has `comparison.json` (an invalid candidate whose 
 (`{"batches": [<the five batch ids>]}`), and no `response.json`: the summary counts it with the
 stop `no-answer`, `eval rescore` skips it, and it is never sent again. `potakt eval repairs
 --model <id>` reports the recall after one repair from the first run and the repair run (exit
-code 0 printed, 1 missing directory or a first run not complete, 2 usage error, also for an
-unregistered model id), and `potakt eval draws` each scenario's recall in the three draws of
-`claude-opus-5-5` with their mean, minimum and maximum (exit code 0 printed, 1 missing directory
-or a draw not complete, 2 usage error); both are offline. None of the repair or repeat runs and
-neither report changes the gate.
+code 0 printed, 1 missing directory, a first run not complete or an unreadable record, 2 usage
+error, also for an unregistered model id), and `potakt eval draws` each scenario's recall in the
+three draws of `claude-opus-5-5` with their mean, minimum and maximum (exit code 0 printed, 1
+missing directory, a draw not complete or an unreadable record, 2 usage error); both are offline.
+None of the repair or repeat runs and neither report changes the gate.
+
+The development set (ADR-0008 D1 and its amendment) is `dev/`: three scenarios in the corpus
+format (`91-swimming-pool`, `92-museum-front-desk`, `93-fuel-station`) that never count for a
+gate. The per-scenario tests of `python/tests/test_validation_corpus.py` check them too; the
+composition tests do not. `potakt eval run --dev` sends only them, checks each request against
+the development pins (ADR-0008 Appendix A) and records under `runs/dev/round-1/`, with its own
+lock and acknowledged batches; the owner runs it in the workspace `potakt-dev`, as
+[`dev-runbook.md`](dev-runbook.md) describes. Without `--dev`, a run refuses a development
+scenario and any runs directory under `runs/dev/`; with `--dev`, it refuses a corpus scenario
+and any runs directory under `runs/test-a/`. Until the commit tagged `phase0-freeze`,
+`potakt eval run --yes` without `--dev` stops before sending anything, so no corpus scenario is
+sent before the freeze; its dry run still prints the plan. `--dev` also sets the defaults of
+`eval summary`, `eval rescore`, `eval repairs` and `eval draws` to the development set.
 
 Each scenario is one directory, `scenarios/<NN>-<slug>/`:
 - `request.md`: the manager's message, the only free text the LLM sees;
@@ -107,6 +122,7 @@ To check a scenario, from `python/`:
 The corpus tests in `python/tests/test_validation_corpus.py` check every ADR-0007 rule for all
 scenarios (`uv run pytest tests/test_validation_corpus.py`).
 
-The corpus is frozen after the first LLM run: any later change needs a new ADR (ADR-0007 §1).
+The corpus is frozen by the commit tagged `phase0-freeze`, before its first LLM run: any later
+change needs a new ADR (ADR-0007 §1, ADR-0008 D1).
 
 All scenarios are fictional: every person, document number and plan is invented; organisations, places and public facts appear only for realism, with sources in each `scenario.json` → `notes`.

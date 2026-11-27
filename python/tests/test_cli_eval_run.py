@@ -2918,12 +2918,11 @@ def test_the_runbook_steps_are_in_order_and_hold_no_personal_path() -> None:
         "## 10. If something goes wrong",
     ]
     assert "potakt-phase0" in text
-    # ADR-0008 D13 (TASK-005e1 follow-up): the spend limit is raised in stages up to the US$70
-    # cap, each stage covering the worst case of every run before it.
+    # ADR-0008 D13 and its amendment (TASK-005e6): potakt-phase0 serves the corpus runs only, $50
+    # before Test A and $55 before Test B; the development runs have a workspace of their own.
     assert (
-        "2. Set its monthly spend limit to $15 for the development runs; raise it to $50 before "
-        "the corpus Test A runs and to $70 before Test B (ADR-0008 D13; a non-default workspace: "
-        '"Spend limits").'
+        "2. Set its monthly spend limit to $50 before the corpus Test A runs and raise it to $55 "
+        'before Test B (ADR-0008 D13 and its amendment; a non-default workspace: "Spend limits");'
     ) in " ".join(text.split())
     assert 'git commit -m "docs(validation): record Test A runs (<model>)"' in text
     assert "C:\\Users" not in text
@@ -3505,3 +3504,187 @@ def test_the_readmes_and_the_help_describe_repairs_repeats_and_unanswered_scenar
         "--repeat for another model than claude-opus-5-5, or --repair with --repeat",
     ):
         assert words in validation, words
+
+
+# --- TASK-005e6 decision 10: ADR-0008 D1 and D13, the runbooks and the READMEs ----------------
+
+AMENDED_E6 = "**Amendment (2026-11-27, TASK-005e6, before any LLM run).** "
+AMENDMENTS_E6 = (
+    (
+        "the results are reported under both the old and the new rule (ADR-0007 §1).",
+        "The development set is `91-swimming-pool`, `92-museum-front-desk` and `93-fuel-station` "
+        "in `docs/validation/dev/`, written by the reviewer; the per-scenario corpus tests check "
+        "them, the composition tests do not. `potakt eval run --dev` sends only them, checks each "
+        "request against `DEV_PAYLOAD_SHA256` (Appendix A) and records under "
+        "`docs/validation/runs/dev/round-1/`; a later round, after a revision, records in a "
+        "directory of its own. A run without `--dev` refuses a development scenario and any runs "
+        "directory under `docs/validation/runs/dev/`; a run with `--dev` refuses a corpus scenario "
+        "and any runs directory under `docs/validation/runs/test-a/`. While `CORPUS_FROZEN` in "
+        "`python/src/potakt/evaluation/runner.py` is `False`, `potakt eval run --yes` without "
+        "`--dev` stops before anything is sent; the commit tagged `phase0-freeze` sets it to "
+        "`True`, and no other commit changes it.",
+    ),
+    (
+        "(≤ €20/month) is unchanged.",
+        "The development runs use a workspace of their own, `potakt-dev`, with a monthly spend "
+        "limit of $15, so that their batches never appear in the batch checks of the corpus runs; "
+        "it is archived when the reviewer closes the development runs (archiving deactivates its "
+        "keys and keeps its history). `potakt-phase0` serves only the corpus runs: its limit is "
+        "$50 before the Test A runs and $55 before Test B, so the two limits together stay within "
+        "the $70 cap. A batch may go slightly over a workspace's limit, and the limits are "
+        "monthly, so before each stage the owner also adds up the cost of every month and "
+        "workspace on the Console's Cost page; the report gives the totals.",
+    ),
+)
+
+
+def test_adr_0008_has_the_two_amendments_of_task_005e6_after_their_paragraphs() -> None:
+    raw = ADR_0008.read_text(encoding="utf-8")
+    text = normalised(raw)
+
+    for end, amendment in AMENDMENTS_E6:
+        assert f"{end} {AMENDED_E6}{normalised(amendment)}" in text, amendment[:60]
+    assert raw.count(f"\n\n{AMENDED_E6.rstrip()}") == 2  # each its own paragraph
+    d1 = text[text.index("### D1.") : text.index("### D2.")]
+    d13 = text[text.index("### D13.") : text.index("### D14.")]
+    assert AMENDED_E6.strip() in d1
+    assert AMENDED_E6.strip() in d13
+    amendments = [line for line in raw.split("\n\n") if line.startswith(AMENDED_E6.strip())]
+    assert [max(map(len, part.splitlines())) <= 100 for part in amendments] == [True, True]
+
+
+DEV_RUNBOOK = REPO / "docs" / "validation" / "dev-runbook.md"
+
+
+def test_the_dev_runbook_quotes_the_code_and_its_numbers(tmp_path: Path) -> None:
+    text = normalised(DEV_RUNBOOK.read_text(encoding="utf-8"))
+    r = runner_module
+    haiku = cost_upper_bound(HAIKU, DEV_CORPUS_PATH, list(DEV_NAMES))
+    opus = cost_upper_bound(OPUS, DEV_CORPUS_PATH, list(DEV_NAMES))
+
+    assert text.startswith("# Development runs runbook (owner only) ")
+    assert f"the cost upper bound is `${haiku:.4f}`" in text
+    assert f"The dry run's cost upper bound is `${opus:.4f}`." in text
+    assert (haiku, opus) == (pytest.approx(0.0569, abs=5e-5), pytest.approx(2.2776, abs=5e-5))
+    complete_dev_run(tmp_path, HAIKU)
+    plan = dev_run(tmp_path, HAIKU, "--repair").stdout.splitlines()[0]
+    for quoted in (
+        "Test A run plan: claude-haiku-5-5 (development set)",
+        plan,
+        r.NOT_FROZEN,
+        r.CORPUS_SCENARIOS_WITH_DEV.format(names="<scenarios>"),
+        r.CORPUS_RUNS_WITH_DEV.format(runs="<runs>", root="<path>"),
+        "skipped (no response.json)",
+        "Complete: yes",
+    ):
+        assert f"`{normalised(quoted)}`" in text, quoted
+    for command in (
+        "uv run potakt eval preflight --model claude-haiku-5-5",
+        "uv run potakt eval run --model claude-haiku-5-5 --dev --yes",
+        "uv run potakt eval rescore --dev ../docs/validation/runs/dev/round-1/claude-haiku-5-5",
+        "uv run potakt eval summary --dev ../docs/validation/runs/dev/round-1/gemini-3.8-flash",
+        "uv run potakt eval run --model claude-opus-5-5 --dev --yes",
+        "uv run potakt eval run --model claude-haiku-5-5 --dev --repair --yes",
+        "uv run potakt eval rescore --dev "
+        "../docs/validation/runs/dev/round-1/repair/claude-haiku-5-5",
+        "uv run potakt eval repairs --model claude-haiku-5-5 --dev",
+        "uv run potakt eval run --model claude-opus-5-5 --dev --repeat 2 --yes",
+        "uv run potakt eval draws --dev",
+        'git commit -m "docs(validation): record development runs (<model>)"',
+    ):
+        assert command in text, command
+    for phrase in (
+        "the Anthropic key belongs to the workspace `potakt-dev`, never to `potakt-phase0`",
+        "set its monthly limit to $15 (ADR-0008 D13 and its amendment)",
+        "more than 48 000 output tokens",
+        'select "Archive workspace"',
+        "the development runs send at most six Gemini requests",
+    ):
+        assert phrase in text, phrase
+
+
+def test_the_dev_runbook_names_only_commands_that_carry_dev() -> None:
+    lines = DEV_RUNBOOK.read_text(encoding="utf-8").splitlines()
+    commands = [line.strip() for line in lines if line.strip().startswith("uv run potakt eval ")]
+
+    assert len(commands) == 23  # the code blocks of §1-§7
+    for command in commands:
+        if " eval preflight " in command:
+            continue
+        assert " --dev" in command, command
+        assert "--corpus" not in command and "--runs" not in command, command
+
+
+def test_the_test_a_runbook_has_the_texts_of_task_005e6() -> None:
+    text = normalised(RUNBOOK.read_text(encoding="utf-8"))
+    r = runner_module
+
+    for new in (
+        "2. Set its monthly spend limit to $50 before the corpus Test A runs and raise it to $55 "
+        'before Test B (ADR-0008 D13 and its amendment; a non-default workspace: "Spend '
+        'limits"); the development runs use a workspace and a key of their own, `potakt-dev` '
+        "([`dev-runbook.md`](dev-runbook.md)), never this one. If",
+        "- `eval rescore` must print only `unchanged` lines, and `skipped (no response.json)` for "
+        "a scenario given up after five batches (ADR-0008 D6; the summary names it).",
+        "`eval rescore` must print only `unchanged` lines, and `skipped (no response.json)` for a "
+        "repair given up after five batches. The report of a repair directory is",
+        "answer in four batches (each errored, expired or canceled) is sent once more, at least 24 "
+        "hours after the `started_at` of its fourth batch in `batches.json` (the time the run "
+        "sent that batch's create request).",
+        f"- **`{r.NOT_FROZEN}`**: the corpus is not frozen yet; until the freeze only the "
+        "development runs are allowed ([`dev-runbook.md`](dev-runbook.md)). The dry run says the "
+        "same in its last line.",
+        f"- **`{r.DEV_SCENARIOS_WITHOUT_DEV.format(names='<scenarios>')}`** or "
+        f"**`{r.DEV_RUNS_WITHOUT_DEV.format(runs='<runs>', root='<path>')}`**: a `--corpus` or "
+        "`--runs` option points at the development set; run the commands of this runbook "
+        "exactly.",
+        "- **`cannot read <path>: <reason>`** (from `eval summary`, `eval repairs` or "
+        "`eval draws`) or **`<scenario>: cannot rescore (<reason>)`** (from `eval rescore`): a "
+        "record could not "
+        "be read or written, for example because another program holds it open; nothing else "
+        "changed. Close that program and run the command again; if it repeats, send the message "
+        "to the reviewer. - **After Phase 0:**",
+    ):
+        assert normalised(new) in text, new[:70]
+    for old in (
+        "Set its monthly spend limit to $15 for the development runs",
+        "at least 24 hours after its fourth batch was created",
+    ):
+        assert old not in text, old
+
+
+def test_the_readmes_describe_the_development_set_and_the_freeze() -> None:
+    validation = normalised((REPO / "docs/validation/README.md").read_text(encoding="utf-8"))
+    readme = normalised((REPO / "README.md").read_text(encoding="utf-8"))
+
+    for words in (
+        "a request that differs from its pin, a corpus `--yes` run before the freeze, a scenario "
+        "or runs directory of the other set (`--dev`, see below), a missing directory,",
+        "The development set (ADR-0008 D1 and its amendment) is `dev/`: three scenarios in the "
+        "corpus format (`91-swimming-pool`, `92-museum-front-desk`, `93-fuel-station`) that never "
+        "count for a gate.",
+        "Until the commit tagged `phase0-freeze`, `potakt eval run --yes` without `--dev` stops "
+        "before sending anything, so no corpus scenario is sent before the freeze; its dry run "
+        "still prints the plan. `--dev` also sets the defaults of `eval summary`, `eval rescore`, "
+        "`eval repairs` and `eval draws` to the development set.",
+        "1 missing directory, a first run not complete or an unreadable record",
+        "1 missing directory, a draw not complete or an unreadable record",
+        "a scenario not in the corpus or a scenario that cannot be rescored; its line says so and "
+        "processing continues.",
+        "The corpus is frozen by the commit tagged `phase0-freeze`, before its first LLM run: any "
+        "later change needs a new ADR (ADR-0007 §1, ADR-0008 D1).",
+    ):
+        assert words in validation, words[:70]
+    assert "The corpus is frozen after the first LLM run" not in validation
+    # TASK-005e6, DoD 7: the README's sentences on the same commands.
+    for words in (
+        "[--repair | --repeat K] [--dev]",
+        "a corpus `--yes` run before the freeze, a scenario or runs directory of the other set",
+        "with `--dev` it runs the development set instead",
+        "(exit code 0 printed, 1 missing directory or an unreadable record)",
+        "a scenario not in the corpus or a scenario that cannot be rescored, whose line is printed "
+        "while processing continues",
+        "1 missing directory, a first run not complete or an unreadable record",
+        "1 missing directory, a draw not complete or an unreadable record",
+    ):
+        assert words in readme, words[:70]

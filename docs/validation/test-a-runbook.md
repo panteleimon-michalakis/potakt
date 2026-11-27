@@ -27,12 +27,13 @@ Rules for the whole runbook:
 
 **Anthropic**
 1. In the Claude Console, create a workspace `potakt-phase0`.
-2. Set its monthly spend limit to $15 for the development runs; raise it to $50 before the corpus
-   Test A runs and to $70 before Test B (ADR-0008 D13; a non-default workspace: "Spend limits"). If
-   the limit is already reached when a batch is created, the API answers with a 400 error and the
-   run stops with no record. If it is reached while a batch runs, the documentation does not say
-   how the remaining requests end: send the run's output to the reviewer. The dry runs' cost upper
-   bounds fit under the limit.
+2. Set its monthly spend limit to $50 before the corpus Test A runs and raise it to $55 before
+   Test B (ADR-0008 D13 and its amendment; a non-default workspace: "Spend limits"); the
+   development runs use a workspace and a key of their own, `potakt-dev`
+   ([`dev-runbook.md`](dev-runbook.md)), never this one. If the limit is already reached when a
+   batch is created, the API answers with a 400 error and the run stops with no record. If it is
+   reached while a batch runs, the documentation does not say how the remaining requests end: send
+   the run's output to the reviewer. The dry runs' cost upper bounds fit under the limit.
 3. Create a **personal** API key (Claude Console, API keys, Create key):
    - Linked account: yourself;
    - **restricted to the workspace `potakt-phase0`**;
@@ -184,7 +185,8 @@ uv run potakt eval rescore ../docs/validation/runs/test-a/claude-haiku-5-5
 uv run potakt eval summary ../docs/validation/runs/test-a/claude-haiku-5-5
 ```
 
-- `eval rescore` must print only `unchanged` lines.
+- `eval rescore` must print only `unchanged` lines, and `skipped (no response.json)` for a scenario
+  given up after five batches (ADR-0008 D6; the summary names it).
 - `eval summary` must show `Complete: yes`.
 - Send the summary to the reviewer. The owner rates each block under `Unsupported requests and
   assumptions:` (does an assumption name the request's people, attribute and time? ADR-0008 D12);
@@ -256,9 +258,9 @@ uv run potakt eval run --model claude-haiku-5-5 --repair --yes
   uv run potakt eval repairs --model claude-haiku-5-5
   ```
 
-  `eval rescore` must print only `unchanged` lines. The report of a repair directory is
-  `eval repairs`, not `eval summary`, which lists every scenario that needed no repair as
-  missing.
+  `eval rescore` must print only `unchanged` lines, and `skipped (no response.json)` for a repair
+  given up after five batches. The report of a repair directory is `eval repairs`, not
+  `eval summary`, which lists every scenario that needed no repair as missing.
 - Then the same for `gemini-3.8-flash` and `claude-opus-5-5`. Before the Gemini run, look up the
   project's limits in Google AI Studio (its daily quota). A 429 that stops the run means: run the
   same command the next day after 10:00 Athens time; only the repairs still pending are sent.
@@ -425,7 +427,8 @@ the reviewer.
   reviewer.
 - **A scenario without an answer (ADR-0008 D6).** Claude models only: a scenario that got no
   answer in four batches (each errored, expired or canceled) is sent once more, at least 24 hours
-  after its fourth batch was created.
+  after the `started_at` of its fourth batch in `batches.json` (the time the run sent that batch's
+  create request).
   - Until then every run stops before it sends anything, also for the other scenarios:
     `<scenario> was sent in 4 batches without an answer; ADR-0008 D6 sends it once more from
     <time>: run the same command again then; nothing was sent` (`were` and `them` for several
@@ -584,4 +587,16 @@ the reviewer.
 - **`interrupted: the preflight sent no prompt and recorded nothing; run it again`** or
   **`eval preflight stopped by an unexpected error (<type>): send this message to the
   reviewer`**: run the preflight again, or send the message to the reviewer.
+- **`no corpus scenario is sent before the commit tagged phase0-freeze (ADR-0008 D1); run the
+  development set with --dev; nothing was sent`**: the corpus is not frozen yet; until the freeze
+  only the development runs are allowed ([`dev-runbook.md`](dev-runbook.md)). The dry run says the
+  same in its last line.
+- **`<scenarios>: development scenarios run only with --dev (ADR-0008 D1); nothing was sent`** or
+  **`<runs> is under <path>, where only --dev runs record (ADR-0008 D1); nothing was sent`**: a
+  `--corpus` or `--runs` option points at the development set; run the commands of this runbook
+  exactly.
+- **`cannot read <path>: <reason>`** (from `eval summary`, `eval repairs` or `eval draws`) or
+  **`<scenario>: cannot rescore (<reason>)`** (from `eval rescore`): a record could not be read or
+  written, for example because another program holds it open; nothing else changed. Close that
+  program and run the command again; if it repeats, send the message to the reviewer.
 - **After Phase 0:** delete both keys (Claude Console and Google AI Studio).

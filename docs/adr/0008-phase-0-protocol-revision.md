@@ -29,6 +29,18 @@ records the revision in one place. Where it changes ADR-0007, it says so, and AD
   runbook fix). Any other later change needs a new ADR, and the results are reported under both the
   old and the new rule (ADR-0007 §1).
 
+**Amendment (2026-11-27, TASK-005e6, before any LLM run).** The development set is
+`91-swimming-pool`, `92-museum-front-desk` and `93-fuel-station` in `docs/validation/dev/`,
+written by the reviewer; the per-scenario corpus tests check them, the composition tests do not.
+`potakt eval run --dev` sends only them, checks each request against `DEV_PAYLOAD_SHA256`
+(Appendix A) and records under `docs/validation/runs/dev/round-1/`; a later round, after a
+revision, records in a directory of its own. A run without `--dev` refuses a development scenario
+and any runs directory under `docs/validation/runs/dev/`; a run with `--dev` refuses a corpus
+scenario and any runs directory under `docs/validation/runs/test-a/`. While `CORPUS_FROZEN` in
+`python/src/potakt/evaluation/runner.py` is `False`, `potakt eval run --yes` without `--dev` stops
+before anything is sent; the commit tagged `phase0-freeze` sets it to `True`, and no other commit
+changes it.
+
 ### D2. The schema section shows every validation rule
 - The schema section (ADR-0007 §3 and §7 «Prompt») states every rule that `potakt validate`
   enforces on a Decision Model and on its bindings to the data: by a JSON Schema draft 2020-12
@@ -195,6 +207,15 @@ about $15 for the development runs, about $31 for Test A (first attempt $7.63, t
 plus repairs and Haiku) and about $13 for Test B with its judge. This replaces DESIGN §16.1's
 "≈ €5", and the actual costs are reported. DESIGN's development budget target for later phases
 (≤ €20/month) is unchanged.
+
+**Amendment (2026-11-27, TASK-005e6, before any LLM run).** The development runs use a workspace
+of their own, `potakt-dev`, with a monthly spend limit of $15, so that their batches never appear
+in the batch checks of the corpus runs; it is archived when the reviewer closes the development
+runs (archiving deactivates its keys and keeps its history). `potakt-phase0` serves only the corpus
+runs: its limit is $50 before the Test A runs and $55 before Test B, so the two limits together
+stay within the $70 cap. A batch may go slightly over a workspace's limit, and the limits are
+monthly, so before each stage the owner also adds up the cost of every month and workspace on the
+Console's Cost page; the report gives the totals.
 
 ### D14. Test B
 ADR-0009 fixes the full protocol before the freeze. This ADR fixes:

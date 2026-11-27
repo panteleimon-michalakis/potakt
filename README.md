@@ -37,8 +37,8 @@ one that calls them (free, read-only); the owner runs both by following
   invalid key, a request that failed after its retries, an unexpected error (its type only) or
   interrupted, 2 usage error, also for an unregistered model id);
 - `potakt eval run --model ID [--runs DIR] [--corpus DIR] [--poll-seconds N] [--yes] [--release
-  BATCH_ID] [--repair | --repeat K]` first checks the prompt file and the schema section against
-  the SHA256 values pinned in
+  BATCH_ID] [--repair | --repeat K] [--dev]` first checks the prompt file and the schema section
+  against the SHA256 values pinned in
   ADR-0008 Appendix A, which revises ADR-0007 §7 (and stops if one differs); without `--yes` it
   prints the plan (pending and recorded scenarios, an open or held batch or an unconfirmed create
   request, a lock, the cost upper bound; for Gemini $0 only if the key's project is on the free
@@ -69,42 +69,50 @@ one that calls them (free, read-only); the owner runs both by following
   `<runs>/repair/<model>/` and prints the `eval repairs` report; with `--repeat K`
   (`claude-opus-5-5` only, K = 2 after its complete first run, then K = 3 after repeat 2) it sends
   the pinned first requests again as draw K under `<runs>/repeat-<K>/claude-opus-5-5/` (ADR-0008
-  D8); none of these changes the gate (exit code 0 all recorded or plan printed, 1 run stopped, a
-  held batch, missing or invalid key, order refused, another run active, a `--release` of a batch
-  that is not held, an unknown batch in the workspace, a request that differs from its pin,
-  missing directory, a corpus without a scenario, an unexpected error (its type only) or
+  D8); none of these changes the gate; with `--dev` it runs the development set instead
+  (`docs/validation/dev/`, recorded under `docs/validation/runs/dev/round-1/`, ADR-0008 D1), and
+  until the commit tagged `phase0-freeze` a `--yes` run without `--dev` sends nothing (exit code
+  0 all recorded or plan printed, 1 run stopped, a held batch, missing or invalid key, order
+  refused, another run active, a `--release` of a batch that is not held, an unknown batch in the
+  workspace, a request that differs from its pin, a corpus `--yes` run before the freeze, a
+  scenario or runs directory of the other set, missing directory, a corpus without a scenario, an
+  unexpected error (its type only) or
   interrupted, 2 usage error, also for an unregistered model id, `--release` without `--yes`,
   `--repeat` for another model than `claude-opus-5-5`, or `--repair` with `--repeat`).
 
-The other commands are offline: none of them calls a model or needs credentials:
+The other commands are offline: none of them calls a model or needs credentials; with `--dev`,
+`eval summary`, `eval rescore`, `eval repairs` and `eval draws` read the development set by default
+(`docs/validation/dev`, `docs/validation/runs/dev/round-1`, ADR-0008 D1):
 - `potakt eval prompt <scenario dir> [--model ID]` prints the exact JSON request payload for one
   scenario; the registered models are `claude-haiku-5-5`, `gemini-3.8-flash` and `claude-opus-5-5`
   (exit code 0 printed, 1 invalid scenario, 2 usage error, also for an unregistered model id);
 - `potakt eval compare <scenario dir> <candidate file>` validates a candidate against the
   scenario's CSV files only and prints its comparison with the truth (exit code 0 for valid and
   invalid candidates alike, 1 invalid scenario or unreadable file);
-- `potakt eval summary <model runs dir> [--corpus DIR] [--json]` summarizes one model's recorded
-  runs at the batch prices, with how the answers stopped and the scenarios still missing; it is
-  complete only when all ten are scored (exit code 0 printed, 1 missing directory). Without
+- `potakt eval summary <model runs dir> [--corpus DIR] [--json] [--dev]` summarizes one model's
+  recorded runs at the batch prices, with how the answers stopped and the scenarios still missing;
+  it is complete only when all ten are scored (exit code 0 printed, 1 missing directory or an
+  unreadable record). Without
   changing the gate it also shows one row per scenario, the recall over valid candidates, a 95 %
   bootstrap interval of the recall, the recall after look-alike ids are replaced in the invalid
   candidates, and each candidate's assumptions next to the scenario's unsupported requests
   (ADR-0008 D3, D9, D12);
-- `potakt eval rescore <model runs dir> [--corpus DIR]` recomputes each run's `candidate.txt` and
-  `comparison.json` from its `response.json` alone, sending no request, and prints one line per
-  scenario: `unchanged`, `updated (<files>)` or `skipped (no response.json)` (exit code 0 all
-  processed, 1 missing directory, a directory not named after a registered model, or a scenario
-  not in the corpus, whose line is printed while processing continues);
-- `potakt eval repairs --model ID [--runs DIR] [--corpus DIR] [--json]` reads the model's first
-  run and its repair run and prints, for each invalid candidate, what its one repair turn gave
-  (valid, invalid, without an answer, not sent, missing) and the recall after one repair
-  (ADR-0008 D7), never the gate (exit code 0 printed, 1 missing directory or a first run not
-  complete, 2 usage error, also for an unregistered model id);
-- `potakt eval draws [--runs DIR] [--corpus DIR] [--json]` reads the three draws of
+- `potakt eval rescore <model runs dir> [--corpus DIR] [--dev]` recomputes each run's
+  `candidate.txt` and `comparison.json` from its `response.json` alone, sending no request, and
+  prints one line per scenario: `unchanged`, `updated (<files>)` or `skipped (no response.json)`
+  (exit code 0 all processed, 1 missing directory, a directory not named after a registered model,
+  a scenario not in the corpus or a scenario that cannot be rescored, whose line is printed while
+  processing continues);
+- `potakt eval repairs --model ID [--runs DIR] [--corpus DIR] [--json] [--dev]` reads the model's
+  first run and its repair run and prints, for each invalid candidate, what its one repair turn
+  gave (valid, invalid, without an answer, not sent, missing) and the recall after one repair
+  (ADR-0008 D7), never the gate (exit code 0 printed, 1 missing directory, a first run not
+  complete or an unreadable record, 2 usage error, also for an unregistered model id);
+- `potakt eval draws [--runs DIR] [--corpus DIR] [--json] [--dev]` reads the three draws of
   `claude-opus-5-5` (`<runs>/claude-opus-5-5`, `<runs>/repeat-2/claude-opus-5-5`,
   `<runs>/repeat-3/claude-opus-5-5`) and prints each draw's micro recall and each scenario's recall
   in the three draws with their mean, minimum and maximum (ADR-0008 D8), never the gate (exit code
-  0 printed, 1 missing directory or a draw not complete, 2 usage error).
+  0 printed, 1 missing directory, a draw not complete or an unreadable record, 2 usage error).
 
 There is no agent, solver or server yet; the capabilities below are planned.
 
