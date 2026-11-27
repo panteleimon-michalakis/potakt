@@ -21,9 +21,10 @@ from runner_helpers import (
 from typer.testing import CliRunner, Result
 
 import potakt.cli as cli
+import potakt.evaluation.summary as summary_module
 import potakt.evaluation.test_a as test_a_module
 from potakt.cli import app, eval_app
-from potakt.evaluation import CORPUS_PATH, load_scenario, write_answer
+from potakt.evaluation import CORPUS_PATH, LoadedScenario, load_scenario, write_answer
 from potakt.evaluation.draws import draws_report, scenario_draws
 from potakt.evaluation.repairs_report import repairs_report
 
@@ -233,7 +234,9 @@ def test_summary_reports_a_missing_directory_and_exits_1(tmp_path: Path, which: 
 def test_summary_help_states_the_exit_codes() -> None:
     text = help_text("eval", "summary")
 
-    assert "Exit code 0: summary printed; 1: missing directory; 2: usage error" in text
+    assert (
+        "Exit code 0: summary printed; 1: missing directory or an unreadable record; 2: usage error"
+    ) in text
 
 
 def test_summary_help_names_the_default_corpus_without_a_machine_path() -> None:
@@ -378,7 +381,9 @@ def test_rescore_help_states_the_lines_and_exit_codes() -> None:
     assert "Exit code 0: all directories processed" in text
     assert (
         "1: missing runs or corpus directory, a runs directory not named after a registered "
-        "model, or a scenario not in the corpus (its line is printed and processing continues)"
+        "model, a scenario not in the corpus (its line is printed and processing continues), or a "
+        "scenario that cannot be rescored (its line says so and processing continues); 2: usage "
+        "error"
     ) in text
     assert "RUNS_DIR" in text
 
@@ -642,8 +647,8 @@ def test_draws_help_states_the_exit_codes() -> None:
 
     assert "never the gate" in text
     assert (
-        "Exit code 0: report printed; 1: missing runs or corpus directory, or a draw not "
-        "complete; 2: usage error"
+        "Exit code 0: report printed; 1: missing runs or corpus directory, a draw not complete, or "
+        "an unreadable record; 2: usage error"
     ) in text
 
 
@@ -652,8 +657,8 @@ def test_repairs_help_states_the_exit_codes() -> None:
 
     assert "never the gate" in text
     assert (
-        "Exit code 0: report printed; 1: missing runs or corpus directory, or the model's first "
-        "run not complete; 2: usage error (also an unregistered model id)"
+        "Exit code 0: report printed; 1: missing runs or corpus directory, the model's first run "
+        "not complete, or an unreadable record; 2: usage error (also an unregistered model id)"
     ) in text
 
 
@@ -772,3 +777,96 @@ def test_the_offline_commands_describe_dev(command: str) -> None:
     assert option_help(command, "--corpus") == CORPUS_HELP
     if command in ("repairs", "draws"):
         assert option_help(command, "--runs") == RUNS_HELP
+
+
+# --- TASK-005e6 decision 8: an unreadable record never gives a traceback -----------------------
+
+
+def refuse_response(monkeypatch: pytest.MonkeyPatch, run: Path, error: OSError) -> None:
+    """The summary's reader of ``response.json`` raises ``error`` for the run ``run`` only (our
+    code decides, not the file system: the same on every OS)."""
+    real = summary_module._read_response  # pyright: ignore[reportPrivateUsage]
+
+    def read(directory: Path) -> tuple[object, str]:
+        if directory == run:
+            raise error
+        return real(directory)
+
+    monkeypatch.setattr(summary_module, "_read_response", read)
+
+
+def denied(path: Path) -> PermissionError:
+    return PermissionError(13, "Permission denied", str(path))
+
+
+def assert_stopped(result: Result, stderr: str) -> None:
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert result.stderr == stderr
+    assert result.exception is None or isinstance(result.exception, SystemExit)  # no traceback
+
+
+def test_summary_reports_an_unreadable_record(monkeypatch: pytest.MonkeyPatch) -> None:
+    run = OPUS_RUNS / "03-call-centre"
+    refuse_response(monkeypatch, run, denied(run / "response.json"))
+
+    result = eval_command("summary", str(OPUS_RUNS), "--corpus", str(CORPUS))
+
+    assert_stopped(result, f"cannot read {run / 'response.json'}: Permission denied\n")
+
+
+def test_without_a_file_name_or_a_reason_the_runs_directory_and_the_type_are_named(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refuse_response(monkeypatch, OPUS_RUNS / "01-pharmacy", PermissionError())
+
+    result = eval_command("summary", str(OPUS_RUNS), "--corpus", str(CORPUS))
+
+    assert_stopped(result, f"cannot read {OPUS_RUNS}: PermissionError\n")
+
+
+def test_repairs_report_an_unreadable_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_repairs_fixture(tmp_path)
+    run = tmp_path / HAIKU / "02-hotel-reception"
+    refuse_response(monkeypatch, run, denied(run / "response.json"))
+
+    result = repairs(tmp_path)
+
+    assert_stopped(result, f"cannot read {run / 'response.json'}: Permission denied\n")
+
+
+def test_draws_report_an_unreadable_record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_draws_fixture(tmp_path)
+    run = tmp_path / "repeat-2" / OPUS / "05-supermarket-checkouts"
+    refuse_response(monkeypatch, run, denied(run / "response.json"))
+
+    result = draws(tmp_path)
+
+    assert_stopped(result, f"cannot read {run / 'response.json'}: Permission denied\n")
+
+
+def test_rescore_reports_a_scenario_it_cannot_rescore_and_goes_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs = runs_copy(tmp_path)
+    real = cli.rescore_run
+
+    def rescore_run(run_dir: Path, scenario: LoadedScenario, model: str) -> tuple[str, ...]:
+        if run_dir.name == "03-call-centre":
+            raise denied(run_dir / "response.json")
+        return real(run_dir, scenario, model)
+
+    monkeypatch.setattr(cli, "rescore_run", rescore_run)
+
+    result = rescore(runs)
+
+    assert result.exit_code == 1
+    assert result.stdout == (
+        "01-pharmacy: unchanged\n"
+        "03-call-centre: cannot rescore (Permission denied)\n"
+        "04-restaurant: unchanged\n"
+    )
+    assert result.stderr == ""
+    assert result.exception is None or isinstance(result.exception, SystemExit)

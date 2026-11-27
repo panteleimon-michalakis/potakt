@@ -264,6 +264,17 @@ def _runs(runs: Path | None, dev: bool) -> Path:
     return DEV_RUNS_PATH if dev else RUNS_PATH
 
 
+# TASK-005e6 decision 8: a record that cannot be read stops a report without a traceback.
+UNREADABLE = "cannot read {path}: {reason}"
+
+
+def _unreadable(error: OSError, runs: Path) -> str:
+    """``UNREADABLE`` for an ``OSError`` raised while a report is built: the file it names, else
+    the runs directory as given; its ``strerror``, else its type name (never its text)."""
+    path = runs if error.filename is None else error.filename
+    return UNREADABLE.format(path=path, reason=error.strerror or type(error).__name__)
+
+
 def _scenario(directory: Path) -> LoadedScenario:
     try:
         return load_scenario(directory)
@@ -355,7 +366,7 @@ def eval_summary(
     interval of the recall, the recall after look-alike ids are replaced and the assumptions next
     to unsupported requests (ADR-0008 D3, D9, D12).
 
-    Exit code 0: summary printed; 1: missing directory; 2: usage error.
+    Exit code 0: summary printed; 1: missing directory or an unreadable record; 2: usage error.
     """
     corpus = _corpus(corpus, dev)
     if not corpus.is_dir():
@@ -364,6 +375,8 @@ def eval_summary(
         summary = summarize(runs, corpus)
     except ValueError as error:
         _stop(1, str(error))
+    except OSError as error:  # TASK-005e6 decision 8
+        _stop(1, _unreadable(error, runs))
     typer.echo(summary.to_json() if as_json else summary.to_text(), nl=False)
 
 
@@ -390,8 +403,9 @@ def eval_rescore(
     One line per scenario directory, in byte order of its name: unchanged, updated (<files>) or
     skipped (no response.json). Only missing or different files are written; response.json and
     request.json are never touched. Exit code 0: all directories processed; 1: missing runs or
-    corpus directory, a runs directory not named after a registered model, or a scenario not in
-    the corpus (its line is printed and processing continues); 2: usage error.
+    corpus directory, a runs directory not named after a registered model, a scenario not in the
+    corpus (its line is printed and processing continues), or a scenario that cannot be rescored
+    (its line says so and processing continues); 2: usage error.
     """
     corpus = _corpus(corpus, dev)
     for directory in (runs, corpus):
@@ -402,15 +416,20 @@ def eval_rescore(
         check_registered(model)
     except UnknownModelError as error:
         _stop(1, str(error))
-    in_corpus = True
+    processed = True
     for run in sorted(
         (path for path in runs.iterdir() if path.is_dir()),
         key=lambda path: path.name.encode("utf-8"),
     ):
-        outcome = _rescored(run, corpus, model)
-        in_corpus = in_corpus and outcome is not None
+        try:
+            outcome = _rescored(run, corpus, model)
+        except OSError as error:  # TASK-005e6 decision 8: this line says so; the others go on
+            processed = False
+            typer.echo(f"{run.name}: cannot rescore ({error.strerror or type(error).__name__})")
+            continue
+        processed = processed and outcome is not None
         typer.echo(f"{run.name}: {outcome or 'not a scenario of the corpus'}")
-    raise typer.Exit(code=0 if in_corpus else 1)
+    raise typer.Exit(code=0 if processed else 1)
 
 
 @eval_app.command("repairs")
@@ -439,8 +458,8 @@ def eval_repairs(
     replaces the 0 of its first candidate. It is never the gate. Offline: no model call, no
     credentials.
 
-    Exit code 0: report printed; 1: missing runs or corpus directory, or the model's first run
-    not complete; 2: usage error (also an unregistered model id).
+    Exit code 0: report printed; 1: missing runs or corpus directory, the model's first run not
+    complete, or an unreadable record; 2: usage error (also an unregistered model id).
     """
     try:
         check_registered(model)
@@ -451,6 +470,8 @@ def eval_repairs(
         report = repairs_report(model, runs, corpus)
     except (ValueError, RunStopped) as error:
         _stop(1, str(error))
+    except OSError as error:  # TASK-005e6 decision 8
+        _stop(1, _unreadable(error, runs))
     typer.echo(report.to_json() if as_json else report.to_text(), nl=False)
 
 
@@ -471,14 +492,16 @@ def eval_draws(
     in each draw with their arithmetic mean, minimum and maximum (ADR-0008 D8). It is never the
     gate. Offline: no model call, no credentials.
 
-    Exit code 0: report printed; 1: missing runs or corpus directory, or a draw not complete;
-    2: usage error.
+    Exit code 0: report printed; 1: missing runs or corpus directory, a draw not complete, or an
+    unreadable record; 2: usage error.
     """
     runs, corpus = _runs(runs, dev), _corpus(corpus, dev)
     try:
         report = draws_report(runs, corpus)
     except ValueError as error:
         _stop(1, str(error))
+    except OSError as error:  # TASK-005e6 decision 8
+        _stop(1, _unreadable(error, runs))
     typer.echo(report.to_json() if as_json else report.to_text(), nl=False)
 
 
