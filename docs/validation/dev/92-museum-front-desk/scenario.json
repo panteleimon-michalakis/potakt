@@ -1,0 +1,33 @@
+{
+  "id": "92-museum-front-desk",
+  "title": "Museum front of house with a late opening",
+  "language": "en",
+  "domain": "museum",
+  "difficulty": "medium",
+  "style": "chat",
+  "csv_files": [
+    "rota.csv",
+    "staff.csv"
+  ],
+  "reference_score": {
+    "hard": 0,
+    "soft": 0
+  },
+  "disruption": {
+    "resource_id": "S6",
+    "start": "2026-12-12T00:00",
+    "end": "2026-12-13T00:00"
+  },
+  "unsupported": [
+    {
+      "quote": "Lucy is still in her first month, so she can only work on days when Ben is in as well.",
+      "reason": "The catalog's together rule pairs two people on the same shift; no rule ties the days one person works to the days another person works."
+    }
+  ],
+  "tags": [
+    "numbers-in-words",
+    "irrelevant-information",
+    "per-resource-limit"
+  ],
+  "notes": "Development scenario (ADR-0008 D1), never part of a gate. Written by the reviewer for TASK-005e6. The weekday desk, gallery and evening shifts overlap, so the no-overlap rule binds; the evening shifts end at 21:30, less than twelve hours before the next morning. The reference plan has hard 0 and soft 0 (no plan can beat it) and also honours the mandatory request about Lucy: every day she works, Ben works too. Disruption: Ben is ill on Saturday 12 December; a feasible re-plan exists (hard 0) that still honours the request about Lucy."
+}

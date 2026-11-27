@@ -1,11 +1,13 @@
 """Integrity of the Phase 0 validation corpus (ADR-0007 §2-§4, TASK-005a D4, TASK-005b D1/D3).
 
-Parametrized over every directory in ``docs/validation/scenarios/``: each scenario loads, its
-truth and reference solution agree with its metadata, its request follows the writing rules, its
-disruption really disrupts the reference solution, no truth rule is vacuous and its verifiable tags
-agree with the truth. The composition tests check the corpus as a whole.
+Parametrized over every directory in ``docs/validation/scenarios/`` and in ``docs/validation/dev/``
+(the development set, ADR-0008 D1): each scenario loads, its truth and reference solution agree
+with its metadata, its request follows the writing rules, its disruption really disrupts the
+reference solution, no truth rule is vacuous and its verifiable tags agree with the truth. The
+composition tests check the corpus as a whole and never count the development set.
 """
 
+import dataclasses
 import json
 import re
 from collections import Counter, defaultdict
@@ -13,10 +15,11 @@ from datetime import date, datetime, time, timedelta
 from functools import cache
 from itertools import combinations
 from pathlib import Path
+from typing import cast
 
 import pytest
 from typer.testing import CliRunner
-from unsupported_checks import CHECKS
+from unsupported_checks import CHECKS, lucy_works_only_on_days_ben_works
 
 from potakt.checker import EVALUATORS, check
 from potakt.cli import app
@@ -41,6 +44,16 @@ from potakt.model.data import CsvDialect, to_utc
 
 CORPUS = Path(__file__).resolve().parents[2] / "docs" / "validation" / "scenarios"
 SCENARIOS = sorted(path.name for path in CORPUS.iterdir() if path.is_dir())
+# ADR-0008 D1 (TASK-005e6): the development set, checked by every per-scenario test and by no
+# composition test.
+DEV = Path(__file__).resolve().parents[2] / "docs" / "validation" / "dev"
+DEV_SCENARIOS = sorted(path.name for path in DEV.iterdir() if path.is_dir())
+DIRECTORIES: dict[str, Path] = {
+    **{name: CORPUS / name for name in SCENARIOS},
+    **{name: DEV / name for name in DEV_SCENARIOS},
+}
+PER_SCENARIO = SCENARIOS + DEV_SCENARIOS
+DEV_NOTE = "Development scenario (ADR-0008 D1), never part of a gate."
 
 TEMPLATES = sorted(EVALUATORS)
 SCORED = [template for template in TEMPLATES if template != "coverage"]
@@ -57,7 +70,7 @@ TIMEZONES = {"el": {"Europe/Athens"}, "en": {"Europe/London", "America/New_York"
 
 @cache
 def loaded(name: str) -> LoadedScenario:
-    return load_scenario(CORPUS / name)
+    return load_scenario(DIRECTORIES[name])
 
 
 def normalized(text: str) -> str:
@@ -182,7 +195,7 @@ def test_greek_letters_are_counted_among_all_letters() -> None:
     assert greek_letters("Καλημέρα, Anna! ἀρχή 42") == (12, 16)
 
 
-@pytest.mark.parametrize("name", SCENARIOS)
+@pytest.mark.parametrize("name", PER_SCENARIO)
 def test_scenario_loads_and_its_id_is_the_directory_name(name: str) -> None:
     scenario = loaded(name)
 
@@ -190,19 +203,19 @@ def test_scenario_loads_and_its_id_is_the_directory_name(name: str) -> None:
     assert re.fullmatch(r"\d{2}-[a-z0-9]+(-[a-z0-9]+)*", name)
 
 
-@pytest.mark.parametrize("name", SCENARIOS)
+@pytest.mark.parametrize("name", PER_SCENARIO)
 def test_csv_files_are_exactly_the_csv_files_present_and_the_request_names_them(
     name: str,
 ) -> None:
     scenario = loaded(name)
-    present = sorted(p.name for p in (CORPUS / name).iterdir() if p.name.endswith(".csv"))
+    present = sorted(p.name for p in DIRECTORIES[name].iterdir() if p.name.endswith(".csv"))
 
     assert sorted(scenario.scenario.csv_files) == present
     for file_name in present:
         assert file_name in scenario.request, file_name
 
 
-@pytest.mark.parametrize("name", SCENARIOS)
+@pytest.mark.parametrize("name", PER_SCENARIO)
 def test_truth_is_a_valid_decision_model_0_2(name: str) -> None:
     scenario = loaded(name)
 
@@ -211,15 +224,15 @@ def test_truth_is_a_valid_decision_model_0_2(name: str) -> None:
     assert validate_data(scenario.truth, scenario.instance) == []
 
 
-@pytest.mark.parametrize("name", SCENARIOS)
+@pytest.mark.parametrize("name", PER_SCENARIO)
 def test_potakt_validate_accepts_the_truth(name: str) -> None:
-    result = CliRunner().invoke(app, ["validate", str(CORPUS / name / "truth.json")])
+    result = CliRunner().invoke(app, ["validate", str(DIRECTORIES[name] / "truth.json")])
 
     assert result.exit_code == 0, result.output
     assert result.stdout.startswith("OK: ")
 
 
-@pytest.mark.parametrize("name", SCENARIOS)
+@pytest.mark.parametrize("name", PER_SCENARIO)
 def test_reference_solution_is_feasible_and_scores_the_reference_score(name: str) -> None:
     scenario = loaded(name)
 
@@ -230,7 +243,7 @@ def test_reference_solution_is_feasible_and_scores_the_reference_score(name: str
     assert (score.hard, score.soft) == (reference.hard, reference.soft)
 
 
-@pytest.mark.parametrize("name", SCENARIOS)
+@pytest.mark.parametrize("name", PER_SCENARIO)
 def test_the_reference_solution_never_puts_anyone_on_two_overlapping_tasks(name: str) -> None:
     # Physically possible whatever the truth says (TASK-005a review: min_rest ignores overlaps).
     scenario = loaded(name)
@@ -253,7 +266,7 @@ def test_the_reference_solution_never_puts_anyone_on_two_overlapping_tasks(name:
     assert double_booked == []
 
 
-@pytest.mark.parametrize("name", SCENARIOS)
+@pytest.mark.parametrize("name", PER_SCENARIO)
 def test_every_scored_rule_quotes_the_request_verbatim(name: str) -> None:
     scenario = loaded(name)
     request = normalized(scenario.request)
@@ -268,14 +281,14 @@ def test_every_scored_rule_quotes_the_request_verbatim(name: str) -> None:
         assert normalized(unsupported.quote) in request, unsupported.quote
 
 
-@pytest.mark.parametrize("name", SCENARIOS)
+@pytest.mark.parametrize("name", PER_SCENARIO)
 def test_request_uses_no_catalog_vocabulary(name: str) -> None:
     found = LEAK.findall(loaded(name).request)
 
     assert found == []
 
 
-@pytest.mark.parametrize("name", SCENARIOS)
+@pytest.mark.parametrize("name", PER_SCENARIO)
 def test_request_and_user_facing_truth_strings_are_in_the_scenario_language(name: str) -> None:
     scenario = loaded(name)
     language = scenario.scenario.language
@@ -290,7 +303,7 @@ def test_request_and_user_facing_truth_strings_are_in_the_scenario_language(name
         assert all(greek_letters(text)[0] == 0 for text in texts)
 
 
-@pytest.mark.parametrize("name", SCENARIOS)
+@pytest.mark.parametrize("name", PER_SCENARIO)
 def test_ids_are_ascii_kebab_case(name: str) -> None:
     truth = loaded(name).truth
     ids = [truth.id, *(r.id for r in truth.constraints), *(a.id for a in truth.assumptions)]
@@ -298,7 +311,7 @@ def test_ids_are_ascii_kebab_case(name: str) -> None:
     assert [item for item in ids if not KEBAB.fullmatch(item)] == []
 
 
-@pytest.mark.parametrize("name", SCENARIOS)
+@pytest.mark.parametrize("name", PER_SCENARIO)
 def test_size_horizon_and_timezone_follow_the_corpus_rules(name: str) -> None:
     scenario = loaded(name)
     truth, instance = scenario.truth, scenario.instance
@@ -312,7 +325,7 @@ def test_size_horizon_and_timezone_follow_the_corpus_rules(name: str) -> None:
     assert truth.timezone in TIMEZONES[scenario.scenario.language]
 
 
-@pytest.mark.parametrize("name", SCENARIOS)
+@pytest.mark.parametrize("name", PER_SCENARIO)
 def test_scored_constraints_fit_the_difficulty(name: str) -> None:
     scenario = loaded(name)
     low, high = BANDS[scenario.scenario.difficulty]
@@ -323,7 +336,7 @@ def test_scored_constraints_fit_the_difficulty(name: str) -> None:
     assert low <= count <= high, count
 
 
-@pytest.mark.parametrize("name", SCENARIOS)
+@pytest.mark.parametrize("name", PER_SCENARIO)
 def test_the_disruption_makes_the_reference_solution_infeasible(name: str) -> None:
     scenario = loaded(name)
     disruption = scenario.scenario.disruption
@@ -348,7 +361,7 @@ def test_the_disruption_makes_the_reference_solution_infeasible(name: str) -> No
         }
     )
     disrupted = parse_decision_model(json.dumps(document, ensure_ascii=False))
-    instance = load_instance(disrupted, CORPUS / name)
+    instance = load_instance(disrupted, DIRECTORIES[name])
     assert validate_data(disrupted, instance) == []
 
     result = check(disrupted, instance, scenario.solution)
@@ -378,7 +391,7 @@ def has_per_resource_limit(truth: DecisionModel) -> bool:
     )
 
 
-@pytest.mark.parametrize("name", SCENARIOS)
+@pytest.mark.parametrize("name", PER_SCENARIO)
 def test_the_tags_that_the_data_can_show_agree_with_the_truth(name: str) -> None:
     scenario = loaded(name)
     truth, tags = scenario.truth, set(scenario.scenario.tags)
@@ -394,7 +407,7 @@ def test_the_tags_that_the_data_can_show_agree_with_the_truth(name: str) -> None
         assert "https://" in (scenario.scenario.notes or "")
 
 
-@pytest.mark.parametrize("name", SCENARIOS)
+@pytest.mark.parametrize("name", PER_SCENARIO)
 def test_no_truth_constraint_is_vacuous(name: str) -> None:
     # A rule no plan could violate would match any other rule without effect (TASK-005b D1).
     scenario = loaded(name)
@@ -412,7 +425,8 @@ MANDATORY_UNSUPPORTED = sorted(name for name, check in CHECKS.items() if check i
 
 
 def test_every_scenario_with_unsupported_requests_has_an_entry() -> None:
-    with_unsupported = {s.scenario.id for s in corpus() if s.scenario.unsupported}
+    # TASK-005e6: the corpus and the development set (PER_SCENARIO).
+    with_unsupported = {name for name in PER_SCENARIO if loaded(name).scenario.unsupported}
 
     assert set(CHECKS) == with_unsupported
 
@@ -426,7 +440,7 @@ def test_the_reference_honours_every_mandatory_unsupported_request(name: str) ->
     assert check_request(loaded(name)) == []
 
 
-@pytest.mark.parametrize("name", SCENARIOS)
+@pytest.mark.parametrize("name", PER_SCENARIO)
 def test_the_truth_matches_itself(name: str) -> None:
     scenario = loaded(name)
     truth = LoadedModel(scenario.truth, scenario.instance)
@@ -435,3 +449,62 @@ def test_the_truth_matches_itself(name: str) -> None:
 
     assert result.truth_count == len(scored_rules(scenario))
     assert (result.recall, result.precision, result.merged_recall) == (1.0, 1.0, 1.0)
+
+
+# --- the development set (ADR-0008 D1, TASK-005e6 decision 2) -----------------------------------
+
+
+def test_the_development_set_is_three_scenarios_apart_from_the_corpus() -> None:
+    assert DEV_SCENARIOS == ["91-swimming-pool", "92-museum-front-desk", "93-fuel-station"]
+    assert [name for name in DEV_SCENARIOS if name in SCENARIOS] == []
+
+
+def test_development_scenarios_never_count_for_a_gate() -> None:
+    notes = {name: loaded(name).scenario.notes or "" for name in DEV_SCENARIOS}
+
+    assert {name: text.startswith(DEV_NOTE) for name, text in notes.items()} == dict.fromkeys(
+        DEV_SCENARIOS, True
+    )
+
+
+EXEMPT = "test_the_reference_honours_every_mandatory_unsupported_request"  # MANDATORY_UNSUPPORTED
+
+
+def name_parametrizations() -> dict[str, list[object]]:
+    """Every test function of this module that is parametrized over the argument ``name``, with
+    the values of that parametrization (its ``parametrize`` marks)."""
+    found: dict[str, list[object]] = {}
+    for test_name, function in globals().items():
+        if not test_name.startswith("test_") or not callable(function):
+            continue
+        for mark in cast(list[pytest.Mark], getattr(function, "pytestmark", [])):
+            if mark.name == "parametrize" and mark.args[0] == "name":
+                found[test_name] = list(mark.args[1])
+    return found
+
+
+def test_every_per_scenario_test_also_runs_on_the_development_set() -> None:
+    found = name_parametrizations()
+
+    assert EXEMPT in found
+    assert len(found) >= 17  # the 16 per-scenario tests of TASK-005e6 decision 2 and EXEMPT
+    left = sorted(
+        name for name, values in found.items() if name != EXEMPT and values != PER_SCENARIO
+    )
+    assert left == []
+
+
+def test_the_lucy_predicate_finds_a_day_without_ben() -> None:
+    reference = loaded("92-museum-front-desk")
+    assignments = tuple(
+        assignment.model_copy(update={"resource_id": "S7"})
+        if (assignment.task_id, assignment.resource_id) == ("tue-desk-early", "S2")
+        else assignment
+        for assignment in reference.solution.assignments
+    )
+    assert assignments != reference.solution.assignments  # S2 works tue-desk-early
+    solution = reference.solution.model_copy(update={"assignments": assignments})
+    moved = dataclasses.replace(reference, solution=solution)
+
+    assert lucy_works_only_on_days_ben_works(moved) == ["S7 works on 2026-12-08 without S6"]
+    assert lucy_works_only_on_days_ben_works(reference) == []

@@ -1,0 +1,31 @@
+{
+  "id": "93-fuel-station",
+  "title": "Πρατήριο καυσίμων με ταμείο, αντλίες και αρχείο αδειών",
+  "language": "el",
+  "domain": "fuel station",
+  "difficulty": "medium",
+  "style": "notes",
+  "csv_files": [
+    "adeies.csv",
+    "vardies_pratiriou.csv",
+    "ypalliloi.csv"
+  ],
+  "reference_score": {
+    "hard": 0,
+    "soft": 0
+  },
+  "disruption": {
+    "resource_id": "Κ3",
+    "start": "2026-12-14T00:00",
+    "end": "2026-12-15T00:00"
+  },
+  "unsupported": [],
+  "tags": [
+    "numbers-in-words",
+    "irrelevant-information",
+    "per-resource-limit",
+    "non-default-csv",
+    "windows-1253"
+  ],
+  "notes": "Development scenario (ADR-0008 D1), never part of a gate. Written by the reviewer for TASK-005e6. The three CSV files are windows-1253 with ';' and a decimal comma (Katerina's 37,5 hours); the staff ids start with the Greek capital Kappa, a look-alike of the Latin K (ADR-0008 D9). The reference plan has hard 0 and soft 0 (no plan can beat it). Disruption: Nikos is ill on Monday 14 December; a feasible re-plan exists (hard 0)."
+}

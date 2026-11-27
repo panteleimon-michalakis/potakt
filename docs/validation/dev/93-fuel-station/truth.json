@@ -1,0 +1,286 @@
+{
+  "schema_version": "0.2",
+  "id": "fuel-station-2026-w51",
+  "version": 1,
+  "status": "confirmed",
+  "title": "Πρόγραμμα πρατηρίου καυσίμων, 14–20/12/2026",
+  "language": "el",
+  "archetype": "assignment",
+  "vocabulary": {
+    "resource": "υπάλληλος",
+    "task": "θέση βάρδιας"
+  },
+  "timezone": "Europe/Athens",
+  "horizon": {
+    "start": "2026-12-14",
+    "end": "2026-12-20"
+  },
+  "data": {
+    "resources": {
+      "source": "ypalliloi.csv",
+      "id": "Κωδικός",
+      "attributes": {
+        "name": {
+          "column": "Ονοματεπώνυμο",
+          "type": "str"
+        },
+        "skills": {
+          "column": "Δεξιότητες",
+          "type": "list",
+          "separator": ","
+        },
+        "max_hours": {
+          "column": "Μέγ. ώρες",
+          "type": "float"
+        }
+      },
+      "csv": {
+        "delimiter": ";",
+        "decimal": ",",
+        "encoding": "windows-1253"
+      }
+    },
+    "tasks": {
+      "source": "vardies_pratiriou.csv",
+      "id": "Κωδικός",
+      "start": "Έναρξη",
+      "end": "Λήξη",
+      "demand": "Άτομα",
+      "attributes": {
+        "position": {
+          "column": "Θέση",
+          "type": "str"
+        },
+        "shift": {
+          "column": "Βάρδια",
+          "type": "str"
+        }
+      },
+      "csv": {
+        "delimiter": ";",
+        "decimal": ",",
+        "encoding": "windows-1253"
+      }
+    }
+  },
+  "constraints": [
+    {
+      "id": "coverage",
+      "template": "coverage",
+      "hardness": "hard",
+      "rationale": "Κάθε θέση βάρδιας (ταμείο ή αντλίες) καλύπτεται από ακριβώς ένα άτομο, όπως γράφει η στήλη «Άτομα».",
+      "provenance": {
+        "kind": "data",
+        "source": "vardies_pratiriou.csv, στήλη «Άτομα»"
+      },
+      "status": "confirmed"
+    },
+    {
+      "id": "position-skill",
+      "template": "requires_attribute",
+      "hardness": "hard",
+      "params": {
+        "task_attribute": "position",
+        "resource_attribute": "skills",
+        "match": "contains"
+      },
+      "rationale": "Στο ταμείο μόνο όσοι έχουν τη δεξιότητα «ταμείο» και στις αντλίες μόνο όσοι έχουν τη δεξιότητα «αντλίες».",
+      "provenance": {
+        "kind": "utterance",
+        "quote": "Στο ταμείο μπαίνει μόνο όποιος έχει μάθει το ταμείο, και στις αντλίες μόνο όποιος ξέρει τις αντλίες"
+      },
+      "status": "confirmed"
+    },
+    {
+      "id": "leave-file",
+      "template": "unavailable",
+      "hardness": "hard",
+      "params": {
+        "source": {
+          "source": "adeies.csv",
+          "resource_id": "Κωδικός",
+          "start": "Από",
+          "end": "Έως",
+          "csv": {
+            "delimiter": ";",
+            "decimal": ",",
+            "encoding": "windows-1253"
+          }
+        }
+      },
+      "rationale": "Όποιος έχει άδεια στο adeies.csv δεν δουλεύει όσο διαρκεί η άδεια.",
+      "provenance": {
+        "kind": "utterance",
+        "quote": "Όποιος έχει άδεια στο adeies.csv δεν μπαίνει στο πρόγραμμα όσο διαρκεί η άδειά του."
+      },
+      "status": "confirmed"
+    },
+    {
+      "id": "weekly-max-hours",
+      "template": "max_per_period",
+      "hardness": "hard",
+      "params": {
+        "measure": "hours",
+        "period": "week",
+        "limit": {
+          "attribute": "max_hours"
+        }
+      },
+      "rationale": "Ο καθένας δουλεύει το πολύ τις ώρες της στήλης «Μέγ. ώρες» την εβδομάδα.",
+      "provenance": {
+        "kind": "utterance",
+        "quote": "Τις ώρες του καθενός τις βλέπετε στη στήλη «Μέγ. ώρες» και δεν τις ξεπερνάμε σε καμία περίπτωση."
+      },
+      "status": "confirmed"
+    },
+    {
+      "id": "one-shift-a-day",
+      "template": "max_per_period",
+      "hardness": "hard",
+      "params": {
+        "measure": "count",
+        "period": "day",
+        "limit": 1
+      },
+      "rationale": "Το πολύ μία θέση βάρδιας την ημέρα για τον καθένα.",
+      "provenance": {
+        "kind": "utterance",
+        "quote": "Μία βάρδια την ημέρα για τον καθένα, όχι παραπάνω."
+      },
+      "status": "confirmed"
+    },
+    {
+      "id": "rest-11h",
+      "template": "min_rest",
+      "hardness": "hard",
+      "params": {
+        "hours": 11
+      },
+      "rationale": "Τουλάχιστον 11 ώρες ανάμεσα σε δύο βάρδιες του ίδιου ατόμου, άρα όχι πρωί μετά από απόγευμα.",
+      "provenance": {
+        "kind": "utterance",
+        "quote": "Ανάμεσα σε δύο βάρδιες του ίδιου ατόμου πρέπει να μεσολαβούν τουλάχιστον έντεκα ώρες."
+      },
+      "status": "confirmed"
+    },
+    {
+      "id": "five-days-in-a-row",
+      "template": "max_consecutive_days",
+      "hardness": "soft",
+      "weight": 3,
+      "params": {
+        "days": 5
+      },
+      "rationale": "Αν γίνεται, κανείς δεν δουλεύει πάνω από πέντε συνεχόμενες ημέρες.",
+      "provenance": {
+        "kind": "utterance",
+        "quote": "Καλό θα ήταν να μη δουλεύει κανείς πάνω από πέντε μέρες στη σειρά."
+      },
+      "status": "confirmed"
+    },
+    {
+      "id": "rena-no-mornings",
+      "template": "preference",
+      "hardness": "soft",
+      "weight": 3,
+      "scope": {
+        "resources": [
+          {
+            "attribute": "id",
+            "op": "eq",
+            "value": "Κ2"
+          }
+        ],
+        "tasks": [
+          {
+            "attribute": "shift",
+            "op": "eq",
+            "value": "πρωί"
+          }
+        ]
+      },
+      "params": {
+        "kind": "avoid"
+      },
+      "rationale": "Η Ρένα προτιμά να μη δουλεύει πρωινές βάρδιες.",
+      "provenance": {
+        "kind": "utterance",
+        "quote": "Η Ρένα πηγαίνει το παιδί στο σχολείο, άρα όσο γίνεται να μην της βάζουμε πρωινές."
+      },
+      "status": "confirmed"
+    },
+    {
+      "id": "rena-katerina-afternoon-till",
+      "template": "balance",
+      "hardness": "soft",
+      "weight": 2,
+      "scope": {
+        "resources": [
+          {
+            "attribute": "id",
+            "op": "in",
+            "value": [
+              "Κ2",
+              "Κ6"
+            ]
+          }
+        ],
+        "tasks": [
+          {
+            "attribute": "position",
+            "op": "eq",
+            "value": "ταμείο"
+          },
+          {
+            "attribute": "shift",
+            "op": "eq",
+            "value": "απόγευμα"
+          }
+        ]
+      },
+      "params": {
+        "measure": "count"
+      },
+      "rationale": "Η Ρένα και η Κατερίνα έχουν, αν γίνεται, τον ίδιο αριθμό απογευματινών βαρδιών στο ταμείο.",
+      "provenance": {
+        "kind": "utterance",
+        "quote": "Η Ρένα και η Κατερίνα να έχουν, αν γίνεται, τον ίδιο αριθμό απογευματινών βαρδιών στο ταμείο."
+      },
+      "status": "confirmed"
+    },
+    {
+      "id": "manolis-three-shifts",
+      "template": "min_per_period",
+      "hardness": "soft",
+      "weight": 2,
+      "scope": {
+        "resources": [
+          {
+            "attribute": "id",
+            "op": "eq",
+            "value": "Κ5"
+          }
+        ]
+      },
+      "params": {
+        "measure": "count",
+        "period": "week",
+        "limit": 3
+      },
+      "rationale": "Ο Μανώλης θέλει τουλάχιστον τρεις βάρδιες την εβδομάδα.",
+      "provenance": {
+        "kind": "utterance",
+        "quote": "Ο Μανώλης θέλει, αν γίνεται, τουλάχιστον τρεις βάρδιες αυτή τη βδομάδα."
+      },
+      "status": "confirmed"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "leave-from-file",
+      "text": "Οι άδειες του adeies.csv ισχύουν από την ώρα «Από» έως την ώρα «Έως» (εκτός του τέλους).",
+      "status": "proposed"
+    }
+  ],
+  "objective": "lexicographic_hard_then_soft"
+}

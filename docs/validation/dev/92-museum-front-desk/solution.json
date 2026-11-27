@@ -1,0 +1,28 @@
+{
+  "schema_version": "0.1",
+  "model_id": "museum-front-desk-2026-w50",
+  "model_version": 1,
+  "assignments": [
+    {"task_id": "tue-desk-early", "resource_id": "S2"},
+    {"task_id": "tue-desk-late", "resource_id": "S3"},
+    {"task_id": "tue-gallery", "resource_id": "S1"},
+    {"task_id": "wed-desk-early", "resource_id": "S4"},
+    {"task_id": "wed-desk-late", "resource_id": "S5"},
+    {"task_id": "wed-gallery", "resource_id": "S1"},
+    {"task_id": "thu-desk-early", "resource_id": "S5"},
+    {"task_id": "thu-desk-late", "resource_id": "S4"},
+    {"task_id": "thu-gallery", "resource_id": "S3"},
+    {"task_id": "thu-evening", "resource_id": "S1"},
+    {"task_id": "fri-desk-early", "resource_id": "S5"},
+    {"task_id": "fri-desk-late", "resource_id": "S2"},
+    {"task_id": "fri-gallery", "resource_id": "S3"},
+    {"task_id": "fri-evening", "resource_id": "S4"},
+    {"task_id": "sat-desk", "resource_id": "S1"},
+    {"task_id": "sat-desk", "resource_id": "S3"},
+    {"task_id": "sat-gallery", "resource_id": "S6"},
+    {"task_id": "sun-desk", "resource_id": "S6"},
+    {"task_id": "sun-desk", "resource_id": "S7"},
+    {"task_id": "sun-gallery", "resource_id": "S3"}
+  ],
+  "metadata": {"produced_by": "TASK-005e6 reviewer (CP-SAT, every rule held)", "notes": "CP-SAT 9.15, seed 11, one worker: every hard rule and every soft rule held, so hard 0 and soft 0, which no plan can beat"}
+}

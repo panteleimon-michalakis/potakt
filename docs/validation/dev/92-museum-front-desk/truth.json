@@ -1,0 +1,224 @@
+{
+  "schema_version": "0.2",
+  "id": "museum-front-desk-2026-w50",
+  "version": 1,
+  "status": "confirmed",
+  "title": "Museum front-of-house rota, 7-13 December 2026",
+  "language": "en",
+  "archetype": "assignment",
+  "vocabulary": {
+    "resource": "staff member",
+    "task": "shift"
+  },
+  "timezone": "Europe/London",
+  "horizon": {
+    "start": "2026-12-07",
+    "end": "2026-12-13"
+  },
+  "data": {
+    "resources": {
+      "source": "staff.csv",
+      "id": "id",
+      "attributes": {
+        "name": {
+          "column": "name",
+          "type": "str"
+        },
+        "skills": {
+          "column": "skills",
+          "type": "list",
+          "separator": ";"
+        },
+        "contract": {
+          "column": "contract",
+          "type": "str"
+        },
+        "max_hours": {
+          "column": "max_hours",
+          "type": "int"
+        }
+      }
+    },
+    "tasks": {
+      "source": "rota.csv",
+      "id": "id",
+      "start": "start",
+      "end": "end",
+      "demand": "people_needed",
+      "attributes": {
+        "area": {
+          "column": "area",
+          "type": "str"
+        },
+        "needs": {
+          "column": "needs",
+          "type": "str"
+        }
+      }
+    }
+  },
+  "constraints": [
+    {
+      "id": "coverage",
+      "template": "coverage",
+      "hardness": "hard",
+      "rationale": "Every shift in rota.csv gets exactly the number of people in its people_needed column.",
+      "provenance": {
+        "kind": "data",
+        "source": "rota.csv, column people_needed"
+      },
+      "status": "confirmed"
+    },
+    {
+      "id": "one-place-at-a-time",
+      "template": "no_overlap",
+      "hardness": "hard",
+      "rationale": "Nobody works two shifts whose times overlap (desk, gallery and evening shifts overlap on weekdays).",
+      "provenance": {
+        "kind": "utterance",
+        "quote": "Nobody can cover two shifts that run at the same time."
+      },
+      "status": "confirmed"
+    },
+    {
+      "id": "gallery-first-aid",
+      "template": "requires_attribute",
+      "hardness": "hard",
+      "params": {
+        "task_attribute": "needs",
+        "resource_attribute": "skills",
+        "match": "contains"
+      },
+      "rationale": "Gallery shifts need first-aid training; desk shifts have no requirement.",
+      "provenance": {
+        "kind": "utterance",
+        "quote": "The gallery floor must always be covered by someone with first-aid training."
+      },
+      "status": "confirmed"
+    },
+    {
+      "id": "weekly-max-hours",
+      "template": "max_per_period",
+      "hardness": "hard",
+      "params": {
+        "measure": "hours",
+        "period": "week",
+        "limit": {
+          "attribute": "max_hours"
+        }
+      },
+      "rationale": "Each person works at most their own weekly maximum from the max_hours column.",
+      "provenance": {
+        "kind": "utterance",
+        "quote": "Each person's contracted maximum is in the max_hours column of staff.csv; please never schedule anyone beyond it."
+      },
+      "status": "confirmed"
+    },
+    {
+      "id": "four-days-in-a-row",
+      "template": "max_consecutive_days",
+      "hardness": "hard",
+      "params": {
+        "days": 4
+      },
+      "rationale": "Nobody works more than four consecutive days.",
+      "provenance": {
+        "kind": "utterance",
+        "quote": "No one may work more than four days in a row."
+      },
+      "status": "confirmed"
+    },
+    {
+      "id": "rest-12h",
+      "template": "min_rest",
+      "hardness": "soft",
+      "weight": 3,
+      "params": {
+        "hours": 12
+      },
+      "rationale": "Where possible, at least 12 hours off between two shifts of the same person.",
+      "provenance": {
+        "kind": "utterance",
+        "quote": "Where you can, give people at least twelve hours off between shifts."
+      },
+      "status": "confirmed"
+    },
+    {
+      "id": "hannah-graduation",
+      "template": "unavailable",
+      "hardness": "hard",
+      "params": {
+        "windows": [
+          {
+            "resource_id": "S1",
+            "start": "2026-12-11T00:00",
+            "end": "2026-12-12T00:00"
+          }
+        ]
+      },
+      "rationale": "Hannah is away all of Friday 11 December.",
+      "provenance": {
+        "kind": "utterance",
+        "quote": "Hannah is away on Friday 11 December for her graduation."
+      },
+      "status": "confirmed"
+    },
+    {
+      "id": "tom-and-rosa-on-different-shifts",
+      "template": "apart",
+      "hardness": "soft",
+      "weight": 2,
+      "params": {
+        "resource_ids": [
+          "S2",
+          "S3"
+        ]
+      },
+      "rationale": "Where possible, Tom and Rosa are not on the same shift.",
+      "provenance": {
+        "kind": "utterance",
+        "quote": "If you can, keep Tom and Rosa off the same shift."
+      },
+      "status": "confirmed"
+    },
+    {
+      "id": "amir-avoids-the-gallery",
+      "template": "preference",
+      "hardness": "soft",
+      "weight": 2,
+      "scope": {
+        "resources": [
+          {
+            "attribute": "id",
+            "op": "eq",
+            "value": "S4"
+          }
+        ],
+        "tasks": [
+          {
+            "attribute": "area",
+            "op": "eq",
+            "value": "gallery"
+          }
+        ]
+      },
+      "params": {
+        "kind": "avoid"
+      },
+      "rationale": "Amir would rather not work gallery shifts.",
+      "provenance": {
+        "kind": "utterance",
+        "quote": "Amir would rather not do the gallery shifts if there's another option."
+      },
+      "status": "confirmed"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "graduation-whole-day",
+      "text": "Hannah's absence covers all of Friday 11 December (00:00 to 00:00 on Saturday).",
+      "status": "proposed"
+    }
+  ],
+  "objective": "lexicographic_hard_then_soft"
+}

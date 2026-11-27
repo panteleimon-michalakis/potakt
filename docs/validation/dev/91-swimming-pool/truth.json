@@ -1,0 +1,198 @@
+{
+  "schema_version": "0.2",
+  "id": "swimming-pool-2026-w49",
+  "version": 1,
+  "status": "confirmed",
+  "title": "Πρόγραμμα ναυαγοσωστών κολυμβητηρίου, 30/11–6/12/2026",
+  "language": "el",
+  "archetype": "assignment",
+  "vocabulary": {
+    "resource": "ναυαγοσώστης",
+    "task": "βάρδια"
+  },
+  "timezone": "Europe/Athens",
+  "horizon": {
+    "start": "2026-11-30",
+    "end": "2026-12-06"
+  },
+  "data": {
+    "resources": {
+      "source": "navagosostes.csv",
+      "id": "id",
+      "attributes": {
+        "name": {
+          "column": "name",
+          "type": "str"
+        },
+        "contract": {
+          "column": "contract",
+          "type": "str"
+        }
+      }
+    },
+    "tasks": {
+      "source": "vardies.csv",
+      "id": "id",
+      "start": "start",
+      "end": "end",
+      "demand": "demand",
+      "attributes": {
+        "day": {
+          "column": "day",
+          "type": "str"
+        },
+        "shift": {
+          "column": "shift",
+          "type": "str"
+        }
+      }
+    }
+  },
+  "constraints": [
+    {
+      "id": "coverage",
+      "template": "coverage",
+      "hardness": "hard",
+      "rationale": "Κάθε βάρδια του vardies.csv παίρνει ακριβώς όσους ναυαγοσώστες γράφει η στήλη demand.",
+      "provenance": {
+        "kind": "data",
+        "source": "vardies.csv, στήλη demand"
+      },
+      "status": "confirmed"
+    },
+    {
+      "id": "one-shift-a-day",
+      "template": "max_per_period",
+      "hardness": "hard",
+      "params": {
+        "measure": "count",
+        "period": "day",
+        "limit": 1
+      },
+      "rationale": "Το πολύ μία βάρδια την ημέρα για κάθε ναυαγοσώστη.",
+      "provenance": {
+        "kind": "utterance",
+        "quote": "Κανείς δεν κάνει δύο βάρδιες την ίδια μέρα."
+      },
+      "status": "confirmed"
+    },
+    {
+      "id": "part-time-21h",
+      "template": "max_per_period",
+      "hardness": "hard",
+      "scope": {
+        "resources": [
+          {
+            "attribute": "contract",
+            "op": "eq",
+            "value": "μερική"
+          }
+        ]
+      },
+      "params": {
+        "measure": "hours",
+        "period": "week",
+        "limit": 21
+      },
+      "rationale": "Η Σοφία και ο Άρης, με μερική απασχόληση, δουλεύουν το πολύ 21 ώρες την εβδομάδα.",
+      "provenance": {
+        "kind": "utterance",
+        "quote": "Η Σοφία και ο Άρης είναι με μερική απασχόληση, οπότε δεν πρέπει να ξεπεράσουν τις είκοσι μία ώρες την εβδομάδα."
+      },
+      "status": "confirmed"
+    },
+    {
+      "id": "five-days-in-a-row",
+      "template": "max_consecutive_days",
+      "hardness": "hard",
+      "params": {
+        "days": 5
+      },
+      "rationale": "Κανείς δεν δουλεύει πάνω από πέντε συνεχόμενες ημέρες.",
+      "provenance": {
+        "kind": "utterance",
+        "quote": "Επίσης κανείς να μη δουλέψει πάνω από πέντε μέρες στη σειρά."
+      },
+      "status": "confirmed"
+    },
+    {
+      "id": "rest-12h",
+      "template": "min_rest",
+      "hardness": "soft",
+      "weight": 3,
+      "params": {
+        "hours": 12
+      },
+      "rationale": "Αν γίνεται, τουλάχιστον 12 ώρες ξεκούραση ανάμεσα σε δύο βάρδιες του ίδιου ατόμου.",
+      "provenance": {
+        "kind": "utterance",
+        "quote": "Αν γίνεται, να ξεκουράζονται τουλάχιστον δώδεκα ώρες ανάμεσα σε δύο βάρδιες."
+      },
+      "status": "confirmed"
+    },
+    {
+      "id": "eleni-oath",
+      "template": "unavailable",
+      "hardness": "hard",
+      "params": {
+        "windows": [
+          {
+            "resource_id": "n4",
+            "start": "2026-12-03T00:00",
+            "end": "2026-12-04T00:00"
+          }
+        ]
+      },
+      "rationale": "Η Ελένη λείπει όλη την Πέμπτη 3/12.",
+      "provenance": {
+        "kind": "utterance",
+        "quote": "Η Ελένη λείπει όλη την Πέμπτη 3 Δεκεμβρίου"
+      },
+      "status": "confirmed"
+    },
+    {
+      "id": "petros-not-sunday",
+      "template": "preference",
+      "hardness": "soft",
+      "weight": 2,
+      "scope": {
+        "resources": [
+          {
+            "attribute": "id",
+            "op": "eq",
+            "value": "n3"
+          }
+        ],
+        "tasks": [
+          {
+            "attribute": "day",
+            "op": "eq",
+            "value": "Κυριακή"
+          }
+        ]
+      },
+      "params": {
+        "kind": "avoid"
+      },
+      "rationale": "Ο Πέτρος προτιμά να μη δουλέψει την Κυριακή.",
+      "provenance": {
+        "kind": "utterance",
+        "quote": "Ο Πέτρος, αν μπορεί να γίνει, ας μη δουλέψει την Κυριακή."
+      },
+      "status": "confirmed"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "hours-from-shift-times",
+      "text": "Οι ώρες μετρώνται από την έναρξη έως τη λήξη κάθε βάρδιας.",
+      "status": "proposed"
+    },
+    {
+      "id": "oath-whole-day",
+      "text": "Η απουσία της Ελένης καλύπτει όλη την Πέμπτη 3/12 (00:00 έως 00:00 της Παρασκευής).",
+      "status": "proposed"
+    }
+  ],
+  "objective": "lexicographic_hard_then_soft"
+}

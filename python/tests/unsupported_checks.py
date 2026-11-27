@@ -1,4 +1,5 @@
-"""Predicates for the mandatory unsupported requests of the corpus (ADR-0007 §4).
+"""Predicates for the mandatory unsupported requests of the corpus and the development set
+(ADR-0007 §4, ADR-0008 D1).
 
 A request that the catalog cannot express is not encoded in the truth. When the request states it
 as mandatory, the reference solution must still honour it, so a faithful plan is possible. Each
@@ -87,9 +88,20 @@ def one_adult_per_eight_children(scenario: LoadedScenario) -> list[str]:
     return breaches
 
 
+def lucy_works_only_on_days_ben_works(scenario: LoadedScenario) -> list[str]:
+    # 92-museum-front-desk: "Lucy is still in her first month, so she can only work on days when
+    # Ben is in as well." Lucy is S7 and Ben is S6 in staff.csv.
+    starts = {task.id: task.start for task in scenario.instance.tasks}
+    days: dict[str, set[str]] = defaultdict(set)
+    for assignment in scenario.solution.assignments:
+        days[assignment.resource_id].add(starts[assignment.task_id].date().isoformat())
+    return [f"S7 works on {day} without S6" for day in sorted(days["S7"] - days["S6"])]
+
+
 CHECKS: dict[str, Callable[[LoadedScenario], list[str]] | None] = {
     "03-call-centre": spanish_on_every_weekday_shift,
     "04-restaurant": licence_holder_on_every_evening_floor,
     "06-ambulance-crews": None,  # the night-off rule is a wish (TASK-005b review, F2)
     "10-municipal-nursery": one_adult_per_eight_children,
+    "92-museum-front-desk": lucy_works_only_on_days_ben_works,
 }

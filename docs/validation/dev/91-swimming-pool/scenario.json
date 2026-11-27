@@ -1,0 +1,27 @@
+{
+  "id": "91-swimming-pool",
+  "title": "Κολυμβητήριο με δύο βάρδιες ναυαγοσωστών",
+  "language": "el",
+  "domain": "swimming pool",
+  "difficulty": "easy",
+  "style": "email",
+  "csv_files": [
+    "navagosostes.csv",
+    "vardies.csv"
+  ],
+  "reference_score": {
+    "hard": 0,
+    "soft": 0
+  },
+  "disruption": {
+    "resource_id": "n1",
+    "start": "2026-12-01T00:00",
+    "end": "2026-12-02T00:00"
+  },
+  "unsupported": [],
+  "tags": [
+    "numbers-in-words",
+    "irrelevant-information"
+  ],
+  "notes": "Development scenario (ADR-0008 D1), never part of a gate. Written by the reviewer for TASK-005e6. The reference plan has hard 0 and soft 0, which no plan can beat (every soft rule only adds). Disruption: Giorgos is ill on Tuesday 1 December; a feasible re-plan exists (hard 0)."
+}
