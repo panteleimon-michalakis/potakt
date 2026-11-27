@@ -1871,7 +1871,7 @@ def test_any_other_error_type_holds_the_batch(tmp_path: Path, kind: str) -> None
         run()
 
     problem = (
-        "01-pharmacy: invalid_request_error: details"  # its message, as before (§8)
+        "01-pharmacy: invalid_request_error: details"  # its message, as before (runbook §10)
         if kind == "invalid_request_error"
         else f"01-pharmacy: errored ({kind}); it would fail again"
     )
@@ -2722,7 +2722,7 @@ def test_a_kept_file_with_no_result_of_the_batch_keeps_it_held_and_sends_nothing
 def test_a_kept_file_of_whitespace_only_releases_and_sends_every_pending_scenario_again(
     tmp_path: Path, data: bytes
 ) -> None:
-    # The reviewer's explicit "send them all again" (runbook §8: New-Item writes 0 bytes).
+    # The reviewer's explicit "send them all again" (runbook §10: New-Item writes 0 bytes).
     run = held_with(tmp_path)
     (run.model_dir / KEPT).write_bytes(data)
 

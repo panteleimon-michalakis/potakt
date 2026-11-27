@@ -2339,15 +2339,21 @@ def test_the_run_help_states_the_exit_codes_and_files() -> None:
     assert "POTAKT_GEMINI_API_KEY" in text
     assert "request.json, response.json, candidate.txt, comparison.json" in text
     assert "batches.json and batch-<id>.results.jsonl" in text
+    # TASK-005e5 decision 10: the repair and repeat runs (the order refused, two usage errors).
     assert (
         "Exit code 0: everything pending is recorded, or the plan was printed; 1: the run "
         "stopped (the reason on stderr), a held batch, a missing or invalid key, claude-opus-5-5 "
-        "before a complete claude-haiku-5-5 run, another run active (the lock file), a --release "
-        "of a batch that is not held, an unknown batch in the workspace, a request that differs "
-        "from its pin, a missing directory or a corpus without a scenario, an unexpected error "
-        "(its type only, never its text), or an interruption; 2: usage error (also an "
-        "unregistered model id, or --release without --yes)"
+        "before a complete claude-haiku-5-5 run, a repair or repeat run before the run it needs "
+        "is complete, another run active (the lock file), a --release of a batch that is not "
+        "held, an unknown batch in the workspace, a request that differs from its pin, a missing "
+        "directory or a corpus without a scenario, an unexpected error (its type only, never its "
+        "text), or an interruption; 2: usage error (also an unregistered model id, --release "
+        "without --yes, --repeat for another model than claude-opus-5-5, or --repair with "
+        "--repeat)"
     ) in text
+    assert "the same under <runs>/repair/<model dir>/ and <runs>/repeat-<K>/claude-opus-5-5/" in (
+        text
+    )
     assert "--release" in text
     assert (
         "Mark a held batch done after the reviewer's decision (only with --yes), then continue"
@@ -2428,8 +2434,10 @@ def test_the_runbook_steps_are_in_order_and_hold_no_personal_path() -> None:
         "## 4. Check the Haiku records",
         "## 5. Gemini",
         "## 6. Opus",
-        "## 7. Commit the records",
-        "## 8. If something goes wrong",
+        "## 7. Repairs (ADR-0008 D7)",  # TASK-005e5 decision 10: §7 and §8 are new
+        "## 8. Repeats (ADR-0008 D8)",
+        "## 9. Commit the records",
+        "## 10. If something goes wrong",
     ]
     assert "potakt-phase0" in text
     # ADR-0008 D13 (TASK-005e1 follow-up): the spend limit is raised in stages up to the US$70
@@ -2528,7 +2536,8 @@ def test_the_runbook_quotes_the_reconciliation_messages_and_the_new_rules() -> N
         "`" + cli.PREFLIGHT_INTERRUPTED + "`",
         "`" + cli.PREFLIGHT_UNEXPECTED.format(kind="<type>") + "`",
         "If the key or the day changed since the check of §1, run the preflight again first",
-        "**Check the Console after each model's run** (here and in §6)",
+        # TASK-005e5 decision 10: also after the repair and repeat runs.
+        "**Check the Console after each model's run** (here and in §6, §7 and §8)",
         "Open the Claude Console, Batches, for the workspace `potakt-phase0`",
         "Compare the batch ids listed there with the ids in "
         "`docs/validation/runs/test-a/<model dir>/batches.json`",
@@ -2566,7 +2575,7 @@ def test_the_runbook_quotes_the_reconciliation_messages_and_the_new_rules() -> N
 
 def test_the_runbook_has_the_texts_of_the_pre_run_audit() -> None:
     # TASK-005c3g G12: R1-R8 and n8, as the task gives them (adapted only where G1-G9 changed a
-    # fact), and the messages of §8 as the code prints them.
+    # fact), and the messages of §10 (§8 before TASK-005e5) as the code prints them.
     text = " ".join(RUNBOOK.read_text(encoding="utf-8").split())
     gemini_block = SESSION_BLOCK.replace("cd <repo>\\python\n", "").replace("Anthropic", "Gemini")
 
@@ -2577,14 +2586,14 @@ def test_the_runbook_has_the_texts_of_the_pre_run_audit() -> None:
         "unless it is cancelled or acknowledged. Only a batch still in progress can be cancelled "
         '("Batches may be canceled any time before processing ends."); a batch that has already '
         "ended stays in the batch list. Once the reviewer has decided about a named batch, the "
-        "reviewer may acknowledge it in acknowledged-batches.txt (§8), and no run names it again; "
+        "reviewer may acknowledge it in acknowledged-batches.txt (§10), and no run names it again; "
         "until then its warning on later runs is expected: send a warning again only if it names "
         "a new batch id.",
         # R2, §3 and §1 step 2
         "This first batch also confirms the `output_config` field. The API checks each request of "
         'a batch only while it processes the batch ("Validation of the `params` object for each '
         'message request is performed asynchronously"), so a refused field comes back as '
-        "`<scenario>: invalid_request_error: …` for every scenario and the batch is held (§8); "
+        "`<scenario>: invalid_request_error: …` for every scenario and the batch is held (§10); "
         "such results are not billed. A wrong API version or key is refused at once with a 400 or "
         "a 401, before any batch exists: the run stops with no charge and no record, and the "
         "reason is printed.",
@@ -2613,8 +2622,8 @@ def test_the_runbook_has_the_texts_of_the_pre_run_audit() -> None:
         "the run sends it again in a new batch after a short pause",
         "`<scenario>: errored (<type>); it would fail again`: the batch is held; send the message "
         "to the reviewer.",
-        "`<scenario> was sent in 4 batches without an answer; it is not sent again`: do not edit "
-        "`batches.json`; send the message and `batches.json` to the reviewer.",
+        # TASK-005e5 decision 10: the 4-batch cap became ADR-0008 D6 (its quotes are tested in
+        # test_the_runbook_quotes_the_messages_of_task_005e5).
         "`the request failed 4 times; last: …`, `creating a batch failed 4 times; last: …` and "
         "`listing batches failed: …`",
         "the network or the API failed four times in a row",
@@ -2724,7 +2733,7 @@ def test_the_runbook_has_the_texts_of_the_max_effort_review() -> None:
     for message in messages:
         assert f"`{normalised(message)}`" in text, message
     verbatim = (
-        # S2-2: the catch-all at the top of §8, and the lock entry.
+        # S2-2: the catch-all at the top of §10 (§8 before TASK-005e5), and the lock entry.
         "Any stop or warning that is not listed below: do not run `--yes` again; send the whole "
         "output to the reviewer.",
         "`the lock <path> now belongs to another run (…); it was left in place`: two runs "
@@ -2826,3 +2835,195 @@ def test_the_readmes_help_and_docstrings_have_the_texts_of_the_max_effort_review
         "after a run that made a counted call (any call but the clock check) and was not "
         "interrupted"
     ) in comment
+
+
+# --- TASK-005e5 decision 10: ADR-0008, the runbook, the READMEs and the help -------------------
+
+ADR_0008 = REPO / "docs" / "adr" / "0008-phase-0-protocol-revision.md"
+AMENDED = "**Amendment (2026-11-27, TASK-005e5, before any LLM run).** "
+# Each amendment of decision 10, word for word, after the end of the paragraph it follows.
+AMENDMENTS = (
+    (
+        "recorded. Claude runs write none.",
+        "If `received.json` cannot be written, the answer is not recorded and the run stops; the "
+        "next run sends that scenario again. Whether the file can be written does not depend on "
+        "the answer, so the answer that is kept is not chosen by its content.",
+    ),
+    (
+        "constraint of that scenario missed), and the report says so.",
+        "D6 applies to the Claude models, which send through the Message Batches API; a Gemini "
+        "scenario without an answer is sent again by every run until it has one, and the report "
+        "names it. A scenario counts as sent in a batch when an entry of `batches.json` in state "
+        "`open`, `held` or `done` lists it. After its fourth batch without an answer, the run "
+        "stops before sending anything until 24 hours after the `started_at` of that fourth "
+        "batch, and names that time; then the scenario goes into one more batch with any other "
+        "pending scenario. After its fifth batch without an answer it is not sent again: the run "
+        "writes its `comparison.json` as an invalid candidate whose one issue is `no answer after "
+        '5 batches (ADR-0008 D6)`, then `unanswered.json` (`{"batches": [<the five batch '
+        "ids>]}`), and no `response.json`. The summary counts it as an invalid candidate with "
+        "the stop `no-answer` and says so in a note. The same holds in the repair and repeat "
+        "runs.",
+    ),
+    (
+        'reported as "recall after one repair". It never decides the gate.',
+        "`potakt eval run --model <model> --repair` runs only after that model's first run is "
+        "complete, and records under `docs/validation/runs/test-a/repair/<model>/` with the "
+        "files, lock, batch rules and checks of a first run. A candidate gets a repair request "
+        "when its first comparison is invalid and the text of its answer (the text that "
+        "`candidate.txt` is extracted from) holds a character that is not white space; one with "
+        "no answer or an empty answer is not sent and stays unrepaired. The request is the first "
+        "request, after its pin is checked, with two turns appended: the assistant turn (`model` "
+        "for Gemini) holding that answer text exactly, without thinking blocks or thought "
+        "signatures, and a user turn: `The Decision Model is not valid:`, the issues of the first "
+        "`comparison.json` in their order, one `<path>: <message>` per line (a line break inside "
+        "one becomes a space), and `Answer with the corrected JSON object only.`, joined by line "
+        "feeds. The repaired answer is scored like a first answer. `potakt eval repairs` gives "
+        "the recall after one repair: the matched count of each candidate that the repair made "
+        "valid replaces the 0 of its first candidate.",
+    ),
+    (
+        "These runs never change the gate or a first-attempt record.",
+        "The repeats are recorded under `docs/validation/runs/test-a/repeat-<k>/claude-opus-5-5/` "
+        "(k = 2, 3) instead of `docs/validation/runs/test-a-repeats/`, so that one lock, one "
+        "`acknowledged-batches.txt` and the batch checks of ADR-0007 §7 cover them. `potakt eval "
+        "run --model claude-opus-5-5 --repeat <k>` sends the pinned first requests again; repeat "
+        "2 runs only after the first `claude-opus-5-5` run is complete, and repeat 3 only after "
+        "repeat 2 is. Once the three draws are complete, `potakt eval draws` gives each "
+        "scenario's recall in each draw with their arithmetic mean, minimum and maximum, and "
+        "each draw's micro recall.",
+    ),
+)
+
+
+def test_adr_0008_has_the_four_amendments_word_for_word_after_their_paragraphs() -> None:
+    raw = ADR_0008.read_text(encoding="utf-8")
+    text = normalised(raw)
+
+    for end, amendment in AMENDMENTS:
+        assert f"{end} {AMENDED}{normalised(amendment)}" in text, amendment[:60]
+    assert raw.count("TASK-005e5") == 4
+    assert raw.count(f"\n\n{AMENDED.rstrip()}") == 4  # each its own paragraph: a blank line before
+
+
+def test_the_runbook_quotes_the_messages_of_task_005e5() -> None:
+    # TASK-005e5 decision 10: every message the new runbook text quotes is the code's text.
+    text = normalised(RUNBOOK.read_text(encoding="utf-8"))
+    r = runner_module
+    messages = (
+        r.LAST_BATCH_WAIT.format(
+            names="<scenario>", verb="was", attempts=4, pronoun="it", time="<time>"
+        ),
+        r.UNANSWERED_LINE.format(name="<scenario>", count=5),
+        r.LAST_BATCH_PLAN.format(time="<time>", names="<scenarios>"),
+        r.UNANSWERED_PLAN.format(names="<scenarios>"),
+        *(
+            r.NOT_SENT_PLAN.format(reason=label, names="<scenarios>")
+            for _, label in r.NOT_SENT_REASONS
+        ),
+        r.REPAIR_ORDER.format(model="<model>", names="<scenarios>"),
+        r.REPEAT_2_ORDER.format(model=OPUS, names="<scenarios>"),
+        r.REPEAT_3_ORDER.format(model=OPUS, names="<scenarios>"),
+        "skipped (no response.json)",
+        "no-answer",
+        "unchanged",
+    )
+    for message in messages:
+        assert f"`{normalised(message)}`" in text, message
+    assert records_module.UNANSWERED_FILE == "unanswered.json"
+    assert "Never delete or edit `unanswered.json` or `batches.json`" in text
+    assert "Gemini has no such limit" in text
+    assert "The 4-batch cap" not in text and "it is not sent again" not in text
+
+
+def test_the_runbook_quotes_the_dry_run_lines_of_repairs_and_repeats(tmp_path: Path) -> None:
+    # The header and the cost wording as the dry runs print them (f-strings of run_plan).
+    text = normalised(RUNBOOK.read_text(encoding="utf-8"))
+    (tmp_path / "first").mkdir()
+    corpus, runs, _ = repair_setup(tmp_path / "first")
+    repair = eval_run(runs, HAIKU, "--repair", corpus=corpus).stdout.splitlines()
+    complete_run(tmp_path, HAIKU)
+    complete_run(tmp_path, OPUS)
+    repeat = eval_run(tmp_path, OPUS, "--repeat", "2").stdout.splitlines()
+
+    assert f"`{repair[0].replace(HAIKU, '<model>')}`" in text
+    assert f"`{repeat[0]}`" in text
+    assert "`input: the UTF-8 bytes of every message`" in text
+    assert "input: the UTF-8 bytes of every message, output" in " ".join(repair)
+    for command in (
+        "uv run potakt eval run --model claude-haiku-5-5 --repair",
+        "uv run potakt eval run --model claude-haiku-5-5 --repair --yes",
+        "uv run potakt eval rescore ../docs/validation/runs/test-a/repair/claude-haiku-5-5",
+        "uv run potakt eval repairs --model claude-haiku-5-5",
+        "uv run potakt eval run --model claude-opus-5-5 --repeat 2",
+        "uv run potakt eval run --model claude-opus-5-5 --repeat 2 --yes",
+        "uv run potakt eval rescore ../docs/validation/runs/test-a/repeat-2/claude-opus-5-5",
+        "uv run potakt eval summary ../docs/validation/runs/test-a/repeat-2/claude-opus-5-5",
+        "uv run potakt eval draws",
+    ):
+        assert command in text, command
+
+
+def test_the_runbook_names_the_kind_directories_where_it_names_a_model_directory() -> None:
+    text = normalised(RUNBOOK.read_text(encoding="utf-8"))
+
+    for quoted in (
+        "`docs/validation/runs/test-a/repair/<model dir>/batches.json` and "
+        "`docs/validation/runs/test-a/repeat-<k>/claude-opus-5-5/batches.json`",
+        "only files under `docs/validation/runs/test-a/` may appear (its `repair/` and "
+        "`repeat-<k>/` folders included",
+        "`git status --ignored docs/validation/runs/test-a`, which covers `repair/` and "
+        "`repeat-<k>/` too",
+        "`<model dir>` (or of `repair/<model dir>` or `repeat-<k>/claude-opus-5-5`) as deleted",
+        "`repair/<model dir>/<scenario>` or `repeat-<k>/claude-opus-5-5/<scenario>` in that path",
+        "This one file serves every run, the repair and repeat runs included: no run reads one in "
+        "`repair/` or `repeat-<k>/`.",
+        "the order of the first runs: Haiku, then Gemini, then Opus",
+        "look up the project's limits in Google AI Studio",
+        "run the same command the next day after 10:00 Athens time",
+        "equals the first Opus run's (ADR-0008 D13 already counts two repeats)",
+    ):
+        assert normalised(quoted) in text, quoted
+
+
+def test_the_readmes_and_the_help_describe_repairs_repeats_and_unanswered_scenarios() -> None:
+    def plain(text: str) -> str:
+        return normalised(text).replace("`", "").lower()
+
+    readme = plain((REPO / "README.md").read_text(encoding="utf-8"))
+    validation = plain((REPO / "docs/validation/README.md").read_text(encoding="utf-8"))
+    run_help = plain(cast(str, cli.eval_run.__doc__))
+    repairs_help = plain(cast(str, cli.eval_repairs.__doc__))
+    draws_help = plain(cast(str, cli.eval_draws.__doc__))
+    for shared in (
+        "a claude scenario without an answer after four batches is sent once more at least 24 "
+        "hours after the fourth, and after a fifth it counts as an invalid candidate "
+        "(unanswered.json, adr-0008 d6)",
+        "with --repair, only after the model's first run is complete, it sends one repair request "
+        "per invalid candidate whose answer holds text (adr-0008 d7)",
+        "with --repeat k (claude-opus-5-5 only, k = 2 after its complete first run, then k = 3 "
+        "after repeat 2) it sends the pinned first requests again as draw k under "
+        "<runs>/repeat-<k>/claude-opus-5-5",
+        "none of these changes the gate",
+        "--repeat for another model than claude-opus-5-5, or --repair with --repeat",
+    ):
+        assert shared in readme, shared
+        assert shared in run_help, shared
+    for shared in (
+        "what its one repair turn gave (valid, invalid, without an answer, not sent, missing)",
+        "the recall after one repair (adr-0008 d7)",
+    ):
+        assert shared in readme and shared in repairs_help, shared
+    for shared in ("each draw's micro recall", "minimum and maximum (adr-0008 d8)"):
+        assert shared in readme and shared in draws_help, shared
+    for words in (
+        "potakt eval run --model <id> --repair",
+        "potakt eval run --model claude-opus-5-5 --repeat k",
+        "runs/test-a/repair/<model>/",
+        "runs/test-a/repeat-<k>/claude-opus-5-5/",
+        'unanswered.json ({"batches": [<the five batch ids>]})',
+        "potakt eval repairs --model <id>",
+        "potakt eval draws",
+        "none of the repair or repeat runs and neither report changes the gate",
+        "--repeat for another model than claude-opus-5-5, or --repair with --repeat",
+    ):
+        assert words in validation, words

@@ -84,10 +84,27 @@ the form of `started_at`). `received.json` is written just before `response.json
 recorded Gemini answer has one, and the next attempt replaces the file of an attempt that was not
 recorded. Claude runs write none.
 
+**Amendment (2026-11-27, TASK-005e5, before any LLM run).** If `received.json` cannot be written,
+the answer is not recorded and the run stops; the next run sends that scenario again. Whether the
+file can be written does not depend on the answer, so the answer that is kept is not chosen by its
+content.
+
 ### D6. A scenario that never gets an answer
 A corpus scenario that has no answer after four batches is sent again in one more run, at least 24
 hours later. If it still has no answer, it counts as an invalid candidate for the gate (every truth
 constraint of that scenario missed), and the report says so.
+
+**Amendment (2026-11-27, TASK-005e5, before any LLM run).** D6 applies to the Claude models, which
+send through the Message Batches API; a Gemini scenario without an answer is sent again by every
+run until it has one, and the report names it. A scenario counts as sent in a batch when an entry
+of `batches.json` in state `open`, `held` or `done` lists it. After its fourth batch without an
+answer, the run stops before sending anything until 24 hours after the `started_at` of that fourth
+batch, and names that time; then the scenario goes into one more batch with any other pending
+scenario. After its fifth batch without an answer it is not sent again: the run writes its
+`comparison.json` as an invalid candidate whose one issue is `no answer after 5 batches (ADR-0008
+D6)`, then `unanswered.json` (`{"batches": [<the five batch ids>]}`), and no `response.json`. The
+summary counts it as an invalid candidate with the stop `no-answer` and says so in a note. The same
+holds in the repair and repeat runs.
 
 ### D7. One repair turn, reported apart
 After a model's corpus run is complete, each invalid candidate gets one repair request. It is the
@@ -96,11 +113,34 @@ valid:`, then one issue per line (`<path>: <message>`), then `Answer with the co
 only.` The repaired candidate is scored like the first and reported as "recall after one repair". It
 never decides the gate.
 
+**Amendment (2026-11-27, TASK-005e5, before any LLM run).** `potakt eval run --model <model>
+--repair` runs only after that model's first run is complete, and records under
+`docs/validation/runs/test-a/repair/<model>/` with the files, lock, batch rules and checks of a
+first run. A candidate gets a repair request when its first comparison is invalid and the text of
+its answer (the text that `candidate.txt` is extracted from) holds a character that is not white
+space; one with no answer or an empty answer is not sent and stays unrepaired. The request is the
+first request, after its pin is checked, with two turns appended: the assistant turn (`model` for
+Gemini) holding that answer text exactly, without thinking blocks or thought signatures, and a user
+turn: `The Decision Model is not valid:`, the issues of the first `comparison.json` in their order,
+one `<path>: <message>` per line (a line break inside one becomes a space), and `Answer with the
+corrected JSON object only.`, joined by line feeds. The repaired answer is scored like a first
+answer. `potakt eval repairs` gives the recall after one repair: the matched count of each candidate
+that the repair made valid replaces the 0 of its first candidate.
+
 ### D8. Draw-to-draw variation
 After the first `claude-opus-5-5` corpus run is complete, the same ten requests are sent twice more
 and recorded under `docs/validation/runs/test-a-repeats/claude-opus-5-5/<k>/` (k = 2, 3). The report
 gives each scenario's recall over the three draws (mean, minimum and maximum) and the three micro
 recalls. These runs never change the gate or a first-attempt record.
+
+**Amendment (2026-11-27, TASK-005e5, before any LLM run).** The repeats are recorded under
+`docs/validation/runs/test-a/repeat-<k>/claude-opus-5-5/` (k = 2, 3) instead of
+`docs/validation/runs/test-a-repeats/`, so that one lock, one `acknowledged-batches.txt` and the
+batch checks of ADR-0007 §7 cover them. `potakt eval run --model claude-opus-5-5 --repeat <k>`
+sends the pinned first requests again; repeat 2 runs only after the first `claude-opus-5-5` run is
+complete, and repeat 3 only after repeat 2 is. Once the three draws are complete, `potakt eval
+draws` gives each scenario's recall in each draw with their arithmetic mean, minimum and maximum,
+and each draw's micro recall.
 
 ### D9. Look-alike ids
 Ids are compared exactly. Two ids are look-alikes when they become equal after every Greek capital

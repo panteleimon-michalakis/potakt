@@ -2361,11 +2361,18 @@ def _unanswered_plan(
     lines: list[str] = []
     if waiting:
         time = _stamp(max(waiting.values()))
-        lines.append(f"Last batch (ADR-0008 D6) from {time}: {', '.join(waiting)}")
+        lines.append(LAST_BATCH_PLAN.format(time=time, names=", ".join(waiting)))
     unanswered = unanswered_scenarios(corpus_dir, model_dir)
     if unanswered:
-        lines.append(f"Unanswered (ADR-0008 D6): {', '.join(unanswered)}")
+        lines.append(UNANSWERED_PLAN.format(names=", ".join(unanswered)))
     return lines
+
+
+# TASK-005e5 decisions 4 and 6: the dry run's lines for ADR-0008 D6 and for a repair run.
+LAST_BATCH_PLAN = "Last batch (ADR-0008 D6) from {time}: {names}"
+UNANSWERED_PLAN = "Unanswered (ADR-0008 D6): {names}"
+NOT_SENT_PLAN = "Not sent ({reason}): {names}"
+NOT_SENT_REASONS = (("empty answer", "empty answer"), ("no answer", "no answer, ADR-0008 D6"))
 
 
 GEMINI_COST_LINE = (
@@ -2385,10 +2392,10 @@ def _not_sent_plan(corpus_dir: Path, model: str, first_dir: Path | None) -> list
         return []
     needs = _repair_needs(corpus_dir, model, first_dir)
     lines: list[str] = []
-    for need, label in (("empty answer", "empty answer"), ("no answer", "no answer, ADR-0008 D6")):
+    for need, label in NOT_SENT_REASONS:
         names = [name for name, found in needs.items() if found == need]
         if names:
-            lines.append(f"Not sent ({label}): {', '.join(names)}")
+            lines.append(NOT_SENT_PLAN.format(reason=label, names=", ".join(names)))
     return lines
 
 

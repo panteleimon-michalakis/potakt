@@ -642,25 +642,28 @@ def eval_run(
     about a paid duplicate (only a batch still in progress can be cancelled); this check never
     changes the exit code.
 
-    With --repair (ADR-0008 D7), only after the model's first run is complete: each invalid
-    candidate of that run whose answer holds text gets one repair request (the first request,
-    the answer and the issues), recorded under <runs>/repair/<model dir> with the same files,
-    lock, batch rules and checks; it never changes the gate. With --repeat K (ADR-0008 D8;
-    claude-opus-5-5 only, K = 2 or 3): the pinned first requests again, recorded under
-    <runs>/repeat-<K>/claude-opus-5-5; repeat 2 only after the first claude-opus-5-5 run is
-    complete, repeat 3 only after repeat 2 is; it never changes the gate.
+    A Claude scenario without an answer after four batches is sent once more at least 24 hours
+    after the fourth, and after a fifth it counts as an invalid candidate (unanswered.json,
+    ADR-0008 D6). With --repair, only after the model's first run is complete, it sends one repair
+    request per invalid candidate whose answer holds text (ADR-0008 D7), records under
+    <runs>/repair/<model dir> with the files, lock, batch rules and checks of a first run, and
+    prints the eval repairs report; with --repeat K (claude-opus-5-5 only, K = 2 after its
+    complete first run, then K = 3 after repeat 2) it sends the pinned first requests again as
+    draw K under <runs>/repeat-<K>/claude-opus-5-5 (ADR-0008 D8); none of these changes the gate.
 
     Files: <runs>/<model dir>/<scenario id>/ with request.json, response.json, candidate.txt,
     comparison.json; for Claude models also <runs>/<model dir>/ batches.json and
-    batch-<id>.results.jsonl.
+    batch-<id>.results.jsonl (and unanswered.json for a scenario given up after five batches);
+    the same under <runs>/repair/<model dir>/ and <runs>/repeat-<K>/claude-opus-5-5/.
 
     Exit code 0: everything pending is recorded, or the plan was printed; 1: the run stopped (the
     reason on stderr), a held batch, a missing or invalid key, claude-opus-5-5 before a complete
-    claude-haiku-5-5 run, another run active (the lock file), a --release of a batch that is not
-    held, an unknown batch in the workspace, a request that differs from its pin, a missing
-    directory or a corpus without a scenario, an unexpected error (its type only, never its
-    text), or an interruption; 2: usage error (also an unregistered model id, or --release
-    without --yes).
+    claude-haiku-5-5 run, a repair or repeat run before the run it needs is complete, another run
+    active (the lock file), a --release of a batch that is not held, an unknown batch in the
+    workspace, a request that differs from its pin, a missing directory or a corpus without a
+    scenario, an unexpected error (its type only, never its text), or an interruption; 2: usage
+    error (also an unregistered model id, --release without --yes, --repeat for another model than
+    claude-opus-5-5, or --repair with --repeat).
     """
     try:
         _eval_run(model, runs, corpus, poll_seconds, yes, release, _run_kind(model, repair, repeat))

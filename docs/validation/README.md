@@ -39,12 +39,20 @@ call other than the clock check and was not interrupted, it runs a check for unr
 after the run: up to five minutes after the last batch creation it lists the batches again and
 names each one that no run recorded and the reviewer has not acknowledged (a paid duplicate the
 reviewer decides about; only a batch still in progress can be cancelled); this never changes the
-records or the exit code. Exit code 0: all recorded or the plan printed; 1: the run stopped (the
-reason on stderr), a held batch, a missing or invalid key, the order refused, another run
-active, a `--release` of a batch that is not held, an unknown batch in the workspace, a request
-that differs from its pin, a missing directory, a corpus without a scenario, an unexpected error
-(its type only, never its text) or an interruption; 2: usage error, also for an unregistered
-model id or `--release` without `--yes`.
+records or the exit code. A Claude scenario without an answer after four batches is sent once
+more at least 24 hours after the fourth (until then every run stops before sending anything and
+names that time); after a fifth batch without an answer it counts as an invalid candidate
+(ADR-0008 D6); a Gemini scenario is sent again by every run until it has an answer. After a
+model's first run is complete, `potakt eval run --model <id> --repair` sends one repair request
+per invalid candidate whose answer holds text (ADR-0008 D7), and
+`potakt eval run --model claude-opus-5-5 --repeat K` (K = 2, then 3) sends the pinned first
+requests again (ADR-0008 D8), each with the files, lock and checks of a first run. Exit code 0:
+all recorded or the plan printed; 1: the run stopped (the reason on stderr), a held batch, a
+missing or invalid key, the order refused, another run active, a `--release` of a batch that is
+not held, an unknown batch in the workspace, a request that differs from its pin, a missing
+directory, a corpus without a scenario, an unexpected error (its type only, never its text) or an
+interruption; 2: usage error, also for an unregistered model id, `--release` without `--yes`,
+`--repeat` for another model than `claude-opus-5-5`, or `--repair` with `--repeat`.
 
 Test A records go to `runs/test-a/<model>/<scenario id>/` (ADR-0007 §7 and its amendment):
 `request.json`, `response.json` (the raw answer, written first and never overwritten; UTF-8,
@@ -69,6 +77,22 @@ billed categories is not billed, so the summary may overstate the cost. Its per-
 the recall over valid candidates, the bootstrap interval (ADR-0008 D3) and the recall after
 look-alike ids (ADR-0008 D9) never change the gate; the owner rates the lines under «Unsupported
 requests and assumptions» (ADR-0008 D12).
+
+Repair runs record under `runs/test-a/repair/<model>/<scenario id>/` and the two repeats of
+`claude-opus-5-5` under `runs/test-a/repeat-<k>/claude-opus-5-5/<scenario id>/` (k = 2, 3), with
+the same files as a first run and their own `batches.json`; the one lock
+`runs/test-a/.eval-run.lock` and the one `runs/test-a/acknowledged-batches.txt` cover every run,
+and the batch checks read every `batches.json` of these directories. A scenario given up after
+its fifth batch (ADR-0008 D6) has `comparison.json` (an invalid candidate whose one issue is
+`no answer after 5 batches (ADR-0008 D6)`) and `unanswered.json`
+(`{"batches": [<the five batch ids>]}`), and no `response.json`: the summary counts it with the
+stop `no-answer`, `eval rescore` skips it, and it is never sent again. `potakt eval repairs
+--model <id>` reports the recall after one repair from the first run and the repair run (exit
+code 0 printed, 1 missing directory or a first run not complete, 2 usage error, also for an
+unregistered model id), and `potakt eval draws` each scenario's recall in the three draws of
+`claude-opus-5-5` with their mean, minimum and maximum (exit code 0 printed, 1 missing directory
+or a draw not complete, 2 usage error); both are offline. None of the repair or repeat runs and
+neither report changes the gate.
 
 Each scenario is one directory, `scenarios/<NN>-<slug>/`:
 - `request.md`: the manager's message, the only free text the LLM sees;

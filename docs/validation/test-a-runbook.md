@@ -12,7 +12,7 @@ Rules for the whole runbook:
 - A scenario with a recorded answer (`response.json`) is never sent again; running the same
   command again resumes where it stopped.
 - One run at a time: never run `potakt eval run` in two windows at once, not even for two
-  different models. A second `--yes` run is refused while the first one holds the lock (§8).
+  different models. A second `--yes` run is refused while the first one holds the lock (§10).
 - Keep the laptop awake and plugged in while a batch runs. If it sleeps anyway, run the same
   command again.
 - The run compares the laptop clock with the API's and stops if they differ by more than two
@@ -131,7 +131,7 @@ printed when it changes and again after every 10 polls without a change (every 1
 window shows that the run is alive. This first batch also confirms the `output_config` field. The
 API checks each request of a batch only while it processes the batch ("Validation of the
 `params` object for each message request is performed asynchronously"), so a refused field comes
-back as `<scenario>: invalid_request_error: …` for every scenario and the batch is held (§8);
+back as `<scenario>: invalid_request_error: …` for every scenario and the batch is held (§10);
 such results are not billed. A wrong API version or key is refused at once with a 400 or a 401,
 before any batch exists: the run stops with no charge and no record, and the reason is printed.
 A key problem that slips past the preflight stops the run at its first call, the clock check:
@@ -150,7 +150,7 @@ run waits again (up to three minutes) before it sends anything.
 Before the first batch of each Claude model, the run waits until two minutes after it started,
 printing `waiting <n> s before checking the workspace for batches that no run recorded` (at most
 120 s), and lists every batch of the workspace: a batch that no `batches.json` records stops the
-run before anything is sent (§8). Do not press Ctrl+C during that wait.
+run before anything is sent (§10). Do not press Ctrl+C during that wait.
 
 After every Claude run that made an API call other than the clock check, the run checks once more
 for batches that no run recorded: it prints `waiting <n> s before checking for batches that no
@@ -161,16 +161,18 @@ model, so a batch it once named is named again by every later Claude run that ma
 other than the clock check, unless it is cancelled or acknowledged. Only a batch still in
 progress can be cancelled ("Batches may be canceled any time before processing ends."); a batch
 that has already ended stays in the batch list. Once the reviewer has decided about a named
-batch, the reviewer may acknowledge it in acknowledged-batches.txt (§8), and no run names it
+batch, the reviewer may acknowledge it in acknowledged-batches.txt (§10), and no run names it
 again; until then its warning on later runs is expected: send a warning again only if it names a
 new batch id. If it prints
-`warning: batch <id> (<n> requests, created <time>) is recorded by no run: …`, see §8.
+`warning: batch <id> (<n> requests, created <time>) is recorded by no run: …`, see §10.
 
-**Check the Console after each model's run** (here and in §6):
+**Check the Console after each model's run** (here and in §6, §7 and §8):
 1. Open the Claude Console, Batches, for the workspace `potakt-phase0`.
 2. Compare the batch ids listed there with the ids in
-   `docs/validation/runs/test-a/<model dir>/batches.json` (every model run so far; for example
-   `Get-Content ../docs/validation/runs/test-a/claude-haiku-5-5/batches.json`).
+   `docs/validation/runs/test-a/<model dir>/batches.json`,
+   `docs/validation/runs/test-a/repair/<model dir>/batches.json` and
+   `docs/validation/runs/test-a/repeat-<k>/claude-opus-5-5/batches.json` (every run so far; for
+   example `Get-Content ../docs/validation/runs/test-a/claude-haiku-5-5/batches.json`).
 3. Send the reviewer that list.
 
 A batch listed there that no `batches.json` records is a paid duplicate, whatever the audit said.
@@ -224,13 +226,83 @@ the cost upper bound. `claude-opus-5-5` is refused until `claude-haiku-5-5` has 
 Its first answer per scenario is the one that counts for the gate: there is no second attempt.
 After the run, do the Console check of §3 for both `batches.json` files.
 
-## 7. Commit the records
+## 7. Repairs (ADR-0008 D7)
+
+Each invalid candidate of a model's first run gets one repair request: the same request, the
+answer and the list of its issues. A repair never changes the gate. Run the repairs of a model
+only after its first run is checked (§4, and the same checks for Gemini and Opus) and committed
+(§9), in the order of the first runs: Haiku, then Gemini, then Opus. For Haiku:
+
+```powershell
+uv run potakt eval run --model claude-haiku-5-5 --repair
+uv run potakt eval run --model claude-haiku-5-5 --repair --yes
+```
+
+- The dry run's first line is `Test A run plan: <model> (repair)`. `Pending` lists the
+  candidates that get a repair request; the others are listed as
+  `Not sent (empty answer): <scenarios>` and `Not sent (no answer, ADR-0008 D6): <scenarios>`.
+  The cost upper bound counts the answer and the issues too: `input: the UTF-8 bytes of every
+  message`.
+- A repair run is refused until its model's first run is complete:
+  `<model> repairs run only after <model> has a complete run (missing: <scenarios>)`.
+- The `--yes` run works like a first run (§3: the clock check, the lock, the waits, the checks for
+  batches that no run recorded; held batches and `--release`, §10) and records under
+  `docs/validation/runs/test-a/repair/<model dir>/`. It ends with the report of `eval repairs`,
+  not with the summary.
+- Check the records and send the report to the reviewer:
+
+  ```powershell
+  uv run potakt eval rescore ../docs/validation/runs/test-a/repair/claude-haiku-5-5
+  uv run potakt eval repairs --model claude-haiku-5-5
+  ```
+
+  `eval rescore` must print only `unchanged` lines. The report of a repair directory is
+  `eval repairs`, not `eval summary`, which lists every scenario that needed no repair as
+  missing.
+- Then the same for `gemini-3.8-flash` and `claude-opus-5-5`. Before the Gemini run, look up the
+  project's limits in Google AI Studio (its daily quota). A 429 that stops the run means: run the
+  same command the next day after 10:00 Athens time; only the repairs still pending are sent.
+- Do the Console check of §3 for the repair runs, and commit the repair records like the first
+  ones (§9).
+
+## 8. Repeats (ADR-0008 D8)
+
+Only after the first Opus run is complete, checked and committed (§9): the same ten Opus requests
+are sent twice more, as draws 2 and 3. They never change the gate or a first record.
+
+```powershell
+uv run potakt eval run --model claude-opus-5-5 --repeat 2
+uv run potakt eval run --model claude-opus-5-5 --repeat 2 --yes
+```
+
+- The dry run's first line is `Test A run plan: claude-opus-5-5 (repeat 2)`. Its cost upper bound
+  equals the first Opus run's (ADR-0008 D13 already counts two repeats).
+- Repeat 2 is refused until the first Opus run is complete:
+  `repeat 2 of claude-opus-5-5 runs only after claude-opus-5-5 has a complete run (missing:
+  <scenarios>)`. `--repeat` is only for Opus.
+- Check the records like §4, then commit them (§9):
+
+  ```powershell
+  uv run potakt eval rescore ../docs/validation/runs/test-a/repeat-2/claude-opus-5-5
+  uv run potakt eval summary ../docs/validation/runs/test-a/repeat-2/claude-opus-5-5
+  ```
+
+- Then the same with `--repeat 3` (and `repeat-3` in both paths). Repeat 3 is refused until
+  repeat 2 is complete: `repeat 3 of claude-opus-5-5 runs only after repeat 2 is complete
+  (missing: <scenarios>)`.
+- Once both repeats are committed, run `uv run potakt eval draws` and send its output to the
+  reviewer.
+- Do the Console check of §3 for every `batches.json`, those under `repair/` and `repeat-<k>/`
+  included.
+
+## 9. Commit the records
 
 Commit each model's records right after its run and its checks, before the next model:
 - from `python/`, go to the repository root (`cd ..`) and run `git status`;
-- only files under `docs/validation/runs/test-a/` may appear, and no `*.tmp` file: git ignores
-  a leftover `.tmp`, so also run `git status --ignored docs/validation/runs/test-a`; if it shows
-  a `.tmp` file, do not commit, and see §8;
+- only files under `docs/validation/runs/test-a/` may appear (its `repair/` and `repeat-<k>/`
+  folders included: the same for the records of §7 and §8), and no `*.tmp` file: git ignores a
+  leftover `.tmp`, so also run `git status --ignored docs/validation/runs/test-a`, which covers
+  `repair/` and `repeat-<k>/` too; if it shows a `.tmp` file, do not commit, and see §10;
 - then commit them:
 
   ```powershell
@@ -243,7 +315,7 @@ Commit each model's records right after its run and its checks, before the next 
 - until a commit is pushed, the records exist only on this laptop (Anthropic keeps batch results
   for 29 days after the batch was created).
 
-## 8. If something goes wrong
+## 10. If something goes wrong
 
 Any stop or warning that is not listed below: do not run `--yes` again; send the whole output to
 the reviewer.
@@ -336,7 +408,9 @@ the reviewer.
        Batches, the batch); the reviewer first checks it: one `{"custom_id": …, "result": …}`
        object per line;
      - only if the reviewer decides so, an empty file at that path, from the repository root
-       (the release then sends every pending scenario of that batch again):
+       (the release then sends every pending scenario of that batch again; for a repair or a
+       repeat run, `repair/<model dir>` or `repeat-<k>/claude-opus-5-5` in place of
+       `<model dir>`):
 
        ```powershell
        $file = "docs/validation/runs/test-a/<model dir>/batch-<id>.results.jsonl"
@@ -349,8 +423,25 @@ the reviewer.
 
   `<scenario>: errored (<type>); it would fail again`: the batch is held; send the message to the
   reviewer.
-- **The 4-batch cap.** `<scenario> was sent in 4 batches without an answer; it is not sent
-  again`: do not edit `batches.json`; send the message and `batches.json` to the reviewer.
+- **A scenario without an answer (ADR-0008 D6).** Claude models only: a scenario that got no
+  answer in four batches (each errored, expired or canceled) is sent once more, at least 24 hours
+  after its fourth batch was created.
+  - Until then every run stops before it sends anything, also for the other scenarios:
+    `<scenario> was sent in 4 batches without an answer; ADR-0008 D6 sends it once more from
+    <time>: run the same command again then; nothing was sent` (`were` and `them` for several
+    scenarios). `<time>` is UTC, like `2026-12-02T10:15:03Z` (in Athens add two hours in November
+    and December). The dry run shows `Last batch (ADR-0008 D6) from <time>: <scenarios>`.
+  - After that time, run the same command again: the scenario goes into a fifth batch with every
+    other pending scenario.
+  - If the fifth batch brings no answer either, the run prints
+    `<scenario>: no answer after 5 batches; it counts as an invalid candidate (ADR-0008 D6)` and
+    goes on. It writes `comparison.json` and `unanswered.json` in the scenario's directory, and no
+    `response.json`; the scenario is never sent again. The summary counts it as an invalid
+    candidate (the stop `no-answer`), `eval rescore` prints `skipped (no response.json)` for it,
+    and the dry run lists it as `Unanswered (ADR-0008 D6): <scenarios>`.
+  - Never delete or edit `unanswered.json` or `batches.json`; commit them with the records (§9).
+  - Gemini has no such limit: a Gemini scenario without an answer is sent again by every run until
+    it has one.
 - **Four failures in a row.** `the request failed 4 times; last: …`, `creating a batch failed 4
   times; last: …` and `listing batches failed: …`:
   - the network or the API failed four times in a row;
@@ -401,8 +492,9 @@ the reviewer.
   this laptop do not know. If the records of an earlier run were lost (for example after
   `git clean`, in a second clone or with another `--runs`), run
   `git status docs/validation/runs/test-a` from the repository root; if it shows the files of
-  `<model dir>` as deleted, restore them with
-  `git restore docs/validation/runs/test-a/<model dir>` and run the same command again.
+  `<model dir>` (or of `repair/<model dir>` or `repeat-<k>/claude-opus-5-5`) as deleted, restore
+  them with `git restore docs/validation/runs/test-a/<model dir>` (or that `repair/` or
+  `repeat-<k>/` path) and run the same command again.
   Otherwise do not run `--yes` again: send the message and that output to the reviewer.
 - **`the workspace lists more than 1000 batches: this check cannot see them all; nothing was
   sent; send this message to the reviewer`**: send the message to the reviewer.
@@ -410,8 +502,10 @@ the reviewer.
   them from git before running again; nothing was sent`**: the files of that scenario were
   deleted, but its answer is in the kept results of a finished batch; sending it again would pay
   twice. From the repository root, `git status docs/validation/runs/test-a` shows them as
-  deleted; `git restore docs/validation/runs/test-a/<model dir>/<scenario>` brings them back;
-  then run the same command again. If git does not show them, send the message to the reviewer.
+  deleted; `git restore docs/validation/runs/test-a/<model dir>/<scenario>` (for a repair or a
+  repeat run, `repair/<model dir>/<scenario>` or `repeat-<k>/claude-opus-5-5/<scenario>` in that
+  path) brings them back; then run the same command again. If git does not show them, send the
+  message to the reviewer.
   `cannot read the kept results <path>: <reason>; nothing was sent: restore it from git or send
   this message to the reviewer`: the same check could not read that file; if
   `git status docs/validation/runs/test-a` shows it as deleted, `git restore <path>` brings it
@@ -428,8 +522,9 @@ the reviewer.
   -Encoding Ascii`
   Then commit the file with the records. A run never adopts or names an acknowledged batch, and
   the check before a model's first batch does not stop on it. Do not write the file in any other
-  way: `Set-Content`, `Out-File` and `>` change its encoding. The same command, on two short
-  lines to copy:
+  way: `Set-Content`, `Out-File` and `>` change its encoding. This one file serves every run, the
+  repair and repeat runs included: no run reads one in `repair/` or `repeat-<k>/`. The same
+  command, on two short lines to copy:
 
   ```powershell
   $file = "docs/validation/runs/test-a/acknowledged-batches.txt"
