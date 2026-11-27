@@ -48,6 +48,7 @@ from potakt.evaluation.records import (
     RECEIVED_FILE,
     REQUEST_FILE,
     RESPONSE_FILE,
+    UNANSWERED_FILE,
     UNSAVED_RESPONSE_FILE,
     answer_of,
     present,
@@ -56,6 +57,7 @@ from potakt.evaluation.records import (
     write_answer,
     write_atomic,
     write_request,
+    write_unanswered,
 )
 from potakt.evaluation.scenario import METADATA_FILE, LoadedScenario, ScenarioError, load_scenario
 from potakt.evaluation.summary import (
@@ -123,6 +125,7 @@ __all__ = [
     "run_gemini",
     "run_plan",
     "take_lock",
+    "unanswered_scenarios",
 ]
 
 ANTHROPIC_VERSION = "2026-10-21"  # ADR-0007 §7 amendment «Transport»
@@ -503,6 +506,35 @@ def _save_state(model_dir: Path, batches: list[_Batch]) -> None:
     write_atomic(model_dir / BATCH_STATE_FILE, text.encode("utf-8"))
 
 
+# --- a scenario that never gets an answer (ADR-0008 D6, TASK-005e5 decision 4) ----------------
+
+# After ATTEMPTS batches without an answer, one more batch, at least ANSWER_WAIT after the
+# started_at of the last of them; after it, the scenario counts as an invalid candidate.
+LAST_BATCH = ATTEMPTS + 1
+ANSWER_WAIT = timedelta(hours=24)
+LAST_BATCH_WAIT = (
+    "{names} {verb} sent in {attempts} batches without an answer; ADR-0008 D6 sends {pronoun} "
+    "once more from {time}: run the same command again then; nothing was sent"
+)
+UNANSWERED_LINE = (
+    "{name}: no answer after {count} batches; it counts as an invalid candidate (ADR-0008 D6)"
+)
+
+
+def _sent_in(name: str, batches: list[_Batch]) -> list[_Batch]:
+    """The entries of ``batches`` (in file order) that sent scenario ``name`` in a batch: those
+    in state ``open``, ``held`` or ``done`` that list it (a ``creating`` or ``failed`` entry
+    never was a batch)."""
+    return [batch for batch in batches if batch.state in _WITH_BATCH and name in batch.scenarios]
+
+
+def _last_batch_from(sent: list[_Batch]) -> datetime:
+    """ADR-0008 D6: the instant from which a scenario sent in ``ATTEMPTS`` batches goes into its
+    last batch: ``ANSWER_WAIT`` after the ``started_at`` of the last of ``sent`` (the fourth
+    batch)."""
+    return cast(datetime, _started(sent[-1].started_at)) + ANSWER_WAIT  # validated (_entry)
+
+
 # --- the corpus ------------------------------------------------------------------------------
 
 
@@ -516,17 +548,36 @@ def _corpus_names(corpus_dir: Path) -> list[str]:
     )
 
 
+def _unanswered(run_dir: Path) -> bool:
+    """TASK-005e5 decision 4 (ADR-0008 D6): the run directory has ``unanswered.json``."""
+    return present(run_dir / UNANSWERED_FILE)
+
+
 def pending_scenarios(corpus_dir: Path, model_dir: Path) -> list[str]:
-    """The corpus scenarios whose run directory has no ``response.json``, in UTF-8 byte order
-    (``present``: one that cannot be stat'ed raises, TASK-005c3h H8)."""
+    """The corpus scenarios whose run directory has neither ``response.json`` nor
+    ``unanswered.json`` (ADR-0008 D6, TASK-005e5 decision 4), in UTF-8 byte order (``present``:
+    one that cannot be stat'ed raises, TASK-005c3h H8)."""
     return [
-        name for name in _corpus_names(corpus_dir) if not present(model_dir / name / RESPONSE_FILE)
+        name
+        for name in _corpus_names(corpus_dir)
+        if not present(model_dir / name / RESPONSE_FILE) and not _unanswered(model_dir / name)
     ]
 
 
 def recorded_scenarios(corpus_dir: Path, model_dir: Path) -> list[str]:
-    """The corpus scenarios with a recorded ``response.json``, in UTF-8 byte order."""
-    return [name for name in _corpus_names(corpus_dir) if present(model_dir / name / RESPONSE_FILE)]
+    """The corpus scenarios with a recorded ``response.json`` and no ``unanswered.json``, in
+    UTF-8 byte order."""
+    return [
+        name
+        for name in _corpus_names(corpus_dir)
+        if present(model_dir / name / RESPONSE_FILE) and not _unanswered(model_dir / name)
+    ]
+
+
+def unanswered_scenarios(corpus_dir: Path, model_dir: Path) -> list[str]:
+    """TASK-005e5 decision 4: the corpus scenarios whose run directory has ``unanswered.json``
+    (ADR-0008 D6), in UTF-8 byte order."""
+    return [name for name in _corpus_names(corpus_dir) if _unanswered(model_dir / name)]
 
 
 def corpus_scenarios(corpus_dir: Path) -> list[str]:
@@ -901,6 +952,9 @@ class _AnthropicRun:
         if batch is None:
             if not batches:
                 self._check_workspace(started)  # H6: before the model's first batch
+            pending = self._settle_unanswered(pending, batches)  # TASK-005e5: ADR-0008 D6
+            if not pending:
+                return
             self._next_attempt(pending, batches)
             batch = self._create(pending, batches)
         elif not adopted:
@@ -916,6 +970,9 @@ class _AnthropicRun:
             if not pending:
                 return
             batches = _load_state(self.model_dir)
+            pending = self._settle_unanswered(pending, batches)  # TASK-005e5: ADR-0008 D6
+            if not pending:
+                return
             self.sleep(base_delay(self._next_attempt(pending, batches)))
             batch = self._create(pending, batches)
 
@@ -1071,22 +1128,52 @@ class _AnthropicRun:
         if failures:
             raise RunStopped("; ".join(failures) + STILL_HELD.format(id=batch_id))
 
+    def _settle_unanswered(self, pending: list[str], batches: list[_Batch]) -> list[str]:
+        """TASK-005e5 decision 4 (ADR-0008 D6), before the next batch is created: each pending
+        scenario already sent in ``LAST_BATCH`` batches or more (``_sent_in``) is never sent
+        again. ``write_unanswered`` records it (``comparison.json``, then ``unanswered.json``
+        with the ids of those entries in the order of ``batches.json``), ``UNANSWERED_LINE`` is
+        printed, and the run goes on with the others, which are returned. A failure of either
+        write is raised: the scenario stays pending and the next run writes both again."""
+        left: list[str] = []
+        for name in pending:
+            sent = _sent_in(name, batches)
+            if len(sent) < LAST_BATCH:
+                left.append(name)
+                continue
+            ids = [cast(str, batch.id) for batch in sent]  # a sent entry names its batch
+            write_unanswered(self.model_dir / name, _load(self.corpus_dir, name), ids)
+            self.echo(UNANSWERED_LINE.format(name=name, count=LAST_BATCH))
+        return left
+
     def _next_attempt(self, pending: list[str], batches: list[_Batch]) -> int:
-        """The attempt number of the next batch for ``pending``; ``RunStopped`` if a scenario
-        was already sent in ``ATTEMPTS`` batches (``open`` or ``done`` entries: a ``failed``
-        create was never a batch)."""
-        sent = {
-            name: sum(name in batch.scenarios for batch in batches if batch.state in _WITH_BATCH)
-            for name in pending
+        """The attempt number of the next batch for ``pending`` (a ``failed`` create was never a
+        batch: ``_sent_in``). TASK-005e5 decision 4 (ADR-0008 D6): ``RunStopped`` with
+        ``LAST_BATCH_WAIT``, before anything is sent, while ``now()`` is earlier than
+        ``_last_batch_from`` of a scenario already sent in ``ATTEMPTS`` batches; the stop names
+        every such scenario in UTF-8 byte order and the latest of their times. From that time
+        on (equal included) such a scenario goes into the next batch with every other pending
+        one."""
+        sent = {name: _sent_in(name, batches) for name in pending}
+        now = self.now()
+        waiting = {
+            name: _last_batch_from(entries)
+            for name, entries in sent.items()
+            if len(entries) == ATTEMPTS and now < _last_batch_from(entries)
         }
-        exhausted = [name for name in pending if sent[name] >= ATTEMPTS]
-        if exhausted:
-            verb = "was" if len(exhausted) == 1 else "were"
+        if waiting:
+            names = sorted(waiting, key=lambda name: name.encode("utf-8"))
+            one = len(names) == 1
             raise RunStopped(
-                f"{', '.join(exhausted)} {verb} sent in {ATTEMPTS} batches without an answer; "
-                "it is not sent again"
+                LAST_BATCH_WAIT.format(
+                    names=", ".join(names),
+                    verb="was" if one else "were",
+                    attempts=ATTEMPTS,
+                    pronoun="it" if one else "them",
+                    time=_stamp(max(waiting.values())),
+                )
             )
-        return max(sent.values()) + 1
+        return max(len(entries) for entries in sent.values()) + 1
 
     # -- create and reconcile (TASK-005c3b D2) --
 
@@ -2141,6 +2228,28 @@ def cost_upper_bound(model: str, corpus_dir: Path, scenarios: list[str]) -> floa
     return total / 1_000_000
 
 
+def _unanswered_plan(
+    corpus_dir: Path, model_dir: Path, pending: list[str], batches: list[_Batch]
+) -> list[str]:
+    """TASK-005e5 decision 4 (ADR-0008 D6), the dry run's lines after ``Recorded``: the pending
+    scenarios sent in ``ATTEMPTS`` batches, whose next batch is their last, from the latest of
+    their times (``_last_batch_from``, as the stop names it), and the scenarios recorded as
+    unanswered; each line only when it names a scenario."""
+    waiting = {
+        name: _last_batch_from(sent)
+        for name in pending
+        if len(sent := _sent_in(name, batches)) == ATTEMPTS
+    }
+    lines: list[str] = []
+    if waiting:
+        time = _stamp(max(waiting.values()))
+        lines.append(f"Last batch (ADR-0008 D6) from {time}: {', '.join(waiting)}")
+    unanswered = unanswered_scenarios(corpus_dir, model_dir)
+    if unanswered:
+        lines.append(f"Unanswered (ADR-0008 D6): {', '.join(unanswered)}")
+    return lines
+
+
 GEMINI_COST_LINE = (
     "Cost upper bound: $0 on the free tier (the key's project must be on the free tier: runbook §1)"
 )
@@ -2170,6 +2279,7 @@ def run_plan(model: str, corpus_dir: Path, runs_dir: Path) -> str:
         f"Runs directory: {model_dir}",
         f"Pending ({len(pending)}): {', '.join(pending) or 'none'}",
         f"Recorded ({len(recorded)}): {', '.join(recorded) or 'none'}",
+        *_unanswered_plan(corpus_dir, model_dir, pending, batches),
     ]
     if anthropic:
         # One entry at most is creating or open (_load_state); the dry run never lists batches.

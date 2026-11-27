@@ -12,21 +12,25 @@ import json
 import math
 import os
 import shutil
+import tempfile
 import time
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from hypothesis import example, given, settings
+from hypothesis import strategies as st
 from runner_helpers import (
     ALL_SCENARIOS,
     KEY,
     NOW,
     STARTED_AT,
+    UNANSWERED_ISSUE,
     Echo,
     RefusedReplace,
     Sleeps,
@@ -46,6 +50,9 @@ from potakt import __version__
 from potakt.cli import app
 from potakt.evaluation import (
     CORPUS_PATH,
+    InvalidModel,
+    LoadedModel,
+    compare_models,
     load_scenario,
     render_test_a,
     request_payload,
@@ -62,6 +69,7 @@ from potakt.evaluation.runner import (
     run_anthropic,
 )
 from potakt.evaluation.transport import HttpResponse, RunStopped, TransportError, UrllibTransport
+from potakt.model import ValidationIssue
 
 HAIKU = "claude-haiku-5-5"
 OPUS = "claude-opus-5-5"
@@ -720,7 +728,18 @@ def test_a_scenario_missing_from_the_results_holds_the_batch(tmp_path: Path) -> 
     assert raw.read_bytes() == first.encode()
 
 
-def test_a_scenario_in_four_batches_is_not_resubmitted(tmp_path: Path) -> None:
+def last_batch_stop(names: str, time: str, *, several: bool = False) -> str:
+    """TASK-005e5 decision 4 (ADR-0008 D6): the stop of a run while a scenario sent in four
+    batches without an answer waits for its last batch."""
+    verb, pronoun = ("were", "them") if several else ("was", "it")
+    return (
+        f"{names} {verb} sent in 4 batches without an answer; ADR-0008 D6 sends {pronoun} once "
+        f"more from {time}: run the same command again then; nothing was sent"
+    )
+
+
+def test_a_scenario_in_four_batches_waits_24_hours_after_the_fourth(tmp_path: Path) -> None:
+    # TASK-005e5 decision 4: the 4-batch cap of TASK-005c3 became ADR-0008 D6's wait.
     server = FakeBatches(
         outcome=lambda n, s: {"type": "expired"} if s == "02-hotel-reception" else succeeded()
     )
@@ -729,9 +748,9 @@ def test_a_scenario_in_four_batches_is_not_resubmitted(tmp_path: Path) -> None:
     with pytest.raises(RunStopped) as raised:
         run()
 
-    assert str(raised.value) == (
-        "02-hotel-reception was sent in 4 batches without an answer; it is not sent again"
-    )
+    # The fourth batch was created at 10:06:15 (after the polls and the pauses 15, 45, 135).
+    assert str(raised.value) == last_batch_stop("02-hotel-reception", "2026-11-03T10:06:15Z")
+    assert run.state()["batches"][3]["started_at"] == "2026-11-02T10:06:15Z"
     assert server.creates() == [list(ALL_SCENARIOS[:2])] + [["02-hotel-reception"]] * 3
     assert run.sleeps == [120, 60, 15, 60, 45, 60, 135, 60]  # H6: the workspace wait first
     assert run.recorded() == ["01-pharmacy"]
@@ -746,6 +765,238 @@ def test_the_attempt_cap_holds_across_invocations(tmp_path: Path) -> None:
         run()
 
     assert after_the_clock(run.server) == []
+
+
+# --- TASK-005e5 decision 4: ADR-0008 D6, one more batch after 24 hours, then unanswered -----
+
+HOTEL = "02-hotel-reception"
+CALL_CENTRE = "03-call-centre"
+
+
+def unanswered_line(name: str) -> str:
+    return f"{name}: no answer after 5 batches; it counts as an invalid candidate (ADR-0008 D6)"
+
+
+def stamp(moment: datetime) -> str:
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def batches_of(name: str, count: int, last: str, first_number: int = 90) -> list[dict[str, Any]]:
+    """``count`` done entries that list ``name``, a day apart before the last one, which
+    started at ``last``."""
+    end = datetime.strptime(last, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+    return [
+        batch_entry(
+            f"msgbatch_{first_number + n}",
+            [name],
+            "done",
+            started_at=stamp(end - timedelta(days=count - 1 - n)),
+        )
+        for n in range(count)
+    ]
+
+
+def test_a_scenario_in_four_batches_stops_the_run_until_24_hours_after_the_fourth(
+    tmp_path: Path,
+) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:3])
+    write_state(run.model_dir, *batches_of(HOTEL, 4, "2026-11-01T10:00:01Z"))
+    before = (run.model_dir / BATCH_STATE_FILE).read_bytes()
+
+    with pytest.raises(RunStopped) as raised:
+        run()  # the laptop clock reads 2026-11-02T10:00:00Z: one second early
+
+    assert str(raised.value) == last_batch_stop(HOTEL, "2026-11-02T10:00:01Z")
+    assert run.server.creates() == []
+    assert after_the_clock(run.server) == []  # nothing listed, created or polled
+    assert (run.model_dir / BATCH_STATE_FILE).read_bytes() == before
+    assert run.recorded() == []
+
+
+def test_several_waiting_scenarios_are_named_with_the_latest_time(tmp_path: Path) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:3])
+    hotel = batches_of(HOTEL, 4, "2026-11-01T11:00:00Z")
+    call_centre = batches_of(CALL_CENTRE, 4, "2026-11-01T10:30:00Z", first_number=80)
+    write_state(run.model_dir, *call_centre, *hotel)
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    names = f"{HOTEL}, {CALL_CENTRE}"  # UTF-8 byte order, whatever the order of batches.json
+    assert str(raised.value) == last_batch_stop(names, "2026-11-02T11:00:00Z", several=True)
+    assert run.server.creates() == []  # 01-pharmacy, pending too, is not sent either
+
+
+def test_only_the_scenarios_that_still_wait_are_named(tmp_path: Path) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:3])
+    hotel = batches_of(HOTEL, 4, "2026-11-01T10:30:00Z")  # waits until 10:30
+    call_centre = batches_of(CALL_CENTRE, 4, "2026-11-01T09:00:00Z", first_number=80)  # due
+    write_state(run.model_dir, *hotel, *call_centre)
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == last_batch_stop(HOTEL, "2026-11-02T10:30:00Z")
+    assert run.server.creates() == []
+
+
+def test_the_wait_counts_from_the_fourth_batch_not_the_first(tmp_path: Path) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[1:2])
+    # The first batch started 30 hours ago, the fourth 23 hours ago: one more hour to wait.
+    entries = batches_of(HOTEL, 4, "2026-11-01T11:00:00Z")
+    entries[0]["started_at"] = "2026-11-01T04:00:00Z"
+    write_state(run.model_dir, *entries)
+
+    with pytest.raises(RunStopped) as raised:
+        run()
+
+    assert str(raised.value) == last_batch_stop(HOTEL, "2026-11-02T11:00:00Z")
+
+
+@settings(deadline=None, max_examples=40)
+@given(offset=st.integers(min_value=-7200, max_value=7200))
+@example(offset=-1)
+@example(offset=0)
+@example(offset=1)
+def test_the_last_batch_is_sent_from_24_hours_after_the_fourth_exactly(offset: int) -> None:
+    # The laptop clock reads t + offset seconds, t = the fourth batch's started_at + 24 h.
+    with tempfile.TemporaryDirectory(prefix="potakt-d6-") as folder:
+        run = make_run(Path(folder), FakeBatches(), (HOTEL,))
+        fourth = NOW - timedelta(hours=24, seconds=offset)
+        write_state(run.model_dir, *batches_of(HOTEL, 4, stamp(fourth)))
+        try:
+            run()
+        except RunStopped as error:
+            assert str(error) == last_batch_stop(HOTEL, stamp(NOW - timedelta(seconds=offset)))
+
+        assert bool(run.server.creates()) == (offset >= 0)
+        if offset >= 0:
+            assert run.server.creates() == [[HOTEL]]
+            assert run.recorded() == [HOTEL]
+
+
+def test_the_fifth_batch_carries_every_pending_scenario(tmp_path: Path) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:3])
+    write_state(run.model_dir, *batches_of(HOTEL, 4, "2026-11-01T09:00:00Z"))
+
+    run()
+
+    assert run.server.creates() == [list(ALL_SCENARIOS[:3])]
+    assert run.recorded() == list(ALL_SCENARIOS[:3])
+    assert len(run.state()["batches"]) == 5
+
+
+def expected_unanswered_comparison(corpus: Path, name: str) -> bytes:
+    """The comparison of the truth with an invalid candidate whose one issue is ADR-0008 D6's,
+    at ``/`` and with no stage, built from the public API (as for an answer that did not end
+    normally)."""
+    scenario = load_scenario(corpus / name)
+    invalid = InvalidModel((ValidationIssue("/", UNANSWERED_ISSUE),), None)
+    comparison = compare_models(LoadedModel(scenario.truth, scenario.instance), invalid)
+    return comparison.to_json().encode("utf-8")
+
+
+def test_a_fifth_batch_without_an_answer_records_the_scenario_as_unanswered(
+    tmp_path: Path,
+) -> None:
+    server = FakeBatches(outcome=lambda n, s: {"type": "expired"} if s == HOTEL else succeeded())
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:2])
+    write_state(run.model_dir, *batches_of(HOTEL, 4, "2026-11-01T09:00:00Z"))
+
+    run()
+
+    assert server.creates() == [list(ALL_SCENARIOS[:2])]
+    assert run.echo[-2:] == [f"{HOTEL}: expired; pending", unanswered_line(HOTEL)]
+    run_dir = run.model_dir / HOTEL
+    assert sorted(path.name for path in run_dir.iterdir()) == [
+        "comparison.json",
+        "request.json",
+        "unanswered.json",
+    ]
+    assert (run_dir / "comparison.json").read_bytes() == expected_unanswered_comparison(
+        run.corpus, HOTEL
+    )
+    comparison = json.loads((run_dir / "comparison.json").read_bytes())
+    assert (comparison["valid"], comparison["invalid_stage"]) == (False, None)
+    assert comparison["issues"] == [{"path": "/", "message": UNANSWERED_ISSUE}]
+    assert (run_dir / "unanswered.json").read_bytes() == (
+        b'{\n  "batches": [\n    "msgbatch_90",\n    "msgbatch_91",\n    "msgbatch_92",\n'
+        b'    "msgbatch_93",\n    "msgbatch_01"\n  ]\n}\n'
+    )
+    assert run.recorded() == ["01-pharmacy"]
+    assert runner_module.pending_scenarios(run.corpus, run.model_dir) == []
+    assert runner_module.recorded_scenarios(run.corpus, run.model_dir) == ["01-pharmacy"]
+
+    run.echo.clear()
+    run()  # the next run sends nothing for it
+
+    assert server.creates() == [list(ALL_SCENARIOS[:2])]
+    assert run.echo == ["nothing to run"]
+
+
+def test_an_unanswered_scenario_never_reaches_a_sixth_batch(tmp_path: Path) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[:2])
+    write_state(run.model_dir, *batches_of(HOTEL, 5, "2026-11-01T09:00:00Z"))
+
+    run()
+
+    assert run.server.creates() == [["01-pharmacy"]]
+    assert run.echo[0] == unanswered_line(HOTEL)
+    assert (run.model_dir / HOTEL / "unanswered.json").is_file()
+    assert not (run.model_dir / HOTEL / "response.json").exists()
+
+
+def test_a_held_entry_counts_as_one_of_the_batches(tmp_path: Path) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[1:2])
+    entries = batches_of(HOTEL, 4, "2026-11-01T10:00:01Z")
+    entries[3] = {**entries[3], "state": "held", "problems": ["p1"]}
+    write_state(run.model_dir, *entries)
+    (run.model_dir / "batch-msgbatch_93.results.jsonl").write_bytes(b"")  # send it again
+
+    with pytest.raises(RunStopped) as raised:
+        run(release="msgbatch_93")
+
+    assert str(raised.value) == last_batch_stop(HOTEL, "2026-11-02T10:00:01Z")
+    assert run.server.creates() == []
+
+
+def test_a_released_fifth_batch_makes_the_scenario_unanswered(tmp_path: Path) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[1:2])
+    entries = batches_of(HOTEL, 5, "2026-11-02T09:00:00Z")
+    entries[4] = {**entries[4], "state": "held", "problems": ["p1"]}
+    write_state(run.model_dir, *entries)
+    (run.model_dir / "batch-msgbatch_94.results.jsonl").write_bytes(b"")
+
+    run(release="msgbatch_94")
+
+    assert run.echo == ["batch msgbatch_94 released after review", unanswered_line(HOTEL)]
+    marker = json.loads((run.model_dir / HOTEL / "unanswered.json").read_bytes())
+    assert marker == {"batches": [f"msgbatch_{90 + n}" for n in range(5)]}
+    assert run.server.creates() == []
+
+
+def test_a_marker_that_could_not_be_written_is_completed_by_the_next_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pauses: list[float]
+) -> None:
+    run = make_run(tmp_path, FakeBatches(), ALL_SCENARIOS[1:2])
+    write_state(run.model_dir, *batches_of(HOTEL, 5, "2026-11-01T09:00:00Z"))
+    run_dir = run.model_dir / HOTEL
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "replace", RefusedReplace(10, "unanswered.json"))
+        with pytest.raises(PermissionError):
+            run()
+    assert sorted(path.name for path in run_dir.iterdir()) == ["comparison.json"]
+    first = (run_dir / "comparison.json").read_bytes()
+    (run_dir / "comparison.json").write_bytes(b"{}")  # proves that the next run writes it again
+    run.echo.clear()
+
+    run()
+
+    assert run.echo == [unanswered_line(HOTEL)]
+    assert (run_dir / "comparison.json").read_bytes() == first
+    assert first == expected_unanswered_comparison(run.corpus, HOTEL)
+    assert json.loads((run_dir / "unanswered.json").read_bytes())["batches"][-1] == "msgbatch_94"
+    assert run.server.creates() == []
 
 
 def test_a_failed_create_is_not_counted_as_a_batch(tmp_path: Path) -> None:

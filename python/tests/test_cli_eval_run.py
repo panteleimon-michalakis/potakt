@@ -8,6 +8,7 @@ import ast
 import json
 import os
 import re
+import shutil
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta, timezone
@@ -24,6 +25,7 @@ from runner_helpers import (
     anthropic_message,
     batch_entry,
     corpus_copy,
+    unanswered_records,
     write_state,
 )
 from test_evaluation_runner_anthropic import (
@@ -185,6 +187,55 @@ def test_the_dry_run_shows_an_unconfirmed_create_request_and_lists_nothing(
     assert "Open batch" not in result.stdout
 
 
+def test_the_dry_run_names_the_last_batches_and_the_unanswered_scenarios(tmp_path: Path) -> None:
+    # TASK-005e5 decision 4 (ADR-0008 D6): after the Recorded line, the scenarios sent in four
+    # batches (from the latest of their times) and those given up after five.
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:5])
+    runs = tmp_path / "runs"
+    write_answer(
+        runs / HAIKU / "01-pharmacy",
+        load_scenario(corpus / "01-pharmacy"),
+        HAIKU,
+        anthropic_message(HAIKU),
+    )
+    # 02 and 03: four batches each, the fourth started 2026-11-04T03:00:00Z.
+    entries = [
+        batch_entry(
+            f"msgbatch_9{n}", ALL_SCENARIOS[1:3], "done", started_at=f"2026-11-0{n + 1}T0{n}:00:00Z"
+        )
+        for n in range(4)
+    ]
+    entries.append(batch_entry("msgbatch_99", ["05-supermarket-checkouts"], "done"))
+    write_state(runs / HAIKU, *entries)
+    unanswered_records(runs / HAIKU / "04-restaurant", corpus / "04-restaurant", ("m1",) * 5)
+
+    result = eval_run(runs, HAIKU, corpus=corpus)
+
+    assert result.exit_code == 0, result.stderr
+    lines = result.stdout.splitlines()
+    recorded = lines.index("Recorded (1): 01-pharmacy")
+    assert lines[recorded - 1] == (
+        "Pending (3): 02-hotel-reception, 03-call-centre, 05-supermarket-checkouts"
+    )
+    assert lines[recorded + 1 : recorded + 3] == [
+        "Last batch (ADR-0008 D6) from 2026-11-05T03:00:00Z: 02-hotel-reception, 03-call-centre",
+        "Unanswered (ADR-0008 D6): 04-restaurant",
+    ]
+    assert "Cost upper bound: $" in result.stdout
+
+
+def test_the_dry_run_has_no_d6_line_without_such_a_scenario(tmp_path: Path) -> None:
+    corpus = corpus_copy(tmp_path, ALL_SCENARIOS[:2])
+    runs = tmp_path / "runs"
+    entries = [batch_entry(f"msgbatch_9{n}", ["02-hotel-reception"], "done") for n in range(3)]
+    write_state(runs / HAIKU, *entries)
+
+    result = eval_run(runs, HAIKU, corpus=corpus)
+
+    assert result.exit_code == 0, result.stderr
+    assert "ADR-0008 D6" not in result.stdout
+
+
 def leftover(runs: Path, model: str, name: str) -> Path:
     """A ``response.json.tmp`` left by an earlier run for scenario ``name``."""
     path = runs / model / name / "response.json.tmp"
@@ -330,6 +381,22 @@ def test_opus_after_an_incomplete_haiku_run_is_refused_even_as_a_dry_run(tmp_pat
         "claude-opus-5-5 runs only after claude-haiku-5-5 has a complete run "
         "(missing: 04-restaurant)\n"
     )
+
+
+def test_opus_is_allowed_after_a_haiku_run_whose_only_gap_is_an_unanswered_scenario(
+    tmp_path: Path,
+) -> None:
+    # TASK-005e5 decision 4 (ADR-0008 D6): an unanswered scenario is scored (an invalid
+    # candidate), so Haiku's run is complete.
+    complete_haiku_run(tmp_path)
+    shutil.rmtree(tmp_path / HAIKU / "04-restaurant")
+    unanswered_records(tmp_path / HAIKU / "04-restaurant", CORPUS_PATH / "04-restaurant", ("m",))
+
+    runner_module.check_order(OPUS, tmp_path, CORPUS_PATH)  # no stop
+    result = eval_run(tmp_path, OPUS)
+
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout.startswith("Test A run plan: claude-opus-5-5\n")
 
 
 @pytest.mark.parametrize("model", ["claude-sonnet-5-5", "gpt-6"])

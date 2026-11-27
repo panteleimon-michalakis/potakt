@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
-from runner_helpers import anthropic_message, truth_text
+from runner_helpers import anthropic_message, truth_text, unanswered_records
 from test_evaluation_lookalike_recall import written
 from typer.testing import CliRunner
 
@@ -1453,3 +1453,76 @@ def test_files_that_cannot_be_copied_change_no_gate_number(
     assert (replaced.matched_count, replaced.truth_count) == (5, 24)
     unchanged = dataclasses.replace(replaced, lookalike_valid=())
     assert dataclasses.replace(failed, notes=()) == unchanged  # everything else is the same
+
+
+# --- TASK-005e5 decision 4: a scenario without an answer after five batches (ADR-0008 D6) ------
+
+HOTEL = "02-hotel-reception"
+UNANSWERED_NOTE = (
+    f"{HOTEL}: no answer after 5 batches; counts as an invalid candidate (ADR-0008 D6)"
+)
+
+
+def runs_with_an_unanswered_scenario(tmp_path: Path) -> tuple[Path, Path]:
+    """A two-scenario corpus: 01 answered with its truth, 02 given up after five batches."""
+    corpus = corpus_of(tmp_path, ["01-pharmacy", HOTEL])
+    runs = tmp_path / "claude-haiku-5-5"
+    scenario = load_scenario(corpus / "01-pharmacy")
+    message = anthropic_message("claude-haiku-5-5", truth_text("01-pharmacy"))
+    write_answer(runs / "01-pharmacy", scenario, "claude-haiku-5-5", message)
+    batches = tuple(f"msgbatch_0{n}" for n in range(1, 6))
+    unanswered_records(runs / HOTEL, corpus / HOTEL, batches)
+    return runs, corpus
+
+
+def test_an_unanswered_scenario_is_scored_as_an_invalid_candidate(tmp_path: Path) -> None:
+    runs, corpus = runs_with_an_unanswered_scenario(tmp_path)
+
+    summary = summarize(runs, corpus)
+
+    assert summary.complete
+    assert summary.missing == ()
+    assert (summary.scenarios_run, summary.valid) == (2, 1)
+    assert summary.stops == {"end_turn": 1, "no-answer": 1}
+    assert summary.notes == (UNANSWERED_NOTE,)  # no usage, assumptions or look-alike note
+    assert summary.thinking_unknown == ("01-pharmacy",)  # its usage has no thinking count; 02's
+    assert (summary.input_tokens, summary.output_tokens) == (1000, 200)  # is unknown: 01's only
+    [_, row] = summary.rows
+    assert (row.scenario, row.valid, row.issue_class, row.stop) == (
+        HOTEL,
+        False,
+        "stop reason",
+        "no-answer",
+    )
+    assert (row.output_tokens, row.thinking_tokens, row.cost_usd) == (None, None, None)
+    assert (row.matched_count, row.assumptions) == (0, ())
+    lines = summary.to_text().splitlines()
+    assert "Complete: yes" in lines
+    assert "Stops: end_turn 1, no-answer 1" in lines
+    assert f"  {row.to_text()}" in lines
+    assert ", invalid (stop reason), stop no-answer, output n/a (thinking n/a), cost n/a, " in (
+        row.to_text()
+    )
+    assert f"Note: {UNANSWERED_NOTE}" in lines
+
+
+def test_an_unanswered_scenario_counts_its_whole_truth_as_missed(tmp_path: Path) -> None:
+    runs, corpus = runs_with_an_unanswered_scenario(tmp_path)
+    truth = json.loads((runs / HOTEL / "comparison.json").read_bytes())["truth_count"]
+
+    summary = summarize(runs, corpus)
+
+    assert summary.rows[1].truth_count == truth > 0
+    assert summary.matched_count == summary.rows[0].matched_count  # 02 adds nothing matched
+    assert summary.truth_count == summary.rows[0].truth_count + truth
+
+
+def test_rescore_skips_an_unanswered_scenario_and_keeps_its_records(tmp_path: Path) -> None:
+    runs, corpus = runs_with_an_unanswered_scenario(tmp_path)
+    before = {path.name: path.read_bytes() for path in (runs / HOTEL).iterdir()}
+
+    result = CliRunner().invoke(app, ["eval", "rescore", str(runs), "--corpus", str(corpus)])
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == f"01-pharmacy: unchanged\n{HOTEL}: skipped (no response.json)\n"
+    assert {path.name: path.read_bytes() for path in (runs / HOTEL).iterdir()} == before

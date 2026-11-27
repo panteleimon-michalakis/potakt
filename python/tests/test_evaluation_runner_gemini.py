@@ -669,3 +669,19 @@ def test_rescore_leaves_received_json_byte_for_byte(tmp_path: Path) -> None:
 
     assert rescored.exit_code == 0, rescored.stderr
     assert {name: received(run, name) for name in ALL_SCENARIOS[:2]} == before
+
+
+def test_a_gemini_scenario_without_an_answer_is_sent_again_by_every_run(tmp_path: Path) -> None:
+    # TASK-005e5 decision 4: ADR-0008 D6 applies to the Claude batches only; Gemini has none.
+    unavailable = error(503, "UNAVAILABLE", "The model is overloaded.")
+    server = FakeGemini(script={"01-pharmacy": [unavailable] * 24})
+    run = make_run(tmp_path, server, ALL_SCENARIOS[:1])
+    for _ in range(6):  # six runs of four failed attempts each: more than D6's five batches
+        with pytest.raises(RunStopped, match="the request failed 4 times"):
+            run()
+
+    run()
+
+    assert server.sent() == ["01-pharmacy"] * 25
+    assert run.recorded() == ["01-pharmacy"]
+    assert not (run.model_dir / "01-pharmacy" / "unanswered.json").exists()

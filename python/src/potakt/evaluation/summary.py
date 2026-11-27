@@ -34,6 +34,7 @@ from potakt.evaluation.records import (
     COMPARISON_FILE,
     REGISTERED_MODELS,
     RESPONSE_FILE,
+    UNANSWERED_FILE,
     answer_of,
 )
 from potakt.evaluation.scenario import METADATA_FILE, Scenario, ScenarioError, load_scenario
@@ -71,6 +72,10 @@ BOOTSTRAP_RESAMPLES = 10_000
 BOOTSTRAP_SEED = 20261109
 # ADR-0008 D12: an assumption is model output, shown printable and cut to this many characters.
 ASSUMPTION_TEXT_LIMIT = 1000
+# TASK-005e5 decision 4 (ADR-0008 D6): the stop and the note of a run directory with
+# unanswered.json and no response.json.
+NO_ANSWER = "no-answer"
+UNANSWERED_NOTE = "{name}: no answer after 5 batches; counts as an invalid candidate (ADR-0008 D6)"
 _OUTSIDE_DIRECTORY_ALPHABET = re.compile(r"[^A-Za-z0-9._-]")
 _MILLION = 1_000_000
 
@@ -576,12 +581,21 @@ def summarize(runs_dir: Path, corpus_dir: Path) -> Summary:
                 _tally(templates, missed.template, 0, 1)
                 _tally(hardness, missed.hardness, 0, 1)
                 diagnostics[missed.category] += 1
-        response, response_problem = _read_response(run)
-        tokens = None if response_problem else _usage(response)
-        if response_problem:
-            notes.append(f"{name}: {response_problem}; usage counted as 0")
-        elif tokens is None:
-            notes.append(f"{name}: usage unknown in {RESPONSE_FILE}; usage counted as 0")
+        # TASK-005e5 decision 4 (ADR-0008 D6): no answer after five batches, so no response.json:
+        # scored from comparison.json, stop NO_ANSWER, usage unknown, and this note alone.
+        unanswered = (run / UNANSWERED_FILE).is_file() and not (run / RESPONSE_FILE).is_file()
+        response: object = None
+        response_problem = ""
+        tokens: tuple[int, int, int | None] | None = None
+        if unanswered:
+            notes.append(UNANSWERED_NOTE.format(name=name))
+        else:
+            response, response_problem = _read_response(run)
+            tokens = None if response_problem else _usage(response)
+            if response_problem:
+                notes.append(f"{name}: {response_problem}; usage counted as 0")
+            elif tokens is None:
+                notes.append(f"{name}: usage unknown in {RESPONSE_FILE}; usage counted as 0")
         run_cost: float | None = None
         if tokens is not None:
             input_tokens, output_tokens, thinking_tokens = tokens
@@ -595,15 +609,20 @@ def summarize(runs_dir: Path, corpus_dir: Path) -> Summary:
                 run_cost = _run_cost_micro(model, input_tokens, output_tokens)
                 cost_micro += run_cost
         # One answer_of call gives both the counted stop and the row's stop.
-        stop = answer_of(model, response).stop if registered and not response_problem else None
+        if unanswered:
+            stop = NO_ANSWER if registered else None
+        else:
+            stop = answer_of(model, response).stop if registered and not response_problem else None
         if stop is not None:
             stops[stop] += 1
         if record is not None:
-            found, assumptions_problem = _read_assumptions(run)
-            if assumptions_problem:
-                notes.append(f"{name}: {assumptions_problem}; assumptions not shown")
+            found: tuple[str, ...] = ()
+            if not unanswered:
+                found, assumptions_problem = _read_assumptions(run)
+                if assumptions_problem:
+                    notes.append(f"{name}: {assumptions_problem}; assumptions not shown")
             rows.append(_row(name, *record, stop, tokens, run_cost, found))
-            if not record[0].valid and record[0].invalid_stage == "data":
+            if not unanswered and not record[0].valid and record[0].invalid_stage == "data":
                 made_valid, lookalike_problem = _lookalike_matched(run, corpus_dir)
                 if lookalike_problem:
                     notes.append(f"{name}: {lookalike_problem}; look-alike ids not replaced")

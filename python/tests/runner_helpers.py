@@ -9,7 +9,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
-from potakt.evaluation import CORPUS_PATH
+from potakt.evaluation import (
+    CORPUS_PATH,
+    InvalidModel,
+    LoadedModel,
+    compare_models,
+    load_scenario,
+)
+from potakt.model import ValidationIssue
 
 KEY = "potakt-test-key"  # the only key value any test uses (CLAUDE.md golden rule 3)
 NOW = datetime(2026, 11, 2, 10, 0, 0, tzinfo=UTC)
@@ -141,6 +148,22 @@ class RefusedReplace:
             self.refused += 1
             raise PermissionError(13, "Permission denied")
         self.real(cast(Any, source), cast(Any, destination))
+
+
+UNANSWERED_ISSUE = "no answer after 5 batches (ADR-0008 D6)"  # TASK-005e5 decision 4
+
+
+def unanswered_records(run_dir: Path, scenario_dir: Path, batch_ids: tuple[str, ...]) -> None:
+    """The records of a scenario that ADR-0008 D6 gave up on, built by hand from the public API
+    (not by the runner): ``comparison.json`` of an invalid candidate whose one issue is at ``/``
+    with ``UNANSWERED_ISSUE`` and no stage, and ``unanswered.json`` naming ``batch_ids``."""
+    scenario = load_scenario(scenario_dir)
+    invalid = InvalidModel((ValidationIssue("/", UNANSWERED_ISSUE),), None)
+    comparison = compare_models(LoadedModel(scenario.truth, scenario.instance), invalid)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "comparison.json").write_bytes(comparison.to_json().encode("utf-8"))
+    marker = json.dumps({"batches": list(batch_ids)}, indent=2) + "\n"
+    (run_dir / "unanswered.json").write_bytes(marker.encode("utf-8"))
 
 
 def files_containing(root: Path, needle: str) -> list[str]:

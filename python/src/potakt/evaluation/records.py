@@ -17,7 +17,7 @@ still fails stays in ``response.json.tmp``.
 import json
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,6 +43,8 @@ __all__ = [
     "REGISTERED_MODELS",
     "REQUEST_FILE",
     "RESPONSE_FILE",
+    "UNANSWERED_FILE",
+    "UNANSWERED_ISSUE",
     "UNSAVED_RESPONSE_FILE",
     "Answer",
     "answer_of",
@@ -51,9 +53,11 @@ __all__ = [
     "rescore_run",
     "retry_refused",
     "score_answer",
+    "unanswered_comparison",
     "write_answer",
     "write_atomic",
     "write_request",
+    "write_unanswered",
 ]
 
 REQUEST_FILE = "request.json"
@@ -62,6 +66,10 @@ CANDIDATE_FILE = "candidate.txt"
 COMPARISON_FILE = "comparison.json"
 # ADR-0008 D5: when a Gemini answer arrived, written by the runner just before response.json.
 RECEIVED_FILE = "received.json"
+# TASK-005e5 decision 4 (ADR-0008 D6): a Claude scenario given up after its fifth batch without
+# an answer; the issue of its invalid candidate.
+UNANSWERED_FILE = "unanswered.json"
+UNANSWERED_ISSUE = "no answer after 5 batches (ADR-0008 D6)"
 _TEMPORARY_SUFFIX = ".tmp"
 # TASK-005c3g G5: where ``write_answer`` keeps an answer whose replace failed.
 UNSAVED_RESPONSE_FILE = RESPONSE_FILE + _TEMPORARY_SUFFIX
@@ -179,10 +187,36 @@ def score_answer(scenario: LoadedScenario, answer: Answer) -> tuple[str, Compari
     candidate = extract_candidate(answer.text)
     if answer.normal:
         return candidate, evaluate_candidate(scenario, candidate)
-    truth = LoadedModel(scenario.truth, scenario.instance)
     message = f"the answer did not end normally (stop: {answer.stop})"
-    # No validation step ran, so there is no stage: the stop reason classifies it.
-    return candidate, compare_models(truth, InvalidModel((issue_at((), message),), None))
+    return candidate, _never_validated(scenario, message)
+
+
+def _never_validated(scenario: LoadedScenario, message: str) -> Comparison:
+    """The comparison of the truth with an invalid candidate whose one issue is ``message`` at
+    ``/``: no validation step ran, so there is no stage (the stop reason classifies it)."""
+    truth = LoadedModel(scenario.truth, scenario.instance)
+    return compare_models(truth, InvalidModel((issue_at((), message),), None))
+
+
+def unanswered_comparison(scenario: LoadedScenario) -> Comparison:
+    """TASK-005e5 decision 4 (ADR-0008 D6): the comparison of a scenario without an answer after
+    five batches, built like that of an answer that did not end normally: one issue at ``/``,
+    ``UNANSWERED_ISSUE``, and no stage."""
+    return _never_validated(scenario, UNANSWERED_ISSUE)
+
+
+def write_unanswered(run_dir: Path, scenario: LoadedScenario, batch_ids: Sequence[str]) -> None:
+    """TASK-005e5 decision 4 (ADR-0008 D6): record a scenario given up after its fifth batch:
+    first ``comparison.json`` (``unanswered_comparison``), then ``unanswered.json``
+    (``json.dumps({"batches": [...]}, indent=2) + "\\n"``, the ids in the order of
+    ``batches.json``), each with ``write_atomic``. No ``response.json`` or ``candidate.txt`` is
+    written and ``request.json`` is not touched. A failure between the two writes leaves the
+    scenario pending, and the next run writes both again."""
+    run_dir.mkdir(parents=True, exist_ok=True)
+    comparison = unanswered_comparison(scenario).to_json().encode("utf-8")
+    write_atomic(run_dir / COMPARISON_FILE, comparison)
+    marker = json.dumps({"batches": list(batch_ids)}, indent=2) + "\n"
+    write_atomic(run_dir / UNANSWERED_FILE, marker.encode("utf-8"))
 
 
 def present(path: Path) -> bool:

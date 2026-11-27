@@ -527,8 +527,8 @@ def test_no_fault_sequence_pays_twice_or_loses_a_record(
                 returned = True
                 break
             assert result.exit_code == 1, text
-            if "without an answer; it is not sent again" in text:
-                capped = True  # the 4-batch cap: the example ends here
+            if "without an answer; ADR-0008 D6 sends" in text:
+                capped = True  # TASK-005e5: ADR-0008 D6's 24-hour wait ends the example here
                 break
             if held:
                 # The plain re-run after a held batch stops at once and sends nothing.
@@ -548,7 +548,7 @@ def test_no_fault_sequence_pays_twice_or_loses_a_record(
 
     recorded = [name for name in SCENARIOS if (model_dir / name / "response.json").is_file()]
     # 1. Every scenario recorded exactly once (write_answer never replaces a record), unless the
-    #    batch cap was reached, a batch is held for the reviewer or a state loss stopped the run.
+    #    D6 wait was reached, a batch is held for the reviewer or a state loss stopped the run.
     ended = capped or returned or held or lost_stop
     assert ended, f"no normal end after {INVOCATIONS} invocations"
     if returned:
