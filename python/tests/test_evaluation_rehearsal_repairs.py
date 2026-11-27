@@ -14,6 +14,7 @@ every first-run and repeat ``request.json`` is the ``eval prompt`` payload and e
 """
 
 import json
+from collections.abc import Iterator
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,7 @@ from test_evaluation_runner_gemini import FakeGemini, ok
 from typer.testing import CliRunner, Result
 
 import potakt.cli as cli
+import potakt.evaluation.runner as runner_module
 from potakt.cli import app
 from potakt.evaluation import answer_of, render_payload, repair_payload
 
@@ -47,6 +49,15 @@ UNANSWERED = "08-warehouse"
 SCHEMA = '{"schema_version": "0.2"}'
 LOOK_ALIKE = "05-supermarket-checkouts"
 EMPTY = "06-ambulance-crews"
+
+
+@pytest.fixture(autouse=True)
+def corpus_frozen() -> Iterator[None]:
+    """TASK-005e6 decision 4: the rehearsal runs the corpus as after the freeze (``CORPUS_FROZEN``
+    true); ``test_evaluation_freeze.py`` checks the repository's value."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(runner_module, "CORPUS_FROZEN", True)
+        yield
 
 
 def haiku_first(scenario: str) -> str:

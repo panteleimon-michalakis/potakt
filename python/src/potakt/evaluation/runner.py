@@ -115,6 +115,7 @@ __all__ = [
     "USER_AGENT",
     "RunLock",
     "audit_batches",
+    "check_frozen",
     "check_order",
     "check_pins",
     "check_set",
@@ -2133,6 +2134,26 @@ def take_lock(runs_dir: Path, model: str, now: datetime) -> RunLock:
 
 # --- before a run: the pins, the order rule and the plan (F5) ---------------------------------
 
+# ADR-0008 D1 (amendment of TASK-005e6): False until the commit tagged phase0-freeze, which sets it
+# to True; until then eval run --yes sends only the development set (--dev). Read when called.
+CORPUS_FROZEN = False
+NOT_FROZEN = (
+    "no corpus scenario is sent before the commit tagged phase0-freeze (ADR-0008 D1); run the "
+    "development set with --dev; nothing was sent"
+)
+NOT_FROZEN_PLAN = (
+    "Not sent before the freeze: --yes is refused until the commit tagged phase0-freeze "
+    "(ADR-0008 D1); the development set runs with --dev."
+)
+
+
+def check_frozen(dev: bool) -> None:
+    """ADR-0008 D1 (amendment of TASK-005e6): ``RunStopped`` (``NOT_FROZEN``) for a run without
+    ``--dev`` while ``CORPUS_FROZEN`` is false. Reads the flag when called."""
+    if not dev and not CORPUS_FROZEN:
+        raise RunStopped(NOT_FROZEN)
+
+
 # TASK-005c3g G8: the SHA256 values that ADR-0008 Appendix A pins (it revises ADR-0007 §7; a test
 # compares them with the ADR), checked by every eval run before anything is rendered.
 INSTRUCTION_SHA256 = "2dcb497384a35ae227ccc8df46349d6179162687093ac16e0cd48be9f406263c"
@@ -2573,5 +2594,8 @@ def run_plan(
     lock = lock_text(runs_dir)
     if lock is not None:
         lines.append(f"Lock: {lock} (another run may be active)")
-    lines.append("Run again with --yes to send.")
+    # TASK-005e6 decision 4 (ADR-0008 D1): before the freeze, --yes sends no corpus scenario.
+    lines.append(
+        NOT_FROZEN_PLAN if not dev and not CORPUS_FROZEN else "Run again with --yes to send."
+    )
     return "\n".join(lines) + "\n"

@@ -395,6 +395,16 @@ def schema_rendered_once() -> Iterator[None]:
         yield
 
 
+@pytest.fixture(scope="module", autouse=True)
+def corpus_frozen() -> Iterator[None]:
+    """TASK-005e6 decision 4: the corpus ``--yes`` runs here run as after the freeze
+    (``CORPUS_FROZEN`` true); ``test_evaluation_freeze.py`` checks the repository's value.
+    Module-scoped like the fixtures above: a Hypothesis test takes no function-scoped one."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(runner_module, "CORPUS_FROZEN", True)
+        yield
+
+
 FSYNCS: list[int] = []  # the descriptors the counting no-op was given
 
 

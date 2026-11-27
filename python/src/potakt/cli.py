@@ -38,6 +38,7 @@ from potakt.evaluation.runner import (
     REPAIR_DIR,
     RUNS_PATH,
     audit_batches,
+    check_frozen,
     check_order,
     check_pins,
     check_set,
@@ -672,7 +673,9 @@ def eval_run(
     repository's docs/validation/dev and --runs to docs/validation/runs/dev/round-1, and each
     request is checked against the development pins. A run with --dev refuses a corpus scenario
     and a runs directory under docs/validation/runs/test-a; a run without it refuses a
-    development scenario and a runs directory under docs/validation/runs/dev.
+    development scenario and a runs directory under docs/validation/runs/dev. Before the commit
+    tagged phase0-freeze, --yes without --dev stops before anything is sent: no corpus scenario
+    is sent before the freeze; the dry run still prints the plan.
 
     Files: <runs>/<model dir>/<scenario id>/ with request.json, response.json, candidate.txt,
     comparison.json; for Claude models also <runs>/<model dir>/ batches.json and
@@ -683,10 +686,11 @@ def eval_run(
     reason on stderr), a held batch, a missing or invalid key, claude-opus-5-5 before a complete
     claude-haiku-5-5 run, a repair or repeat run before the run it needs is complete, another run
     active (the lock file), a --release of a batch that is not held, an unknown batch in the
-    workspace, a request that differs from its pin, a scenario or runs directory of the other set,
-    a missing directory or a corpus without a scenario, an unexpected error (its type only, never
-    its text), or an interruption; 2: usage error (also an unregistered model id, --release
-    without --yes, --repeat for another model than claude-opus-5-5, or --repair with --repeat).
+    workspace, a request that differs from its pin, a corpus --yes run before the freeze, a
+    scenario or runs directory of the other set, a missing directory or a corpus without a
+    scenario, an unexpected error (its type only, never its text), or an interruption; 2: usage
+    error (also an unregistered model id, --release without --yes, --repeat for another model than
+    claude-opus-5-5, or --repair with --repeat).
     """
     # TASK-005e6 decision 3: the defaults are resolved when the command runs.
     if corpus is None:
@@ -757,6 +761,7 @@ def _eval_run(
         if not yes:
             typer.echo(run_plan(model, corpus, runs, kind, dev=dev), nl=False)
             return
+        check_frozen(dev)  # TASK-005e6 decision 4: before any key, lock or request
         if release is not None and not anthropic:
             raise RunStopped(f"{server_text(release)} is not a held batch of {model}")
         key = read_key(ANTHROPIC_KEY_VARIABLE if anthropic else GEMINI_KEY_VARIABLE)

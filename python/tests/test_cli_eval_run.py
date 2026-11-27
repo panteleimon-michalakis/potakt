@@ -10,7 +10,7 @@ import os
 import re
 import shutil
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, cast
@@ -96,6 +96,16 @@ class NoTransport:
         self, method: str, url: str, headers: dict[str, str], body: bytes | None, timeout: float
     ) -> HttpResponse:
         raise AssertionError(f"nothing may be sent: {method} {url}")
+
+
+@pytest.fixture(autouse=True)
+def corpus_frozen() -> Iterator[None]:
+    """TASK-005e6 decision 4: these tests run corpus ``--yes`` runs as after the freeze
+    (``CORPUS_FROZEN`` true), so their dry runs end as before; ``test_evaluation_freeze.py``
+    checks the repository's value. Its own patch: a test's ``monkeypatch.undo()`` keeps it."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(runner_module, "CORPUS_FROZEN", True)
+        yield
 
 
 @pytest.fixture(autouse=True)
@@ -2632,11 +2642,12 @@ def test_the_run_help_states_the_exit_codes_and_files() -> None:
         "stopped (the reason on stderr), a held batch, a missing or invalid key, claude-opus-5-5 "
         "before a complete claude-haiku-5-5 run, a repair or repeat run before the run it needs "
         "is complete, another run active (the lock file), a --release of a batch that is not "
-        "held, an unknown batch in the workspace, a request that differs from its pin, a scenario "
-        "or runs directory of the other set, a missing directory or a corpus without a scenario, "
-        "an unexpected error (its type only, never its text), or an interruption; 2: usage error "
-        "(also an unregistered model id, --release without --yes, --repeat for another model than "
-        "claude-opus-5-5, or --repair with --repeat)"
+        "held, an unknown batch in the workspace, a request that differs from its pin, a corpus "
+        "--yes run before the freeze, a scenario or runs directory of the other set, a missing "
+        "directory or a corpus without a scenario, an unexpected error (its type only, never its "
+        "text), or an interruption; 2: usage error (also an unregistered model id, --release "
+        "without --yes, --repeat for another model than claude-opus-5-5, or --repair with "
+        "--repeat)"
     ) in text
     assert "the same under <runs>/repair/<model dir>/ and <runs>/repeat-<K>/claude-opus-5-5/" in (
         text
@@ -2682,7 +2693,9 @@ def test_the_run_help_describes_dev() -> None:
         "repository's docs/validation/dev and --runs to docs/validation/runs/dev/round-1, and "
         "each request is checked against the development pins. A run with --dev refuses a corpus "
         "scenario and a runs directory under docs/validation/runs/test-a; a run without it "
-        "refuses a development scenario and a runs directory under docs/validation/runs/dev."
+        "refuses a development scenario and a runs directory under docs/validation/runs/dev. "
+        "Before the commit tagged phase0-freeze, --yes without --dev stops before anything is "
+        "sent: no corpus scenario is sent before the freeze; the dry run still prints the plan."
     ) in text
     assert str(runner_module.DEV_RUNS_PATH) not in text
 

@@ -17,6 +17,7 @@ and every ``request.json`` is the ``eval prompt`` payload.
 import email.utils
 import json
 import os
+from collections.abc import Iterator
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
@@ -38,9 +39,21 @@ from test_evaluation_runner_gemini import FakeGemini, error
 from typer.testing import CliRunner, Result
 
 import potakt.cli as cli
+import potakt.evaluation.runner as runner_module
 from potakt.cli import app
 from potakt.evaluation.runner import BATCHES_URL
 from potakt.evaluation.transport import HttpResponse
+
+
+@pytest.fixture(autouse=True)
+def corpus_frozen() -> Iterator[None]:
+    """TASK-005e6 decision 4: the rehearsal runs the corpus as after the freeze (``CORPUS_FROZEN``
+    true); ``test_evaluation_freeze.py`` checks the repository's value. Its own patch, so a
+    test's ``monkeypatch.undo()`` cannot remove it."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(runner_module, "CORPUS_FROZEN", True)
+        yield
+
 
 HAIKU = "claude-haiku-5-5"
 OPUS = "claude-opus-5-5"

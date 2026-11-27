@@ -15,6 +15,8 @@ from pathlib import Path
 import pytest
 from runner_helpers import write_draws_fixture, write_repairs_fixture
 
+from potakt.evaluation.runner import RUNS_PATH
+
 REPO = Path(__file__).resolve().parents[2]
 GOLDEN = Path(__file__).resolve().parent / "golden"
 CLINIC_MODEL = REPO / "examples" / "clinic-el" / "model.json"
@@ -266,6 +268,10 @@ def test_eval_rescore_matches_the_golden_byte_for_byte(tmp_path: Path) -> None:
         # eval run (TASK-005c3 F5): the key variables are absent (conftest), so nothing is sent.
         ("run-dry", 0),
         ("run-missing-key", 1),
+        # TASK-005e6 decision 4: before the freeze; the development set (ADR-0008 D1).
+        ("run-corpus-before-the-freeze", 1),
+        ("run-dev-dry", 0),
+        ("run-dev-into-test-a", 1),
         ("run-opus-before-haiku", 1),
         ("run-unregistered-model", 2),
         # TASK-005e5 decision 8: the usage errors of --repeat.
@@ -309,7 +315,11 @@ def test_eval_exit_codes(case: str, expected: int, tmp_path: Path) -> None:
         "draws-incomplete-run": ("draws", "--runs", tmp_path),
         "draws-with-a-model": ("draws", "--model", "claude-sonnet-5-5"),
         "run-dry": ("run", "--model", "claude-haiku-5-5", *test_a),
-        "run-missing-key": ("run", "--model", "gemini-3.8-flash", *test_a, "--yes"),
+        # TASK-005e6 decision 4: with --dev, so the missing key stops it, not the freeze.
+        "run-missing-key": ("run", "--model", "gemini-3.8-flash", "--dev", *test_a, "--yes"),
+        "run-corpus-before-the-freeze": ("run", "--model", "gemini-3.8-flash", *test_a, "--yes"),
+        "run-dev-dry": ("run", "--model", "claude-haiku-5-5", "--dev", *test_a),
+        "run-dev-into-test-a": ("run", "--model", "claude-haiku-5-5", "--dev", "--runs", RUNS_PATH),
         # The dry run: without the order rule it would print the plan and exit 0 (TASK-005c3b
         # D6); with --yes, the missing key would exit 1 even without the rule.
         "run-opus-before-haiku": ("run", "--model", "claude-opus-5-5", *test_a),
@@ -320,8 +330,11 @@ def test_eval_exit_codes(case: str, expected: int, tmp_path: Path) -> None:
         "run-repair-and-repeat": ("run", "--model", OPUS, "--repair", "--repeat", "2", *test_a),
     }
 
+    repository_runs = runs_snapshot()
+
     result = potakt("eval", *args[case])
 
+    assert runs_snapshot() == repository_runs  # TASK-005e6: the repository's RUNS_PATH untouched
     assert result.returncode == expected, result.stderr
     assert b"\r\n" not in result.stdout + result.stderr
     if expected == 0:
@@ -343,7 +356,30 @@ def test_eval_exit_codes(case: str, expected: int, tmp_path: Path) -> None:
         assert result.stderr == b"--repeat is only for claude-opus-5-5 (ADR-0008 D8)\n"
     if case == "run-repair-and-repeat":
         assert result.stderr == b"--repair and --repeat cannot be used together\n"
+    if case == "run-missing-key":
+        assert result.stderr == b"POTAKT_GEMINI_API_KEY is not set in this shell\n"
+    if case == "run-corpus-before-the-freeze":
+        assert result.stderr.startswith(
+            b"no corpus scenario is sent before the commit tagged phase0-freeze"
+        )
+    if case == "run-dev-dry":
+        assert result.stdout.startswith(b"Test A run plan: claude-haiku-5-5 (development set)\n")
+        assert result.stdout.endswith(b"\nRun again with --yes to send.\n")
+    if case == "run-dev-into-test-a":
+        assert b"where --dev runs never record" in result.stderr
     assert not (tmp_path / "test-a").exists()  # no usage error and no refusal writes anything
+
+
+def runs_snapshot() -> list[tuple[str, int]] | None:
+    """Every file under the repository's ``RUNS_PATH`` with its size; ``None`` if it does not
+    exist (TASK-005e6: a refused run never creates or changes it)."""
+    if not RUNS_PATH.exists():
+        return None
+    return sorted(
+        (path.relative_to(RUNS_PATH).as_posix(), path.stat().st_size)
+        for path in RUNS_PATH.rglob("*")
+        if path.is_file()
+    )
 
 
 HAIKU = "claude-haiku-5-5"
